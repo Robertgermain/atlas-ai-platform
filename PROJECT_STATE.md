@@ -2,8 +2,8 @@
 
 - Last updated: 2026-08-08
 - Phase: Local implementation foundation
-- Milestone: ResearchJob domain model (Milestone 3)
-- Implementation status: Python 3.12 / FastAPI foundation and CI verified locally and on GitHub Actions (PR #1)
+- Milestone: Continuous integration (Milestone 2)
+- Implementation status: PR #1 merged; main push CI failed on unsupported `setup-uv` input; repair committed as `9968478` and pushed on `fix/ci-setup-uv`
 
 ## Objective
 
@@ -23,14 +23,14 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
 - `src/atlas` package with a FastAPI app exposing `GET /health`.
 - Pytest, Ruff (format + lint), and mypy configuration; health contract test.
-- Minimal GitHub Actions workflow at `.github/workflows/ci.yml` (PR and `main` push; `contents: read`), validated on Pull Request #1.
+- Minimal GitHub Actions workflow at `.github/workflows/ci.yml` (PR and `main` push; `contents: read`), merged via Pull Request #1.
 
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
+- A green GitHub Actions push run on `main` after the PR #1 merge.
 - PostgreSQL, agents, brokers, containers, Kubernetes, Terraform, or AWS resources.
 - Validated quality, latency, reliability, or cost benchmarks.
-- Merged Milestone 2 changes on local `main` (PR #1 is verified but not yet merged; local `main` is still at the Milestone 1 foundation).
 
 ## Decisions
 
@@ -46,6 +46,7 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Ruff owns formatting and import sorting; black and isort are not used.
 - CI installs from the committed lockfile (`uv sync --frozen`) and runs Ruff format, Ruff lint, mypy, and Pytest.
 - GitHub Actions are pinned to full commit SHAs with version comments; the workflow has `contents: read` only.
+- `astral-sh/setup-uv` must use supported inputs (`version`, `python-version`); `python-version-file` is not valid for the pinned action.
 
 ## Verification (Milestone 1)
 
@@ -72,15 +73,25 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Initial CI run passed (green).
 - Intentional failure commit `21587a6` caused CI to fail (red).
 - Revert commit `2a8190c` restored the correct test and CI passed again (green).
-- After the intentional failure was reverted, the branch returned to the expected code state and CI passed; the Milestone 2 completion gate is satisfied.
+- After the intentional failure was reverted, the branch returned to the expected code state and CI passed.
+- Pull Request #1 merged to `main`.
+
+### Remote (`main` push after merge)
+
+- The push workflow on `main` failed during the `setup-uv` step.
+- Cause: unsupported input `python-version-file` for `astral-sh/setup-uv` (valid inputs include `version` and `python-version`).
+- Repair commit `9968478` replaces that input with `version: "0.11.8"`, `python-version: "3.12"`, and keeps `enable-cache: true` while retaining existing action commit SHA pins.
+- Branch `fix/ci-setup-uv` is pushed to GitHub with that repair.
+- Milestone 2 remains **Current** and Milestone 3 remains **Pending** until `main` CI is green.
 
 ## Next steps
 
-1. Merge Pull Request #1.
-2. Synchronize local `main` with the merged remote.
-3. Begin Milestone 3: typed `ResearchJob` domain model and tested transitions (no HTTP or storage).
-4. Do not begin PostgreSQL or AI workflow work until Milestone 3 is complete and reviewed.
+1. Open the repair pull request for `fix/ci-setup-uv` and confirm its CI is green.
+2. Merge the repair PR; confirm the resulting `main` push workflow is green.
+3. After `main` CI is green, mark Milestone 2 **Complete** and Milestone 3 **Current**.
+4. Then begin Milestone 3: typed `ResearchJob` domain model and tested transitions (no HTTP or storage).
+5. Do not begin PostgreSQL or AI workflow work until Milestone 3 is complete and reviewed.
 
 ## Active blockers
 
-None.
+Main branch CI is red because of the unsupported `setup-uv` input used in the merged workflow. The repair is committed and pushed on `fix/ci-setup-uv`; the blocker remains until the repair PR is merged and the resulting `main` push workflow passes.
