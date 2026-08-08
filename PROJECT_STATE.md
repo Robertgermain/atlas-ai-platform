@@ -3,7 +3,7 @@
 - Last updated: 2026-08-08
 - Phase: Local implementation foundation
 - Milestone: Continuous integration (Milestone 2)
-- Implementation status: PR #1 merged; main push CI failed on unsupported `setup-uv` input; repair prepared locally
+- Implementation status: PR #1 merged; main push CI failed on unsupported `setup-uv` input; repair committed as `9968478` and pushed on `fix/ci-setup-uv`
 
 ## Objective
 
@@ -80,16 +80,18 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 
 - The push workflow on `main` failed during the `setup-uv` step.
 - Cause: unsupported input `python-version-file` for `astral-sh/setup-uv` (valid inputs include `version` and `python-version`).
-- Local repair replaces that input with `version: "0.11.8"`, `python-version: "3.12"`, and keeps `enable-cache: true` while retaining existing action commit SHA pins.
-- Milestone 2 is temporarily **Current** again and Milestone 3 is **Pending** until `main` CI is green.
+- Repair commit `9968478` replaces that input with `version: "0.11.8"`, `python-version: "3.12"`, and keeps `enable-cache: true` while retaining existing action commit SHA pins.
+- Branch `fix/ci-setup-uv` is pushed to GitHub with that repair.
+- Milestone 2 remains **Current** and Milestone 3 remains **Pending** until `main` CI is green.
 
 ## Next steps
 
-1. Commit and push the `setup-uv` input repair; confirm the GitHub Actions run on `main` (or the repair PR) is green.
-2. After `main` CI is green, mark Milestone 2 **Complete** and Milestone 3 **Current**.
-3. Then begin Milestone 3: typed `ResearchJob` domain model and tested transitions (no HTTP or storage).
-4. Do not begin PostgreSQL or AI workflow work until Milestone 3 is complete and reviewed.
+1. Open the repair pull request for `fix/ci-setup-uv` and confirm its CI is green.
+2. Merge the repair PR; confirm the resulting `main` push workflow is green.
+3. After `main` CI is green, mark Milestone 2 **Complete** and Milestone 3 **Current**.
+4. Then begin Milestone 3: typed `ResearchJob` domain model and tested transitions (no HTTP or storage).
+5. Do not begin PostgreSQL or AI workflow work until Milestone 3 is complete and reviewed.
 
 ## Active blockers
 
-Main branch CI is red because of the unsupported `setup-uv` input used in the merged workflow. The local repair is ready but not yet committed or pushed.
+Main branch CI is red because of the unsupported `setup-uv` input used in the merged workflow. The repair is committed and pushed on `fix/ci-setup-uv`; the blocker remains until the repair PR is merged and the resulting `main` push workflow passes.
