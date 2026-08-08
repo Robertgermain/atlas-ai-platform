@@ -7,9 +7,10 @@ These instructions apply to every AI assistant working in this repository.
 Before proposing or changing anything:
 
 1. Read `PROJECT_STATE.md` completely.
-2. Read `docs/PRD.md` and the documents relevant to the task.
-3. Inspect the repository instead of assuming documented plans are implemented.
-4. Keep the requested work aligned with the current milestone.
+2. Read the current milestone in `docs/LOCAL_BUILD_PLAN.md`.
+3. Read `docs/PRD.md` and the documents relevant to the task.
+4. Inspect the repository instead of assuming documented plans are implemented.
+5. Keep the requested work aligned with the current milestone.
 
 ## Working rules
 
@@ -23,6 +24,14 @@ Before proposing or changing anything:
 - Keep typed contracts at system boundaries and add tests with behavior.
 - Never commit secrets or expose them in logs, examples, fixtures, or documentation.
 - Preserve unrelated user changes.
+
+## Milestone completion protocol
+
+- Do not work ahead of the milestone marked **Current** in `docs/LOCAL_BUILD_PLAN.md`.
+- A milestone is complete only after its completion gate passes and the diff is reviewed.
+- After completion, mark the finished milestone **Complete**, mark only the next approved milestone **Current**, and update `PROJECT_STATE.md` with factual verification evidence.
+- Do not mark generated but unverified work complete.
+- Stop for review before beginning the next milestone.
 
 ## Project-state protocol
 
