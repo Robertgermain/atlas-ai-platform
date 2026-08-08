@@ -16,4 +16,4 @@ The repository has a verified Python 3.12 / FastAPI local foundation (`GET /heal
 
 ## Current milestone
 
-Add continuous integration so frozen dependency install, Ruff, mypy, and Pytest run on GitHub. Later milestones add PostgreSQL-backed research jobs and AI workflow capabilities. The comprehensive Visio and AWS design remains deferred until working local components can be mapped to the cloud with evidence.
+Define the typed `ResearchJob` domain model and tested lifecycle transitions, independent of HTTP and storage. PostgreSQL-backed APIs and AI workflow capabilities follow later. The comprehensive Visio and AWS design remains deferred until working local components can be mapped to the cloud with evidence.

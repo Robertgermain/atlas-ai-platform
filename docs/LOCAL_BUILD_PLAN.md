@@ -59,7 +59,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 2 — Continuous integration
 
-**Status:** Current
+**Status:** Complete
 
 **Goal:** Make the local quality commands mandatory on GitHub.
 
@@ -73,7 +73,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 3 — ResearchJob domain model
 
-**Status:** Pending
+**Status:** Current
 
 **Goal:** Define a research job and its lifecycle independently of HTTP and storage.
 
