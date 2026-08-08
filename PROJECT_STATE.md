@@ -3,7 +3,7 @@
 - Last updated: 2026-08-08
 - Phase: Local implementation foundation
 - Milestone: ResearchJob domain model (Milestone 3)
-- Implementation status: Python 3.12 / FastAPI foundation and CI workflow verified locally; GitHub run pending push/PR
+- Implementation status: Python 3.12 / FastAPI foundation and CI verified locally and on GitHub Actions (PR #1)
 
 ## Objective
 
@@ -23,14 +23,14 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
 - `src/atlas` package with a FastAPI app exposing `GET /health`.
 - Pytest, Ruff (format + lint), and mypy configuration; health contract test.
-- Minimal GitHub Actions workflow at `.github/workflows/ci.yml` (PR and `main` push; `contents: read`).
+- Minimal GitHub Actions workflow at `.github/workflows/ci.yml` (PR and `main` push; `contents: read`), validated on Pull Request #1.
 
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
-- Confirmed green/red CI runs on GitHub (workflow is local-only until pushed on a PR branch).
 - PostgreSQL, agents, brokers, containers, Kubernetes, Terraform, or AWS resources.
 - Validated quality, latency, reliability, or cost benchmarks.
+- Merged Milestone 2 changes on local `main` (PR #1 is verified but not yet merged; local `main` is still at the Milestone 1 foundation).
 
 ## Decisions
 
@@ -55,22 +55,32 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - `uv run mypy src tests` → success (3 source files)
 - `uv run pytest` → 1 passed (`GET /health` → `200`, `{"status": "ok"}`)
 
-## Verification (Milestone 2 — local)
+## Verification (Milestone 2)
+
+### Local
 
 - Removed black and isort from runtime dependencies; regenerated `uv.lock` so Ruff alone owns format and import sorting.
 - `uv sync --frozen` → success
-- `uv run ruff format --check .` → 11 files already formatted
+- `uv run ruff format --check .` → success
 - `uv run ruff check .` → all checks passed
-- `uv run mypy src tests` → success (3 source files)
+- `uv run mypy src tests` → success
 - `uv run pytest` → 1 passed
 - Workflow file created with pinned `actions/checkout@v7.0.1` and `astral-sh/setup-uv@v9.0.0` commit SHAs.
 
+### Remote (Pull Request #1)
+
+- Initial CI run passed (green).
+- Intentional failure commit `21587a6` caused CI to fail (red).
+- Revert commit `2a8190c` restored the correct test and CI passed again (green).
+- After the intentional failure was reverted, the branch returned to the expected code state and CI passed; the Milestone 2 completion gate is satisfied.
+
 ## Next steps
 
-1. Commit and push Milestone 2 on a PR branch; confirm CI green, then prove intentional failure and revert on that branch before merge (do not leave `main` broken).
-2. Begin Milestone 3 only after that GitHub gate and review: typed `ResearchJob` domain model and tested transitions.
-3. Do not begin PostgreSQL or AI workflow work until Milestone 3 is complete and reviewed.
+1. Merge Pull Request #1.
+2. Synchronize local `main` with the merged remote.
+3. Begin Milestone 3: typed `ResearchJob` domain model and tested transitions (no HTTP or storage).
+4. Do not begin PostgreSQL or AI workflow work until Milestone 3 is complete and reviewed.
 
 ## Active blockers
 
-None for local work. Remote CI success/failure proof requires a push/PR and is still outstanding.
+None.
