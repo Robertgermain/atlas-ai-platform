@@ -21,10 +21,22 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - One GitHub Actions workflow (`.github/workflows/ci.yml`) runs on pull requests and pushes to `main`.
 - The workflow uses `permissions: contents: read` only.
 - Actions are pinned to full commit SHAs (`actions/checkout`, `astral-sh/setup-uv`) with version comments.
-- Python comes from `.python-version` via `setup-uv`; dependencies install with `uv sync --frozen`.
+- `setup-uv` is configured with `version: "0.11.8"`, `python-version: "3.12"`, and `enable-cache: true`.
+- Dependencies install with `uv sync --frozen`.
 - CI runs the same local gates: `ruff format --check .`, `ruff check .`, `mypy src tests`, and `pytest`.
 
-These decisions are limited to the verified foundation and CI slices. They do not imply database, agent, messaging, container, or cloud topology choices.
+### ResearchJob domain model
+
+- Domain code lives under `atlas.domain` and depends only on the Python standard library.
+- `ResearchJob` is a slotted entity with read-only properties; callers change lifecycle state through `start()`, `complete(result)`, and `fail(reason)`.
+- Construction always creates `PENDING` jobs with stripped `id` and `question`; result and failure fields start empty.
+- Allowed transitions are `PENDING → RUNNING → COMPLETED` and `PENDING → RUNNING → FAILED`.
+- Terminal states (`COMPLETED`, `FAILED`) reject further lifecycle transitions.
+- Optional timezone-aware timestamps make creation and transitions deterministic; omitted timestamps default to current UTC. Supplied timezone-aware timestamps are normalized to UTC.
+- Timestamps must be timezone-aware and must not move earlier than the job's `updated_at`.
+- Domain errors are `InvalidResearchJobError` for field/timestamp invariants and `InvalidTransitionError` for illegal status changes.
+
+These decisions are limited to the verified foundation, CI, and domain slices. They do not imply database, agent, messaging, container, or cloud topology choices.
 
 ## Why the full diagram comes later
 
