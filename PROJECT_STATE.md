@@ -2,8 +2,8 @@
 
 - Last updated: 2026-08-08
 - Phase: Local implementation foundation
-- Milestone: Continuous integration (Milestone 2)
-- Implementation status: PR #1 merged; main push CI failed on unsupported `setup-uv` input; repair committed as `9968478` and pushed on `fix/ci-setup-uv`
+- Milestone: ResearchJob domain model (Milestone 3)
+- Implementation status: Milestone 3 implemented and verified locally; awaiting commit, PR validation, and merge
 
 ## Objective
 
@@ -17,19 +17,20 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 
 - A minimal repository baseline and one flat `docs/` folder.
 - `docs/LOCAL_BUILD_PLAN.md` as the ordered local roadmap and milestone checklist.
-- Research, product requirements, testing strategy, and a technical-design document with validated local foundation and CI decisions.
+- Research, product requirements, testing strategy, and a technical-design document with validated local foundation, CI, and domain decisions.
 - Root instructions for AI assistants and this current-state handoff.
 - Local environment and ignore files.
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
 - `src/atlas` package with a FastAPI app exposing `GET /health`.
 - Pytest, Ruff (format + lint), and mypy configuration; health contract test.
-- Minimal GitHub Actions workflow at `.github/workflows/ci.yml` (PR and `main` push; `contents: read`), merged via Pull Request #1.
+- Minimal GitHub Actions workflow at `.github/workflows/ci.yml` (PR and `main` push; `contents: read`), green on `main` after Pull Request #2.
+- `atlas.domain` package with slotted `ResearchJob`, status enum, domain exceptions, and lifecycle transitions `PENDING → RUNNING → COMPLETED | FAILED` (local, not yet merged).
 
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
-- A green GitHub Actions push run on `main` after the PR #1 merge.
-- PostgreSQL, agents, brokers, containers, Kubernetes, Terraform, or AWS resources.
+- Merged Milestone 3 changes on `main` (local verification is complete; commit/PR/merge remain).
+- PostgreSQL persistence, research-job HTTP API, agents, brokers, containers, Kubernetes, Terraform, or AWS resources.
 - Validated quality, latency, reliability, or cost benchmarks.
 
 ## Decisions
@@ -46,7 +47,10 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Ruff owns formatting and import sorting; black and isort are not used.
 - CI installs from the committed lockfile (`uv sync --frozen`) and runs Ruff format, Ruff lint, mypy, and Pytest.
 - GitHub Actions are pinned to full commit SHAs with version comments; the workflow has `contents: read` only.
-- `astral-sh/setup-uv` must use supported inputs (`version`, `python-version`); `python-version-file` is not valid for the pinned action.
+- `astral-sh/setup-uv` uses `version` and `python-version` (not `python-version-file`) for the pinned action.
+- Research-job identity is a caller-supplied stripped string; the domain does not generate UUIDs.
+- Domain creation always starts in `PENDING`; lifecycle changes go through `start()`, `complete()`, and `fail()` only.
+- Timestamps are timezone-aware, deterministic when supplied, normalized to UTC, and must not move earlier than `updated_at`.
 
 ## Verification (Milestone 1)
 
@@ -73,25 +77,37 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Initial CI run passed (green).
 - Intentional failure commit `21587a6` caused CI to fail (red).
 - Revert commit `2a8190c` restored the correct test and CI passed again (green).
-- After the intentional failure was reverted, the branch returned to the expected code state and CI passed.
 - Pull Request #1 merged to `main`.
 
-### Remote (`main` push after merge)
+### Remote (`main` push after PR #1)
 
 - The push workflow on `main` failed during the `setup-uv` step.
-- Cause: unsupported input `python-version-file` for `astral-sh/setup-uv` (valid inputs include `version` and `python-version`).
-- Repair commit `9968478` replaces that input with `version: "0.11.8"`, `python-version: "3.12"`, and keeps `enable-cache: true` while retaining existing action commit SHA pins.
-- Branch `fix/ci-setup-uv` is pushed to GitHub with that repair.
-- Milestone 2 remains **Current** and Milestone 3 remains **Pending** until `main` CI is green.
+- Cause: unsupported input `python-version-file` for `astral-sh/setup-uv`.
+
+### Remote (Pull Request #2 and `main`)
+
+- Repair commit `9968478` set `version: "0.11.8"`, `python-version: "3.12"`, and `enable-cache: true`.
+- Pull Request #2 merged successfully.
+- The resulting `main` push workflow passed (green).
+- Milestone 2 completion gate is satisfied.
+
+## Verification (Milestone 3)
+
+- `uv sync --frozen` → success
+- `uv run ruff format --check .` → success
+- `uv run ruff check .` → all checks passed
+- `uv run mypy src tests` → success (7 source files)
+- `uv run pytest` → 50 passed (health + ResearchJob lifecycle)
+- Domain package uses standard-library imports only; no FastAPI, database, or agent dependencies.
+- Milestone 3 remains **Current** until commit, PR CI, and merge succeed; Milestone 4 remains **Pending**.
 
 ## Next steps
 
-1. Open the repair pull request for `fix/ci-setup-uv` and confirm its CI is green.
-2. Merge the repair PR; confirm the resulting `main` push workflow is green.
-3. After `main` CI is green, mark Milestone 2 **Complete** and Milestone 3 **Current**.
-4. Then begin Milestone 3: typed `ResearchJob` domain model and tested transitions (no HTTP or storage).
-5. Do not begin PostgreSQL or AI workflow work until Milestone 3 is complete and reviewed.
+1. Commit and push Milestone 3.
+2. Open a pull request and confirm CI passes.
+3. After remote validation, mark Milestone 3 **Complete** and Milestone 4 **Current**.
+4. Do not begin PostgreSQL work before that.
 
 ## Active blockers
 
-Main branch CI is red because of the unsupported `setup-uv` input used in the merged workflow. The repair is committed and pushed on `fix/ci-setup-uv`; the blocker remains until the repair PR is merged and the resulting `main` push workflow passes.
+None. Remote validation (commit, PR CI, and merge) remains an outstanding Milestone 3 completion step.
