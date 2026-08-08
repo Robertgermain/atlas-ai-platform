@@ -12,10 +12,19 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - Application code lives under `src/atlas` and is installed as the `atlas` package.
 - The FastAPI application entrypoint is `atlas.main:app`.
 - `GET /health` is the first HTTP contract and returns `{"status": "ok"}` for liveness checks.
-- Quality gates are Ruff (lint), mypy (strict, `src` and `tests`), and Pytest.
-- Runtime dependencies (FastAPI, Uvicorn) are separated from development dependencies (Pytest, httpx, Ruff, mypy).
+- Quality gates are Ruff format, Ruff lint, mypy (strict, `src` and `tests`), and Pytest.
+- Ruff owns formatting and import sorting; black and isort are not dependencies.
+- Runtime dependencies (FastAPI, Uvicorn) are separated from development dependencies (Pytest, httpx2, Ruff, mypy).
 
-These decisions are limited to the verified foundation slice. They do not imply database, agent, messaging, container, or cloud topology choices.
+### Continuous integration
+
+- One GitHub Actions workflow (`.github/workflows/ci.yml`) runs on pull requests and pushes to `main`.
+- The workflow uses `permissions: contents: read` only.
+- Actions are pinned to full commit SHAs (`actions/checkout`, `astral-sh/setup-uv`) with version comments.
+- Python comes from `.python-version` via `setup-uv`; dependencies install with `uv sync --frozen`.
+- CI runs the same local gates: `ruff format --check .`, `ruff check .`, `mypy src tests`, and `pytest`.
+
+These decisions are limited to the verified foundation and CI slices. They do not imply database, agent, messaging, container, or cloud topology choices.
 
 ## Why the full diagram comes later
 

@@ -2,8 +2,8 @@
 
 - Last updated: 2026-08-08
 - Phase: Local implementation foundation
-- Milestone: Continuous integration (Milestone 2)
-- Implementation status: Python 3.12 / FastAPI foundation verified; CI not yet added
+- Milestone: ResearchJob domain model (Milestone 3)
+- Implementation status: Python 3.12 / FastAPI foundation and CI workflow verified locally; GitHub run pending push/PR
 
 ## Objective
 
@@ -17,17 +17,19 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 
 - A minimal repository baseline and one flat `docs/` folder.
 - `docs/LOCAL_BUILD_PLAN.md` as the ordered local roadmap and milestone checklist.
-- Research, product requirements, testing strategy, and a technical-design document with an initial local foundation section.
+- Research, product requirements, testing strategy, and a technical-design document with validated local foundation and CI decisions.
 - Root instructions for AI assistants and this current-state handoff.
 - Local environment and ignore files.
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
 - `src/atlas` package with a FastAPI app exposing `GET /health`.
-- Pytest, Ruff, and mypy configuration; health contract test.
+- Pytest, Ruff (format + lint), and mypy configuration; health contract test.
+- Minimal GitHub Actions workflow at `.github/workflows/ci.yml` (PR and `main` push; `contents: read`).
 
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
-- Continuous integration, PostgreSQL, agents, brokers, containers, Kubernetes, Terraform, or AWS resources.
+- Confirmed green/red CI runs on GitHub (workflow is local-only until pushed on a PR branch).
+- PostgreSQL, agents, brokers, containers, Kubernetes, Terraform, or AWS resources.
 - Validated quality, latency, reliability, or cost benchmarks.
 
 ## Decisions
@@ -41,6 +43,9 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Track the complete roadmap in `docs/LOCAL_BUILD_PLAN.md`; keep this file limited to current truth and the immediate handoff.
 - Runtime dependencies stay in `[project].dependencies`; development tools stay in `[dependency-groups].dev`.
 - `requires-python = ">=3.12,<3.13"`; mypy checks both `src` and `tests`.
+- Ruff owns formatting and import sorting; black and isort are not used.
+- CI installs from the committed lockfile (`uv sync --frozen`) and runs Ruff format, Ruff lint, mypy, and Pytest.
+- GitHub Actions are pinned to full commit SHAs with version comments; the workflow has `contents: read` only.
 
 ## Verification (Milestone 1)
 
@@ -50,12 +55,22 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - `uv run mypy src tests` → success (3 source files)
 - `uv run pytest` → 1 passed (`GET /health` → `200`, `{"status": "ok"}`)
 
+## Verification (Milestone 2 — local)
+
+- Removed black and isort from runtime dependencies; regenerated `uv.lock` so Ruff alone owns format and import sorting.
+- `uv sync --frozen` → success
+- `uv run ruff format --check .` → 11 files already formatted
+- `uv run ruff check .` → all checks passed
+- `uv run mypy src tests` → success (3 source files)
+- `uv run pytest` → 1 passed
+- Workflow file created with pinned `actions/checkout@v7.0.1` and `astral-sh/setup-uv@v9.0.0` commit SHAs.
+
 ## Next steps
 
-1. Commit the Milestone 1 foundation after review.
-2. Implement Milestone 2: minimal GitHub Actions workflow for frozen sync, Ruff, mypy, and Pytest.
-3. Do not begin database or AI work until Milestone 2 is complete and reviewed.
+1. Commit and push Milestone 2 on a PR branch; confirm CI green, then prove intentional failure and revert on that branch before merge (do not leave `main` broken).
+2. Begin Milestone 3 only after that GitHub gate and review: typed `ResearchJob` domain model and tested transitions.
+3. Do not begin PostgreSQL or AI workflow work until Milestone 3 is complete and reviewed.
 
 ## Active blockers
 
-None. Stop for review before beginning Milestone 2.
+None for local work. Remote CI success/failure proof requires a push/PR and is still outstanding.
