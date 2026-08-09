@@ -3,7 +3,7 @@
 - Last updated: 2026-08-08
 - Phase: Local implementation foundation
 - Milestone: PostgreSQL persistence (Milestone 4)
-- Implementation status: Milestone 4 implemented and verified locally; awaiting commit, PR validation, and merge
+- Implementation status: Milestone 4 committed as `cedaec6` and pushed to `origin/milestone-4-postgres`; awaiting pull-request validation and merge
 
 ## Objective
 
@@ -23,15 +23,15 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
 - `src/atlas` package with FastAPI `GET /health` (liveness) and `GET /ready` (Postgres readiness).
 - Pytest, Ruff (format + lint), and mypy configuration; domain, readiness, guard, and PostgreSQL integration tests.
-- GitHub Actions CI with Postgres 16 service targeting `atlas_test` (workflow updated locally; remote run pending).
+- GitHub Actions CI with Postgres 16 service targeting `atlas_test` (on branch; PR CI not yet run).
 - `atlas.domain` package with slotted `ResearchJob`, `reconstitute(...)`, and lifecycle transitions.
 - Docker Compose Postgres 16 on host port `5433` with databases `atlas` and `atlas_test`.
-- SQLAlchemy 2.x + psycopg3 + Alembic persistence for `research_jobs`, concrete `SqlAlchemyResearchJobRepository`, and explicit `session_scope` transactions (local, not yet merged).
+- SQLAlchemy 2.x + psycopg3 + Alembic persistence for `research_jobs`, concrete `SqlAlchemyResearchJobRepository`, and explicit `session_scope` transactions (committed on `milestone-4-postgres`; not yet merged to `main`).
 
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
-- Merged Milestone 4 changes on `main` (local verification is complete; commit/PR/merge remain).
+- Merged Milestone 4 changes on `main` (committed and pushed on `milestone-4-postgres`; pull request not opened yet).
 - Research-job HTTP API, agents, brokers, Redis, Kafka, pgvector, application Docker image, Kubernetes, Terraform, or AWS resources.
 - Validated quality, latency, reliability, or cost benchmarks.
 
@@ -126,15 +126,15 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - `uv run mypy src tests` → success (31 source files)
 - `ATLAS_DATABASE_URL=.../atlas_test uv run pytest` → 80 passed
 - Empty test schema migrates to Alembic head; repository persists across sessions; duplicate-key errors preserve `IntegrityError` cause; test-DB guard rejects non-test URLs without SQL.
-- Milestone 4 remains **Current** until commit, PR CI, and merge succeed; Milestone 5 remains **Pending**.
+- Milestone 4 remains **Current** until PR CI, merge, and the resulting `main` CI succeed; Milestone 5 remains **Pending**.
 
 ## Next steps
 
-1. Commit and push Milestone 4.
-2. Open a pull request and confirm CI passes (including Postgres integration tests).
+1. Open the Milestone 4 pull request and confirm CI passes (including Postgres integration tests).
+2. Merge the pull request; confirm the resulting `main` push CI is green.
 3. After remote validation, mark Milestone 4 **Complete** and Milestone 5 **Current**.
 4. Do not begin the research-job HTTP API before that.
 
 ## Active blockers
 
-None. Remote validation (commit, PR CI, and merge) remains an outstanding Milestone 4 completion step.
+None. Outstanding Milestone 4 completion steps are pull-request CI, merge, and the resulting `main` CI.
