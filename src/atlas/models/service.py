@@ -138,6 +138,9 @@ class ModelInvocationService:
                 "question": request.question,
                 "plan": list(request.plan),
                 "findings": list(request.findings),
+                "evidence_item_ids": [
+                    item.evidence_item_id for item in request.evidence
+                ],
                 "prompt_version": request.prompt_version,
             }
         )
@@ -145,6 +148,15 @@ class ModelInvocationService:
             question=request.question,
             plan=list(request.plan),
             findings=list(request.findings),
+            evidence=[
+                {
+                    "evidence_item_id": item.evidence_item_id,
+                    "source_display_uri": item.source_display_uri,
+                    "trust_label": item.trust_label,
+                    "text": item.text,
+                }
+                for item in request.evidence
+            ],
         )
         validated, meta = self._execute(
             node_name="draft",
@@ -157,7 +169,11 @@ class ModelInvocationService:
             user_prompt=user,
         )
         assert isinstance(validated, DraftStructuredOutput)
-        return DraftResult(draft=validated.draft, meta=meta)
+        return DraftResult(
+            draft=validated.draft,
+            claims=list(validated.claims),
+            meta=meta,
+        )
 
     def _execute[SchemaT: BaseModel](
         self,

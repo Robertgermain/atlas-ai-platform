@@ -168,7 +168,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 9 — Governed research tools and MCP
 
-**Status:** Current
+**Status:** Complete
 
 **Goal:** Give agents controlled access to research capabilities.
 
@@ -178,24 +178,26 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Completion gate:** Only approved tools execute, inputs/outputs validate, calls are attributable to workflow nodes, and failures are controlled. Do not mark Complete until pull-request CI and resulting `main` CI pass.
 
-**Local implementation status:** Implemented on `milestone-9-governed-tools` with local automated gates passing. Pull-request CI and resulting `main` CI remain outstanding before Complete.
+**Local implementation status:** Complete through Pull Request #12 (`0db343d`). PR CI and resulting `main` CI passed.
 
 ---
 
 ## Milestone 10 — Evidence, provenance, RAG, and pgvector
 
-**Status:** Pending
+**Status:** Current
 
 **Goal:** Produce traceable evidence and semantic retrieval rather than ungrounded chat responses.
 
-**Build in two reviewed slices:**
+**Build in two reviewed slices (one final PR, two mandatory review stops):**
 
-1. Sources, documents, evidence items, claims, citations, hashes, provenance, and report artifacts.
-2. pgvector, ingestion, normalization, chunking, embedding adapter/versioning, metadata filters, vector indexing, retrieval, and a retrieval evaluation dataset.
+1. **Slice 10A (approved; locally verified):** Sources, documents, evidence items, claims, citations, hashes, provenance, report artifacts, JSON text/Markdown ingest, structured draft claims, citation integrity, idempotent report persistence.
+2. **Slice 10B (implemented locally; under final review):** pgvector, versioned embeddings (`embeddings.v1` / 1536-d), fake + optional OpenAI LangChain adapters, metadata filters, HNSW cosine index, exact vs HNSW retrieval, workflow retrieval→link→pack→draft→citation, and offline retrieval evaluation (fake embeddings; pipeline geometry only).
 
 **Why evidence comes first:** Embeddings are useful only when retrieved material retains identity, provenance, and a relationship to report claims.
 
-**Completion gate:** A citation maps to stored evidence and its source; ingestion is safely repeatable; retrieval preserves provenance and passes a small measured relevance baseline.
+**Completion gate:** A citation maps to stored evidence and its source; ingestion is safely repeatable; retrieval preserves provenance and passes a small measured relevance baseline. Do not mark Complete until pull-request CI plus resulting `main` CI pass.
+
+**Local implementation status:** Slices 10A and 10B implemented and locally verified on `milestone-10-evidence-rag` (Alembic head `20260809_0008`). Final Milestone 10 PR CI and resulting `main` CI remain outstanding. Do not mark Milestone 10 Complete yet.
 
 ---
 

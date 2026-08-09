@@ -7,6 +7,9 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from atlas.evidence.bounds import MAX_CLAIMS_PER_DRAFT
+from atlas.evidence.contracts import ClaimStructured, EvidenceContextItem
+
 
 class ProviderId(StrEnum):
     FAKE = "fake"
@@ -47,9 +50,13 @@ class PlanStructuredOutput(BaseModel):
 
 
 class DraftStructuredOutput(BaseModel):
-    """Provider-facing structured draft schema."""
+    """Provider-facing structured draft schema with optional claims."""
 
     draft: str = Field(min_length=1)
+    claims: list[ClaimStructured] = Field(
+        default_factory=list,
+        max_length=MAX_CLAIMS_PER_DRAFT,
+    )
 
     @field_validator("draft")
     @classmethod
@@ -72,6 +79,7 @@ class DraftRequest(BaseModel):
     plan: Annotated[list[str], Field(min_length=3, max_length=3)]
     findings: list[str]
     prompt_version: str
+    evidence: list[EvidenceContextItem] = Field(default_factory=list)
 
 
 class ModelCallMeta(BaseModel):
@@ -97,4 +105,5 @@ class PlanResult(BaseModel):
 
 class DraftResult(BaseModel):
     draft: str
+    claims: list[ClaimStructured] = Field(default_factory=list)
     meta: ModelCallMeta

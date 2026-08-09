@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # Not a hard wall-clock around the entire structured-invoke + ledger path.
     model_call_timeout_seconds: float = Field(default=25.0, gt=0)
     plan_prompt_version: str = Field(default="plan.v1")
-    draft_prompt_version: str = Field(default="draft.v1")
+    draft_prompt_version: str = Field(default="draft.v2")
     openai_api_key: SecretStr | None = Field(default=None)
     anthropic_api_key: SecretStr | None = Field(default=None)
 
@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     tool_max_logical_calls_per_research_node: int = Field(default=6, ge=1)
     tool_max_attempts_per_call: int = Field(default=2, ge=1, le=2)
     tavily_api_key: SecretStr | None = Field(default=None)
+
+    # Embeddings / retrieval (Milestone 10B). Default fake keeps CI offline.
+    embedding_provider: Literal["fake", "openai"] = Field(default="fake")
+    embedding_profile: Literal["embeddings.v1"] = Field(default="embeddings.v1")
+    embedding_call_timeout_seconds: float = Field(default=25.0, gt=0)
+    retrieval_default_k: int = Field(default=5, ge=1, le=8)
+    retrieval_use_hnsw: bool = Field(default=True)
 
 
 def get_settings() -> Settings:

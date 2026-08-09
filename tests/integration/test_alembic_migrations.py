@@ -62,13 +62,32 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
         version = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-    assert version == "20260809_0006"
+    assert version == "20260809_0008"
     assert inspector.has_table("workflow_executions")
     assert inspector.has_table("workflow_node_executions")
     assert inspector.has_table("model_invocations")
     assert inspector.has_table("model_invocation_attempts")
     assert inspector.has_table("tool_invocations")
     assert inspector.has_table("tool_invocation_attempts")
+    assert inspector.has_table("sources")
+    assert inspector.has_table("documents")
+    assert inspector.has_table("evidence_items")
+    assert inspector.has_table("evidence_job_links")
+    assert inspector.has_table("report_artifacts")
+    assert inspector.has_table("claims")
+    assert inspector.has_table("citations")
+    assert inspector.has_table("evidence_embeddings")
+
+    document_uniques = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("documents")
+    }
+    assert "uq_documents_source_hash_parser" in document_uniques
+    report_uniques = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("report_artifacts")
+    }
+    assert "uq_report_artifacts_workflow_execution_id" in report_uniques
 
     model_constraints = {
         constraint["name"]
@@ -152,7 +171,7 @@ def test_legacy_row_survives_upgrade_from_0001(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
 
-        assert version == "20260809_0006"
+        assert version == "20260809_0008"
         assert row["id"] == "legacy-job"
         assert row["question"] == "legacy question"
         assert row["status"] == "PENDING"

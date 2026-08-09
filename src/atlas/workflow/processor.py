@@ -13,6 +13,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from atlas.config.settings import Settings, get_settings
+from atlas.evidence.service import EvidenceIngestService, ReportArtifactService
 from atlas.models.composition import build_planner_and_drafter
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.workflow import SqlAlchemyWorkflowRepository
@@ -231,12 +232,32 @@ class LangGraphResearchProcessor:
         workflow_execution_id: str,
         hooks: NodeAuditHooks | None,
     ) -> WorkflowRuntimeContext:
+        from atlas.embeddings.composition import build_text_embedder
+        from atlas.evidence.retrieve import EvidenceEmbeddingService, EvidenceRetriever
+
+        embedder = build_text_embedder(self._settings)
+        embedding_service = EvidenceEmbeddingService(
+            session_factory=self._session_factory,
+            embedder=embedder,
+            embedding_profile=self._settings.embedding_profile,
+        )
+        evidence_ingest = EvidenceIngestService(
+            session_factory=self._session_factory,
+            embedding_service=embedding_service,
+        )
+        report_service = ReportArtifactService(session_factory=self._session_factory)
+        evidence_retriever = EvidenceRetriever(
+            session_factory=self._session_factory,
+            embedder=embedder,
+            embedding_profile=self._settings.embedding_profile,
+            use_hnsw=self._settings.retrieval_use_hnsw,
+        )
         research_executor = self._research_executor_override or build_research_executor(
             self._settings,
             session_factory=self._session_factory,
             use_ledger=True,
+            evidence_ingest=evidence_ingest,
         )
-
         if self._planner_override is not None and self._drafter_override is not None:
             return WorkflowRuntimeContext(
                 planner=self._planner_override,
@@ -247,6 +268,10 @@ class LangGraphResearchProcessor:
                 workflow_execution_id=workflow_execution_id,
                 hooks=hooks,
                 node_counters=self._node_counters,
+                evidence_ingest=evidence_ingest,
+                report_service=report_service,
+                evidence_retriever=evidence_retriever,
+                retrieval_k=self._settings.retrieval_default_k,
             )
         if self._settings.model_provider == "fake":
             ctx = default_fake_runtime_context(
@@ -256,17 +281,24 @@ class LangGraphResearchProcessor:
                 draft_prompt_version=self._settings.draft_prompt_version,
                 fetch_enabled=self._settings.tool_fetch_enabled,
                 workflow_execution_id=workflow_execution_id,
+                evidence_ingest=evidence_ingest,
+                report_service=report_service,
+                evidence_retriever=evidence_retriever,
+                retrieval_k=self._settings.retrieval_default_k,
             )
-            # Prefer ledger-backed tools under the worker when available.
             return WorkflowRuntimeContext(
                 planner=ctx.planner,
                 drafter=ctx.drafter,
                 research_executor=research_executor,
-                plan_prompt_version=ctx.plan_prompt_version,
-                draft_prompt_version=ctx.draft_prompt_version,
+                plan_prompt_version=self._settings.plan_prompt_version,
+                draft_prompt_version=self._settings.draft_prompt_version,
                 workflow_execution_id=workflow_execution_id,
                 hooks=hooks,
                 node_counters=self._node_counters,
+                evidence_ingest=evidence_ingest,
+                report_service=report_service,
+                evidence_retriever=evidence_retriever,
+                retrieval_k=self._settings.retrieval_default_k,
             )
         planner, drafter = build_planner_and_drafter(
             self._settings,
@@ -282,6 +314,10 @@ class LangGraphResearchProcessor:
             workflow_execution_id=workflow_execution_id,
             hooks=hooks,
             node_counters=self._node_counters,
+            evidence_ingest=evidence_ingest,
+            report_service=report_service,
+            evidence_retriever=evidence_retriever,
+            retrieval_k=self._settings.retrieval_default_k,
         )
 
     def _invoke(

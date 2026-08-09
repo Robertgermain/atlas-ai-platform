@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from atlas.evidence.contracts import ClaimStructured
+
 
 def build_research_plan(question: str) -> list[str]:
     """Return exactly three deterministic research tasks for the question."""
@@ -36,15 +38,23 @@ def format_research_report(
     plan: list[str],
     findings: list[str],
     draft: str,
+    claims: list[ClaimStructured] | None = None,
 ) -> str:
-    """Format the stable Milestone 7 research report."""
+    """Format the stable research report, optionally with a Citations section."""
     plan_block = "\n".join(
         f"{index}. {task}" for index, task in enumerate(plan, start=1)
     )
     findings_block = "\n".join(f"- {finding}" for finding in findings)
-    return (
+    report = (
         f"Question:\n{question}\n\n"
         f"Plan:\n{plan_block}\n\n"
         f"Findings:\n{findings_block}\n\n"
         f"Draft:\n{draft}"
     )
+    if not claims:
+        return report
+    citation_lines: list[str] = []
+    for index, claim in enumerate(claims, start=1):
+        ids = ", ".join(claim.evidence_item_ids)
+        citation_lines.append(f"{index}. {claim.text} [{ids}]")
+    return report + "\n\nCitations:\n" + "\n".join(citation_lines)

@@ -7,13 +7,18 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, status
 from fastapi.exceptions import RequestValidationError
 
-from atlas.api.deps import provide_research_job_service
+from atlas.api.deps import (
+    provide_report_artifact_service,
+    provide_research_job_service,
+)
+from atlas.api.schemas.evidence import JobCitationsHttpResponse
 from atlas.api.schemas.research_jobs import (
     CreateResearchJobRequest,
     ErrorResponse,
     ResearchJobResponse,
 )
 from atlas.application.research_jobs import ResearchJobService
+from atlas.evidence.service import ReportArtifactService
 
 MAX_IDEMPOTENCY_KEY_LENGTH = 128
 
@@ -93,3 +98,26 @@ def get_research_job(
     """Return a research job by id."""
     job = service.get(job_id)
     return ResearchJobResponse.from_domain(job)
+
+
+@router.get(
+    "/{job_id}/citations",
+    response_model=JobCitationsHttpResponse,
+    responses={
+        404: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+def get_research_job_citations(
+    job_id: str,
+    job_service: Annotated[ResearchJobService, Depends(provide_research_job_service)],
+    report_service: Annotated[
+        ReportArtifactService,
+        Depends(provide_report_artifact_service),
+    ],
+) -> JobCitationsHttpResponse:
+    """Return claim → evidence → document → source citations for a job."""
+    # Ensure the job exists (404) even when no artifact has been written yet.
+    job_service.get(job_id)
+    payload = report_service.get_job_citations(job_id)
+    return JobCitationsHttpResponse.from_domain(payload)

@@ -267,6 +267,7 @@ class ToolInvocationService:
                 output=dict(existing.output_summary_json.get("output") or {}),
                 meta=meta,
                 finding_text=finding,
+                invocation_id=existing.id,
             )
 
     def _execute_once(
@@ -306,6 +307,7 @@ class ToolInvocationService:
                         byte_length=existing.byte_length,
                     ),
                     finding_text=finding,
+                    invocation_id=existing.id,
                 )
 
             if existing is not None and existing.status == "IN_PROGRESS":
@@ -443,7 +445,7 @@ class ToolInvocationService:
                 at=finished,
             ):
                 raise ToolAttemptOwnershipLostError()
-        return result
+        return result.model_copy(update={"invocation_id": invocation_id})
 
     def _build_key(
         self,
