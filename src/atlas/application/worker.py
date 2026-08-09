@@ -40,7 +40,7 @@ class ResearchJobWorker:
       ``shutdown(wait=False)``, but the OS process may still remain alive until
       the thread finishes or the process is force-killed (SIGKILL).
     - Hard termination of arbitrary LLM/tool/graph work requires process
-      isolation later. Milestone 7 does not strengthen this fencing.
+      isolation later. Milestone 8 does not strengthen this fencing.
     """
 
     def __init__(
@@ -50,8 +50,8 @@ class ResearchJobWorker:
         repository: ResearchJobRepository,
         processor: ResearchJobProcessor,
         poll_interval_seconds: float = 1.0,
-        processing_timeout_seconds: float = 15.0,
-        lease_seconds: float = 30.0,
+        processing_timeout_seconds: float = 60.0,
+        lease_seconds: float = 90.0,
         shutdown_grace_seconds: float | None = None,
         shutdown_event: Event | None = None,
     ) -> None:

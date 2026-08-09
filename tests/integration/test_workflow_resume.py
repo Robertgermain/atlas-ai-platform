@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.workflow.graph import (
     build_research_graph,
+    default_fake_runtime_context,
     initial_graph_state,
-    set_node_counters,
 )
 from atlas.workflow.processor import (
     create_checkpoint_runtime,
@@ -29,10 +29,10 @@ def test_interrupt_after_plan_survives_full_runtime_disposal(
     question = "How does Atlas recover?"
     config: RunnableConfig = {"configurable": {"thread_id": job_id}}
     counters: dict[str, int] = {}
+    context = default_fake_runtime_context(node_counters=counters)
 
     runtime_a = create_checkpoint_runtime(test_database_url)
     try:
-        set_node_counters(counters)
         graph_a = build_research_graph(
             checkpointer=runtime_a.checkpointer,
             interrupt_after=["plan"],
@@ -40,10 +40,10 @@ def test_interrupt_after_plan_survives_full_runtime_disposal(
         interrupted = graph_a.invoke(
             initial_graph_state(job_id=job_id, question=question),
             config,
+            context=context,
         )
         snapshot_a = graph_a.get_state(config)
     finally:
-        set_node_counters(None)
         runtime_a.close()
         del graph_a
         del runtime_a
@@ -56,12 +56,10 @@ def test_interrupt_after_plan_survives_full_runtime_disposal(
 
     runtime_b = create_checkpoint_runtime(test_database_url)
     try:
-        set_node_counters(counters)
         graph_b = build_research_graph(checkpointer=runtime_b.checkpointer)
-        completed = graph_b.invoke(None, config)
+        completed = graph_b.invoke(None, config, context=context)
         snapshot_b = graph_b.get_state(config)
     finally:
-        set_node_counters(None)
         runtime_b.close()
 
     assert snapshot_b.next == ()

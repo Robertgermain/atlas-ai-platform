@@ -13,8 +13,8 @@ from atlas.workflow.fakes import (
 )
 from atlas.workflow.graph import (
     build_research_graph,
+    default_fake_runtime_context,
     initial_graph_state,
-    set_node_counters,
 )
 
 
@@ -53,21 +53,20 @@ def test_fakes_are_deterministic() -> None:
 def test_graph_completes_deterministically_with_memory_checkpointer() -> None:
     question = "Explain reliability"
     counters: dict[str, int] = {}
-    set_node_counters(counters)
-    try:
-        graph = build_research_graph(checkpointer=InMemorySaver())
-        config: RunnableConfig = {"configurable": {"thread_id": "unit-job-1"}}
-        first = graph.invoke(
-            initial_graph_state(job_id="unit-job-1", question=question),
-            config,
-        )
-        second_config: RunnableConfig = {"configurable": {"thread_id": "unit-job-2"}}
-        second = graph.invoke(
-            initial_graph_state(job_id="unit-job-1", question=question),
-            second_config,
-        )
-    finally:
-        set_node_counters(None)
+    context = default_fake_runtime_context(node_counters=counters)
+    graph = build_research_graph(checkpointer=InMemorySaver())
+    config: RunnableConfig = {"configurable": {"thread_id": "unit-job-1"}}
+    first = graph.invoke(
+        initial_graph_state(job_id="unit-job-1", question=question),
+        config,
+        context=context,
+    )
+    second_config: RunnableConfig = {"configurable": {"thread_id": "unit-job-2"}}
+    second = graph.invoke(
+        initial_graph_state(job_id="unit-job-1", question=question),
+        second_config,
+        context=context,
+    )
 
     assert first["result"] == second["result"]
     _assert_report_structure(first["result"], question)

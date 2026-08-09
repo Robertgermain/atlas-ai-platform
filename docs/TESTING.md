@@ -50,6 +50,14 @@ When the first vertical slice is chosen, define its acceptance criteria, fixture
 
 - Unit tests cover deterministic fake planner/tool output and end-to-end graph completion with an in-memory checkpointer for pure logic.
 - Node-failure tests cover ordinary exceptions producing FAILED attempt records, class-only sanitized persisted errors (no raw exception text such as `sk-secret-value`), and process-control exceptions (`KeyboardInterrupt`) propagating without fail-audit handling.
-- PostgreSQL resume test uses LangGraph `interrupt_after=["plan"]`, confirms the plan checkpoint, disposes processor/graph/checkpointer/connections, builds fresh B instances, resumes with `graph.invoke(None, config)` for the same `thread_id`, and proves `validate`/`plan` are not executed again.
-- Integration tests cover API→worker→LangGraph→GET completion, report structure (`Question`/`Plan`/`Findings`/`Draft`), per-attempt workflow/node history, abandon of prior `RUNNING` executions on a new attempt, and Alembic head `20260809_0004`.
+- PostgreSQL resume test uses LangGraph `interrupt_after=["plan"]`, confirms the plan checkpoint, disposes processor/graph/checkpointer/connections, builds fresh B instances, resumes with `graph.invoke(None, config, context=...)` for the same `thread_id`, and proves `validate`/`plan` are not executed again.
+- Integration tests cover API→worker→LangGraph→GET completion, report structure (`Question`/`Plan`/`Findings`/`Draft`), per-attempt workflow/node history, abandon of prior `RUNNING` executions on a new attempt, and Alembic head through `20260809_0004` (superseded locally by `20260809_0005` after Milestone 8).
 - Suite isolation truncates Atlas audit tables and LangGraph checkpoint data between tests after one-time `PostgresSaver.setup()` at session start.
+
+## Model-provider testing (Milestone 8)
+
+- Default provider remains `fake`; normal CI makes no live provider network calls.
+- Unit tests cover structured-output contracts, deterministic planner/drafter Protocols, versioned pricing estimates (null for unknown models), Atlas error categories, and mocked OpenAI/Anthropic adapter construction (`use_responses_api=True` for OpenAI) plus structured-invoke success/failure translation.
+- Ledger integration tests cover success + replay without a second provider call, fail-fast `ModelInvocationInProgressError` for concurrent in-flight keys, stale reclaim after attempt deadline expiry with invalid job claim, late superseded-attempt fencing (attempt 1 cannot overwrite attempt 2), failure rows that store Atlas error classes only, and Alembic head `20260809_0005`.
+- Opt-in live tests (`ATLAS_ENABLE_LIVE_MODEL_TESTS=1` plus provider credentials) are skipped by default in normal CI.
+- Local live verification (2026-08-09): both `test_live_openai_structured_plan` and `test_live_anthropic_structured_plan` passed with provider-specific default models and no global `ATLAS_MODEL_NAME` override. Credentials came from a gitignored `.env` only; keys were not recorded in docs, tests, or examples.

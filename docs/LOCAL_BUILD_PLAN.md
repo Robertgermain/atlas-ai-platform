@@ -146,6 +146,8 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Verified locally:** 135 pytest tests green against `atlas_test`, including official `interrupt_after=["plan"]` restart recovery after disposing processor/graph/checkpointer connections and resuming with `graph.invoke(None, config)`, plus safe class-only node-failure persistence.
 
+**Verified remotely:** Merged to `main` via Pull Request #10 (`5a6d19c`).
+
 ---
 
 ## Milestone 8 — Real model-provider adapters
@@ -154,11 +156,13 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Goal:** Add real LLM behavior without coupling Atlas to one provider.
 
-**Build:** OpenAI and/or Anthropic adapters, configuration, prompt/model versioning, timeouts, retry classification, token/latency/cost capture, mocked contract tests, and opt-in live tests.
+**Build:** OpenAI and Anthropic adapters behind LangChain `BaseChatModel`, configuration, prompt/model versioning, timeouts, retry classification, token/latency/cost capture, two-table invocation ledger, mocked contract tests, and opt-in live tests.
 
 **Why now:** The surrounding workflow is already deterministic and verified, allowing provider failures to be isolated.
 
-**Completion gate:** Normal tests use fakes; an opt-in live run succeeds; secrets are protected; model metadata, latency, tokens, and cost are recorded.
+**Completion gate:** Normal tests use fakes; an opt-in live run succeeds; secrets are protected; model metadata, latency, tokens, and cost are recorded. Do not mark Complete until pull-request CI and resulting `main` CI pass.
+
+**Local implementation status:** Local automated gates and opt-in live OpenAI/Anthropic verification passed on `milestone-8-model-providers`. Pull-request CI and resulting `main` CI remain outstanding. Status remains **Current**.
 
 ---
 
