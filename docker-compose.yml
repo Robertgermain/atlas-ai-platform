@@ -6,7 +6,8 @@ services:
       POSTGRES_PASSWORD: atlas
       POSTGRES_DB: atlas
     ports:
-      - "5433:5432"
+      # Localhost-only: do not publish Postgres on all interfaces.
+      - "127.0.0.1:5433:5432"
     volumes:
       - atlas_pg_data:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro

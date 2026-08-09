@@ -16,11 +16,11 @@ The repository already has a working local backend and workflow foundation: Pyth
 
 ## Current milestone
 
-Milestone 9 is Complete through Pull Request #12. Milestone 10 is Current: Slice 10A (approved) adds durable sources/documents/evidence items, job-linked provenance, structured claims/citations, idempotent report artifacts, JSON text/Markdown ingest, and `GET /v1/research-jobs/{id}/citations`. Slice 10B adds pgvector embeddings (`embeddings.v1` / 1536-d), semantic retrieval with provenance, workflow retrieval→citation integration, and offline fake-embedding evaluation (pipeline geometry only). Final Milestone 10 PR CI and resulting `main` CI remain outstanding — do not mark Milestone 10 Complete yet. The comprehensive Visio and AWS design remains deferred.
+Milestone 10 is Complete through Pull Request #13 (`bfabd59`). Milestone 11 is **Current** on restoration branch `restore-milestone-11-specialists`: PR #14 originally merged Milestone 11 (`005ea58`) with green PR/`main` CI; PR #15 reverted it (`e675f43`) due to a workflow/process error, not an identified code defect. This branch restores the reviewed implementation (cherry-pick of `9d4e2f4`). Milestone 11 remains Current until the restoration PR and resulting `main` CI pass. Milestone 12 remains Pending. The comprehensive Visio and AWS design remains deferred.
 
 ### Run locally
 
-Development-only Compose credentials are `atlas` / `atlas` on host port `5433` (see `.env.example` and `docker-compose.yml`). Do not use these values outside local development.
+Development-only Compose credentials are `atlas` / `atlas`. Postgres is published on `127.0.0.1:5433` only (see `.env.example` and `docker-compose.yml`). Do not use these values outside local development.
 
 ```bash
 # 1. Install locked dependencies
