@@ -120,9 +120,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 6 — Background execution and recovery foundation
 
-**Status:** Current
-
-**Note:** Implementation is locally verified on `milestone-6-background-worker`. Keep **Current** until PR CI, merge, and resulting `main` CI pass; then mark Complete.
+**Status:** Complete
 
 **Goal:** Run long-lived work outside the HTTP request.
 
@@ -136,7 +134,9 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 7 — Deterministic LangGraph workflow
 
-**Status:** Pending
+**Status:** Current
+
+**Note:** Milestone 6 is complete on `main` (Pull Request #8). Implementation is paused until the planned Milestones 1–6 architecture and code-ownership walkthrough is completed.
 
 **Goal:** Introduce explicit, checkpointed AI workflow orchestration without live models.
 

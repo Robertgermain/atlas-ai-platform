@@ -2,8 +2,8 @@
 
 - Last updated: 2026-08-09
 - Phase: Local implementation foundation
-- Milestone: Background execution and recovery foundation (Milestone 6)
-- Implementation status: Milestone 6 implemented and locally verified; awaiting PR review, merge, and `main` CI before completion
+- Milestone: Deterministic LangGraph workflow (Milestone 7)
+- Implementation status: Milestone 6 complete on `main`; Milestone 7 is Current but paused until the Milestones 1–6 architecture and code-ownership walkthrough is complete
 
 ## Objective
 
@@ -23,12 +23,12 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
 - `src/atlas` package with FastAPI `GET /health` (liveness) and `GET /ready` (Postgres readiness).
 - Pytest, Ruff (format + lint), and mypy configuration; domain, API, worker, and PostgreSQL integration tests.
-- GitHub Actions CI with Postgres 16 service targeting `atlas_test`, green on `main` through Pull Request #7.
+- GitHub Actions CI with Postgres 16 service targeting `atlas_test`, green on `main` through Pull Request #8.
 - `atlas.domain` package with slotted `ResearchJob`, `reconstitute(...)`, and lifecycle transitions.
 - Docker Compose Postgres 16 on host port `5433` with databases `atlas` and `atlas_test`.
 - SQLAlchemy 2.x + psycopg3 + Alembic persistence for `research_jobs`, including idempotency metadata (`20260808_0002`) and claim lease/token columns (`20260809_0003`).
 - `POST /v1/research-jobs` and `GET /v1/research-jobs/{job_id}` with Pydantic contracts, `ResearchJobService`, required `Idempotency-Key`, and structured API errors (merged via Pull Request #7).
-- Background worker (`python -m atlas.worker`) with PostgreSQL `FOR UPDATE SKIP LOCKED` claiming, claim-token fencing, deterministic processing, orchestration timeout, and bounded shutdown (does not hard-kill processor threads).
+- Background worker (`python -m atlas.worker`) with PostgreSQL `FOR UPDATE SKIP LOCKED` claiming, claim-token fencing, deterministic processing, orchestration timeout, and bounded shutdown (does not hard-kill processor threads), merged via Pull Request #8.
 
 ## What does not exist
 
@@ -36,7 +36,7 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Agents, LangGraph, LLM calls, brokers, Redis, Kafka, pgvector, application/worker Docker images, Kubernetes, Terraform, or AWS resources.
 - Heartbeat lease renewal or hard cancellation of in-flight processor threads.
 - Validated quality, latency, reliability, or cost benchmarks.
-- Milestone 6 remote CI / merge to `main` (local gates only so far).
+- A completed Milestones 1–6 architecture and code-ownership walkthrough (required before Milestone 7 implementation).
 
 ## Decisions
 
@@ -73,6 +73,7 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Worker defaults: poll 1s, processing timeout 5s, lease 30s; no heartbeat renewal.
 - Processing timeout is an orchestration timeout via `Future.result(timeout=...)` on a single-thread executor; late results are ignored permanently and cannot finalize.
 - Shutdown stops new claims and waits at most `shutdown_grace_seconds` (default = processing timeout) before `ThreadPoolExecutor.shutdown(wait=False)`. Milestone 6 does not kill blocked processor threads; a hung non-daemon thread may keep the process alive until the callable returns or the process is force-killed. Hard termination of arbitrary LLM/tool work requires process isolation later.
+- Milestone 7 implementation is paused until a complete Milestones 1–6 architecture and code-ownership walkthrough is finished.
 
 ## Verification (Milestone 1)
 
@@ -165,9 +166,11 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Pull Request #7, `Milestone 5 research job api`, merged into `main` as commit `743f0bb`.
 - Pull request CI passed (green).
 - The resulting `main` push CI passed (green).
-- Milestone 5 completion gate is satisfied; Milestone 5 is **Complete** and Milestone 6 is **Current**.
+- Milestone 5 completion gate is satisfied; Milestone 5 is **Complete**.
 
-## Verification (Milestone 6 — local)
+## Verification (Milestone 6)
+
+### Local
 
 - `uv sync --frozen` → success
 - `uv run ruff format --check .` → success
@@ -177,12 +180,19 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - `git diff --check` → clean
 - Covers concurrent `SKIP LOCKED` claiming, two-job concurrent claims, stale-token fencing after reclaim, API→worker→GET success/failure/timeout, bounded shutdown with a still-blocked processor, and migration head `20260809_0003`.
 
+### Remote (Pull Request #8 and `main`)
+
+- Pull Request #8, `feat: add background worker and job recovery`, merged into `main` as commit `a656cea`.
+- Pull request CI passed (green).
+- The resulting `main` push CI passed (green).
+- Milestone 6 completion gate is satisfied; Milestone 6 is **Complete** and Milestone 7 is **Current** but paused pending the ownership walkthrough.
+
 ## Next steps
 
-1. Review the Milestone 6 diff, then open a PR and confirm CI green.
-2. After merge and resulting `main` CI green, mark Milestone 6 **Complete** and Milestone 7 **Current**.
-3. Do not begin Milestone 7 LangGraph work until that completion gate passes.
+1. Complete an architecture and code-ownership walkthrough covering Milestones 1–6 (foundation, CI, domain, persistence, research-job API, and background worker).
+2. After that walkthrough, begin Milestone 7: deterministic LangGraph workflow.
+3. Do not implement Milestone 7 graph nodes, checkpoints, or fake-model adapters before the walkthrough is done.
 
 ## Active blockers
 
-None.
+None for Milestone 6. Milestone 7 implementation is paused until the Milestones 1–6 ownership walkthrough is completed.
