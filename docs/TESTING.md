@@ -34,3 +34,9 @@ Thresholds will be introduced from measured baselines. A failing required gate b
 ## First testing deliverable
 
 When the first vertical slice is chosen, define its acceptance criteria, fixtures, failure cases, and a minimal golden example before implementing it.
+
+## Research-job API testing (Milestone 5)
+
+- Fast API/contract tests override the application service dependency and cover `202`/`200`/`404`/`409`/`422`, structured validation errors, narrow `OperationalError`→`503`, and non-hiding of unexpected failures.
+- Application service unit tests use an in-memory repository fake implementing the Protocol, including idempotent replay via `ResearchJobIdempotencyRecord`.
+- PostgreSQL integration tests cover durable create/get, idempotent replay/conflict, concurrent duplicate submissions, Alembic head `20260808_0002`, and legacy-row survival from revision `0001` to `0002`.

@@ -44,13 +44,25 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - Local Postgres 16 runs via Docker Compose; host port `5433` maps to container `5432`; databases `atlas` (app) and `atlas_test` (tests).
 - Settings load `ATLAS_DATABASE_URL` through `pydantic-settings`; engines and sessions are created lazily.
 - ORM model `research_jobs` uses `TIMESTAMPTZ` columns and CHECK constraints for status/field combinations as defense in depth.
-- `SqlAlchemyResearchJobRepository` is a concrete repository (`add` / `get` / `save`) with caller-owned `session_scope` transactions.
-- Duplicate primary keys raise `ResearchJobAlreadyExistsError` with the original `IntegrityError` as `__cause__`; unrelated integrity failures are re-raised unchanged. `session_scope` performs rollback when exceptions escape.
+- Nullable `idempotency_key` / `request_fingerprint` columns support API idempotency; a CHECK requires both null or both set; a unique constraint applies to non-null keys (PostgreSQL treats NULLs as distinct).
+- `SqlAlchemyResearchJobRepository` implements the application `ResearchJobRepository` Protocol (`add` with required idempotency metadata, `get`, `get_by_idempotency_key` → `ResearchJobIdempotencyRecord`, `save`) with caller-owned `session_scope` transactions.
+- Duplicate primary keys raise `ResearchJobAlreadyExistsError`; duplicate idempotency keys raise `IdempotencyKeyConflictError`; unrelated integrity failures are re-raised unchanged. `session_scope` performs rollback when exceptions escape.
 - Job ids are capped at 128 characters in the domain (`MAX_RESEARCH_JOB_ID_LENGTH`), matching the persistence column.
 - Status-specific timestamp orderings are enforced in domain reconstitution and mirrored by database CHECK constraints.
 - Integration-test helpers live only under `tests/integration/`; they parse URLs with SQLAlchemy, require `atlas_test` or `*_test`, reset once per suite with AUTOCOMMIT `DROP SCHEMA public CASCADE` / `CREATE SCHEMA public`, run `alembic upgrade head`, and truncate between tests.
 
-These decisions are limited to the verified foundation, CI, domain, and persistence slices. They do not imply job HTTP APIs, agents, messaging, or cloud topology choices.
+### Research-job HTTP API (Milestone 5, locally verified)
+
+- Versioned routes live under `/v1`; `/health` and `/ready` remain unversioned ops endpoints.
+- `POST /v1/research-jobs` accepts a trimmed question (1–8000 chars) and required `Idempotency-Key` (max 128), creates a server-side UUID4 id via `ResearchJobService`, persists a `PENDING` job, and returns `202` with `ResearchJobResponse`.
+- Matching idempotent replay returns the original job with `202`; key reuse with a different canonical payload returns structured `409`.
+- `GET /v1/research-jobs/{job_id}` returns `200` or structured `404`.
+- Request fingerprints hash deterministic canonical JSON of the normalized create request (currently `{"question": ...}` only).
+- Structured `ErrorResponse` covers application errors and `RequestValidationError` (`422`). Only `sqlalchemy.exc.OperationalError` maps to research-job API `503`; other failures are not hidden as unavailable.
+- Idempotency key values are not returned in bodies, error details, or logs.
+- The application service is FastAPI-independent but coordinates SQLAlchemy `sessionmaker`/`session_scope` transactions; no Unit of Work abstraction.
+
+These decisions cover the verified foundation through the locally validated research-job API slice. They do not imply background workers, agents, messaging, or cloud topology choices.
 
 ## Why the full diagram comes later
 

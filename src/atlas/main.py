@@ -8,9 +8,14 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
+from atlas.api.errors import register_exception_handlers
+from atlas.api.v1.router import api_v1_router
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Atlas AI Platform", version="0.1.0")
+register_exception_handlers(app)
+app.include_router(api_v1_router)
 
 
 @app.get("/health")
