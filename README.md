@@ -2,7 +2,7 @@
 
 Atlas is an in-progress production-oriented multi-agent deep-research platform and a hands-on AI/backend/cloud engineering portfolio project.
 
-The repository already has a working local backend and workflow foundation: Python 3.12 / FastAPI (`GET /health`, `GET /ready`, research-job APIs), PostgreSQL persistence, a background worker, a LangGraph research workflow, and Milestone 8 model-provider adapters (default `fake`, optional OpenAI/Anthropic). Work continues through small, tested vertical slices so every folder and file has a clear purpose.
+The repository already has a working local backend and workflow foundation: Python 3.12 / FastAPI (`GET /health`, `GET /ready`, research-job APIs), PostgreSQL persistence, a background worker, a LangGraph research workflow, Milestone 8 model-provider adapters (default `fake`, optional OpenAI/Anthropic), and Milestone 9 governed research tools with an optional FastMCP stdio boundary. Work continues through small, tested vertical slices so every folder and file has a clear purpose.
 
 ## Read in this order
 
@@ -16,7 +16,7 @@ The repository already has a working local backend and workflow foundation: Pyth
 
 ## Current milestone
 
-Milestone 8 adds real model-provider adapters (OpenAI and Anthropic) behind LangChain `BaseChatModel`, with a durable invocation ledger and `fake` as the default provider. Plan and draft are model-backed; validate, research, and complete remain deterministic. Local automated gates and opt-in live OpenAI/Anthropic verification have passed. Do not mark Milestone 8 Complete until pull-request CI and resulting `main` CI pass. The comprehensive Visio and AWS design remains deferred.
+Milestone 9 adds governed research tools (typed contracts, registry/permissions, deterministic fake search/fetch, optional Tavily search via streaming `httpx`), a two-table tool invocation ledger, research-node budgets, `[untrusted_source]` labeling on findings, and a real FastMCP stdio server (`python -m atlas.mcp`). Live arbitrary-URL fetch remains unavailable (fail-closed); HTML extraction and request-scoped SSRF-safe live fetching are deferred. LangGraph uses `WorkflowRuntimeContext` and does not route through MCP. Milestone 8 is Complete through Pull Request #11. Local automated gates for Milestone 9 have passed. Do not mark Milestone 9 Complete until pull-request CI and resulting `main` CI pass. The comprehensive Visio and AWS design remains deferred.
 
 ### Run locally
 
@@ -37,7 +37,12 @@ uv run alembic upgrade head
 uv run uvicorn atlas.main:app --reload
 
 # 5. Start the worker (terminal 2)
-# Default ATLAS_MODEL_PROVIDER=fake (no live LLM calls).
-# For real providers: set ATLAS_MODEL_PROVIDER=openai|anthropic and the matching API key.
+# Default ATLAS_MODEL_PROVIDER=fake and ATLAS_TOOL_PROVIDER=fake (no live network).
+# For real models: set ATLAS_MODEL_PROVIDER=openai|anthropic and the matching API key.
+# For live search: set ATLAS_TOOL_PROVIDER=tavily and ATLAS_TAVILY_API_KEY.
+# Live fetch is unavailable in Milestone 9 (ATLAS_TOOL_FETCH_ENABLED=true fails closed).
 uv run python -m atlas.worker
+
+# Optional: FastMCP stdio server for the same governed tools
+# uv run python -m atlas.mcp
 ```

@@ -1,4 +1,4 @@
-"""Typed LangGraph research workflow with model runtime context."""
+"""Typed LangGraph research workflow with workflow runtime context."""
 
 from __future__ import annotations
 
@@ -16,7 +16,15 @@ from atlas.models.fakes import (
     DeterministicResearchPlanner,
 )
 from atlas.models.ports import ResearchDrafter, ResearchPlanner
-from atlas.workflow.fakes import format_research_report, run_fake_research
+from atlas.tools.composition import build_fake_registry, build_tool_budgets
+from atlas.tools.contracts import ToolId
+from atlas.tools.registry import default_permission_policy
+from atlas.tools.runner import (
+    ResearchPlanExecutor,
+    SimpleResearchExecutor,
+    default_tool_call_context,
+)
+from atlas.workflow.fakes import format_research_report
 
 NODE_NAMES: tuple[str, ...] = (
     "validate",
@@ -55,19 +63,25 @@ class NodeAuditHooks:
 
 
 @dataclass(frozen=True, slots=True)
-class ModelRuntimeContext:
-    """LangGraph runtime context for model-backed plan/draft nodes.
+class WorkflowRuntimeContext:
+    """LangGraph runtime context for model- and tool-backed nodes.
 
     Passed via ``graph.invoke(..., context=...)`` and read through
-    ``Runtime[ModelRuntimeContext]``. Not stored in checkpoints.
+    ``Runtime[WorkflowRuntimeContext]``. Not stored in checkpoints.
     """
 
     planner: ResearchPlanner
     drafter: ResearchDrafter
+    research_executor: ResearchPlanExecutor
     plan_prompt_version: str
     draft_prompt_version: str
+    workflow_execution_id: str | None = None
     hooks: NodeAuditHooks | None = None
     node_counters: dict[str, int] | None = None
+
+
+# Backward-compatible alias during Milestone 9 rename.
+ModelRuntimeContext = WorkflowRuntimeContext
 
 
 def default_fake_runtime_context(
@@ -76,13 +90,33 @@ def default_fake_runtime_context(
     node_counters: dict[str, int] | None = None,
     plan_prompt_version: str = "plan.v1",
     draft_prompt_version: str = "draft.v1",
-) -> ModelRuntimeContext:
-    """Build a deterministic fake planner/drafter runtime context."""
-    return ModelRuntimeContext(
+    fetch_enabled: bool = False,
+    workflow_execution_id: str | None = None,
+) -> WorkflowRuntimeContext:
+    """Build a deterministic fake planner/drafter/tools runtime context."""
+    from atlas.config.settings import Settings
+
+    settings = Settings(
+        tool_provider="fake",
+        tool_fetch_enabled=fetch_enabled,
+    )
+    registry = build_fake_registry()
+    budgets = build_tool_budgets(settings)
+    policy = default_permission_policy()
+    executor = SimpleResearchExecutor(
+        search_tool=registry.get(ToolId.WEB_SEARCH),
+        fetch_tool=registry.get(ToolId.FETCH_URL),
+        fetch_enabled=fetch_enabled,
+        budgets=budgets,
+        policy_assert=policy.assert_allowed,
+    )
+    return WorkflowRuntimeContext(
         planner=DeterministicResearchPlanner(),
         drafter=DeterministicResearchDrafter(),
+        research_executor=executor,
         plan_prompt_version=plan_prompt_version,
         draft_prompt_version=draft_prompt_version,
+        workflow_execution_id=workflow_execution_id,
         hooks=hooks,
         node_counters=node_counters,
     )
@@ -113,7 +147,7 @@ def validate_node(state: ResearchGraphState) -> dict[str, Any]:
 
 def plan_node(
     state: ResearchGraphState,
-    runtime: Runtime[ModelRuntimeContext],
+    runtime: Runtime[WorkflowRuntimeContext],
 ) -> dict[str, Any]:
     """Produce a bounded research plan through the planner port."""
     result = runtime.context.planner.plan(
@@ -126,17 +160,33 @@ def plan_node(
     return {"plan": list(result.tasks)}
 
 
-def research_node(state: ResearchGraphState) -> dict[str, Any]:
-    """Run the fake research tool for each plan task."""
+def research_node(
+    state: ResearchGraphState,
+    runtime: Runtime[WorkflowRuntimeContext],
+    *,
+    workflow_node_attempt: int | None = None,
+) -> dict[str, Any]:
+    """Run governed research tools for each plan task."""
     plan = state["plan"]
     if len(plan) != 3:
         raise ValueError("plan must contain exactly three tasks")
-    return {"findings": [run_fake_research(task) for task in plan]}
+    context = default_tool_call_context(
+        research_job_id=state["job_id"],
+        workflow_execution_id=runtime.context.workflow_execution_id,
+        workflow_node_attempt=workflow_node_attempt,
+    )
+    findings = runtime.context.research_executor.research(
+        plan=plan,
+        context=context,
+    )
+    if len(findings) != 3:
+        raise ValueError("research must produce exactly three findings")
+    return {"findings": findings}
 
 
 def draft_node(
     state: ResearchGraphState,
-    runtime: Runtime[ModelRuntimeContext],
+    runtime: Runtime[WorkflowRuntimeContext],
 ) -> dict[str, Any]:
     """Draft an intermediate report through the drafter port."""
     plan = state["plan"]
@@ -176,10 +226,10 @@ NodeFn = Callable[..., Mapping[str, Any]]
 def _wrap_node(
     node_name: str,
     node_fn: NodeFn,
-) -> Callable[[ResearchGraphState, Runtime[ModelRuntimeContext]], dict[str, Any]]:
+) -> Callable[[ResearchGraphState, Runtime[WorkflowRuntimeContext]], dict[str, Any]]:
     def wrapped(
         state: ResearchGraphState,
-        runtime: Runtime[ModelRuntimeContext],
+        runtime: Runtime[WorkflowRuntimeContext],
     ) -> dict[str, Any]:
         counters = runtime.context.node_counters
         if counters is not None:
@@ -190,7 +240,10 @@ def _wrap_node(
         if hooks is not None:
             attempt = hooks.begin(node_name)
         try:
-            result = dict(node_fn(state, runtime))
+            if node_name == "research":
+                result = dict(node_fn(state, runtime, workflow_node_attempt=attempt))
+            else:
+                result = dict(node_fn(state, runtime))
         except Exception as exc:
             if hooks is not None and attempt is not None:
                 hooks.fail(node_name, attempt, exc)
@@ -204,10 +257,10 @@ def _wrap_node(
 
 def _as_runtime_node(
     node_fn: Callable[[ResearchGraphState], Mapping[str, Any]],
-) -> Callable[[ResearchGraphState, Runtime[ModelRuntimeContext]], Mapping[str, Any]]:
+) -> Callable[[ResearchGraphState, Runtime[WorkflowRuntimeContext]], Mapping[str, Any]]:
     def adapted(
         state: ResearchGraphState,
-        runtime: Runtime[ModelRuntimeContext],
+        runtime: Runtime[WorkflowRuntimeContext],
     ) -> Mapping[str, Any]:
         del runtime
         return node_fn(state)
@@ -221,14 +274,14 @@ def build_research_graph(
     interrupt_after: Sequence[str] | None = None,
 ) -> CompiledStateGraph[
     ResearchGraphState,
-    ModelRuntimeContext,
+    WorkflowRuntimeContext,
     ResearchGraphState,
     ResearchGraphState,
 ]:
     """Compile the five-node research graph with the given checkpointer."""
-    graph: StateGraph[ResearchGraphState, ModelRuntimeContext] = StateGraph(
+    graph: StateGraph[ResearchGraphState, WorkflowRuntimeContext] = StateGraph(
         ResearchGraphState,
-        context_schema=ModelRuntimeContext,
+        context_schema=WorkflowRuntimeContext,
     )
     # LangGraph NodeCallable typing rejects our wrapped callables without cast.
     graph.add_node(
@@ -236,10 +289,7 @@ def build_research_graph(
         cast(Any, _wrap_node("validate", _as_runtime_node(validate_node))),
     )
     graph.add_node("plan", cast(Any, _wrap_node("plan", plan_node)))
-    graph.add_node(
-        "research",
-        cast(Any, _wrap_node("research", _as_runtime_node(research_node))),
-    )
+    graph.add_node("research", cast(Any, _wrap_node("research", research_node)))
     graph.add_node("draft", cast(Any, _wrap_node("draft", draft_node)))
     graph.add_node(
         "complete",

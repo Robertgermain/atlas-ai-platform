@@ -152,7 +152,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 8 — Real model-provider adapters
 
-**Status:** Current
+**Status:** Complete
 
 **Goal:** Add real LLM behavior without coupling Atlas to one provider.
 
@@ -162,13 +162,13 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Completion gate:** Normal tests use fakes; an opt-in live run succeeds; secrets are protected; model metadata, latency, tokens, and cost are recorded. Do not mark Complete until pull-request CI and resulting `main` CI pass.
 
-**Local implementation status:** Local automated gates and opt-in live OpenAI/Anthropic verification passed on `milestone-8-model-providers`. Pull-request CI and resulting `main` CI remain outstanding. Status remains **Current**.
+**Local implementation status:** Complete through Pull Request #11. Local automated gates and opt-in live OpenAI/Anthropic verification passed; PR CI and resulting `main` CI succeeded.
 
 ---
 
 ## Milestone 9 — Governed research tools and MCP
 
-**Status:** Pending
+**Status:** Current
 
 **Goal:** Give agents controlled access to research capabilities.
 
@@ -176,7 +176,9 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Why now:** MCP should expose or consume real tools, not exist as an empty protocol layer.
 
-**Completion gate:** Only approved tools execute, inputs/outputs validate, calls are attributable to workflow nodes, and failures are controlled.
+**Completion gate:** Only approved tools execute, inputs/outputs validate, calls are attributable to workflow nodes, and failures are controlled. Do not mark Complete until pull-request CI and resulting `main` CI pass.
+
+**Local implementation status:** Implemented on `milestone-9-governed-tools` with local automated gates passing. Pull-request CI and resulting `main` CI remain outstanding before Complete.
 
 ---
 

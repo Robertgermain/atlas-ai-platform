@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.api.deps import provide_session_factory
@@ -97,6 +97,29 @@ def test_api_create_then_langgraph_worker_completes(
             }
             assert all(node.attempt == 1 for node in nodes)
             assert all(node.status == "COMPLETED" for node in nodes)
+
+            research_node = next(n for n in nodes if n.node_name == "research")
+            tool_attempts = (
+                session.execute(
+                    text(
+                        """
+                    SELECT workflow_node_attempt, node_name, origin
+                    FROM tool_invocations
+                    WHERE research_job_id = :job_id
+                    """
+                    ),
+                    {"job_id": job_id},
+                )
+                .mappings()
+                .all()
+            )
+            assert tool_attempts
+            assert all(row["origin"] == "WORKFLOW" for row in tool_attempts)
+            assert all(row["node_name"] == "research" for row in tool_attempts)
+            assert all(
+                row["workflow_node_attempt"] == research_node.attempt
+                for row in tool_attempts
+            )
     finally:
         worker.close()
         runtime.close()

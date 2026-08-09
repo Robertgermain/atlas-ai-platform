@@ -16,9 +16,10 @@ from atlas.config.settings import Settings, get_settings
 from atlas.models.composition import build_planner_and_drafter
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.workflow import SqlAlchemyWorkflowRepository
+from atlas.tools.composition import build_research_executor
 from atlas.workflow.graph import (
-    ModelRuntimeContext,
     NodeAuditHooks,
+    WorkflowRuntimeContext,
     build_research_graph,
     default_fake_runtime_context,
     initial_graph_state,
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
 
     from atlas.models.ports import ResearchDrafter, ResearchPlanner
+    from atlas.tools.runner import ResearchPlanExecutor
     from atlas.workflow.graph import ResearchGraphState
 
 
@@ -139,6 +141,7 @@ class LangGraphResearchProcessor:
 
     Does not finalize ResearchJob rows; the worker retains job lifecycle ownership.
     Plan and draft use ResearchPlanner/ResearchDrafter ports from runtime context.
+    Research uses governed ResearchPlanExecutor tools from runtime context.
     """
 
     def __init__(
@@ -152,6 +155,7 @@ class LangGraphResearchProcessor:
         node_counters: dict[str, int] | None = None,
         planner: ResearchPlanner | None = None,
         drafter: ResearchDrafter | None = None,
+        research_executor: ResearchPlanExecutor | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings or get_settings()
@@ -159,9 +163,10 @@ class LangGraphResearchProcessor:
         self._node_counters = node_counters
         self._planner_override = planner
         self._drafter_override = drafter
+        self._research_executor_override = research_executor
         self._graph: CompiledStateGraph[
             ResearchGraphState,
-            ModelRuntimeContext,
+            WorkflowRuntimeContext,
             ResearchGraphState,
             ResearchGraphState,
         ] = build_research_graph(
@@ -225,33 +230,56 @@ class LangGraphResearchProcessor:
         *,
         workflow_execution_id: str,
         hooks: NodeAuditHooks | None,
-    ) -> ModelRuntimeContext:
+    ) -> WorkflowRuntimeContext:
+        research_executor = self._research_executor_override or build_research_executor(
+            self._settings,
+            session_factory=self._session_factory,
+            use_ledger=True,
+        )
+
         if self._planner_override is not None and self._drafter_override is not None:
-            return ModelRuntimeContext(
+            return WorkflowRuntimeContext(
                 planner=self._planner_override,
                 drafter=self._drafter_override,
+                research_executor=research_executor,
                 plan_prompt_version=self._settings.plan_prompt_version,
                 draft_prompt_version=self._settings.draft_prompt_version,
+                workflow_execution_id=workflow_execution_id,
                 hooks=hooks,
                 node_counters=self._node_counters,
             )
         if self._settings.model_provider == "fake":
-            return default_fake_runtime_context(
+            ctx = default_fake_runtime_context(
                 hooks=hooks,
                 node_counters=self._node_counters,
                 plan_prompt_version=self._settings.plan_prompt_version,
                 draft_prompt_version=self._settings.draft_prompt_version,
+                fetch_enabled=self._settings.tool_fetch_enabled,
+                workflow_execution_id=workflow_execution_id,
+            )
+            # Prefer ledger-backed tools under the worker when available.
+            return WorkflowRuntimeContext(
+                planner=ctx.planner,
+                drafter=ctx.drafter,
+                research_executor=research_executor,
+                plan_prompt_version=ctx.plan_prompt_version,
+                draft_prompt_version=ctx.draft_prompt_version,
+                workflow_execution_id=workflow_execution_id,
+                hooks=hooks,
+                node_counters=self._node_counters,
             )
         planner, drafter = build_planner_and_drafter(
             self._settings,
             session_factory=self._session_factory,
             workflow_execution_id=workflow_execution_id,
         )
-        return ModelRuntimeContext(
+        return WorkflowRuntimeContext(
             planner=planner,
             drafter=drafter,
+            research_executor=research_executor,
             plan_prompt_version=self._settings.plan_prompt_version,
             draft_prompt_version=self._settings.draft_prompt_version,
+            workflow_execution_id=workflow_execution_id,
             hooks=hooks,
             node_counters=self._node_counters,
         )
@@ -262,7 +290,7 @@ class LangGraphResearchProcessor:
         question: str,
         job_id: str,
         config: RunnableConfig,
-        context: ModelRuntimeContext,
+        context: WorkflowRuntimeContext,
     ) -> str:
         snapshot = self._graph.get_state(config)
         if snapshot.values and snapshot.next:
