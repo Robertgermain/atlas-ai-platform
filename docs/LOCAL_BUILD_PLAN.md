@@ -103,7 +103,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Status:** Current
 
-**Note:** Implementation is paused until the planned Milestones 1–4 application ownership walkthrough is completed.
+**Note:** Milestones 1–4 ownership walkthrough is complete. Produce and review the Milestone 5 implementation proposal before coding.
 
 **Goal:** Deliver the first durable product workflow.
 
