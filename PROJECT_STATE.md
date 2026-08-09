@@ -2,8 +2,8 @@
 
 - Last updated: 2026-08-08
 - Phase: Local implementation foundation
-- Milestone: PostgreSQL persistence (Milestone 4)
-- Implementation status: Milestone 4 committed as `cedaec6` and pushed to `origin/milestone-4-postgres`; awaiting pull-request validation and merge
+- Milestone: Database-backed research-job API (Milestone 5)
+- Implementation status: Milestone 4 complete on `main`; Milestone 5 is Current but paused until the Milestones 1–4 ownership walkthrough is completed
 
 ## Objective
 
@@ -23,16 +23,16 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
 - `src/atlas` package with FastAPI `GET /health` (liveness) and `GET /ready` (Postgres readiness).
 - Pytest, Ruff (format + lint), and mypy configuration; domain, readiness, guard, and PostgreSQL integration tests.
-- GitHub Actions CI with Postgres 16 service targeting `atlas_test` (on branch; PR CI not yet run).
+- GitHub Actions CI with Postgres 16 service targeting `atlas_test`, green on `main` through Pull Request #5.
 - `atlas.domain` package with slotted `ResearchJob`, `reconstitute(...)`, and lifecycle transitions.
 - Docker Compose Postgres 16 on host port `5433` with databases `atlas` and `atlas_test`.
-- SQLAlchemy 2.x + psycopg3 + Alembic persistence for `research_jobs`, concrete `SqlAlchemyResearchJobRepository`, and explicit `session_scope` transactions (committed on `milestone-4-postgres`; not yet merged to `main`).
+- SQLAlchemy 2.x + psycopg3 + Alembic persistence for `research_jobs`, concrete `SqlAlchemyResearchJobRepository`, and explicit `session_scope` transactions, merged via Pull Request #5.
 
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
-- Merged Milestone 4 changes on `main` (committed and pushed on `milestone-4-postgres`; pull request not opened yet).
 - Research-job HTTP API, agents, brokers, Redis, Kafka, pgvector, application Docker image, Kubernetes, Terraform, or AWS resources.
+- A completed Milestones 1–4 application ownership walkthrough (required before Milestone 5 implementation).
 - Validated quality, latency, reliability, or cost benchmarks.
 
 ## Decisions
@@ -58,6 +58,7 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Persistence uses sync SQLAlchemy 2.x and psycopg3; repository is a concrete class (no unused Protocol in Milestone 4).
 - Integration tests guard destructive operations with SQLAlchemy URL parsing (`atlas_test` or `*_test` only), reset once per suite via `DROP SCHEMA public CASCADE` + `CREATE SCHEMA public` (AUTOCOMMIT), then `alembic upgrade head`, and truncate between tests.
 - `/health` is process liveness without DB I/O; `/ready` lazily checks Postgres, maps SQLAlchemy database errors to controlled `503`, and does not hide unexpected programming errors or expose credentials.
+- Milestone 5 implementation is paused until a complete application ownership walkthrough of Milestones 1–4 is finished.
 
 ## Verification (Milestone 1)
 
@@ -126,15 +127,20 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - `uv run mypy src tests` → success (31 source files)
 - `ATLAS_DATABASE_URL=.../atlas_test uv run pytest` → 80 passed
 - Empty test schema migrates to Alembic head; repository persists across sessions; duplicate-key errors preserve `IntegrityError` cause; test-DB guard rejects non-test URLs without SQL.
-- Milestone 4 remains **Current** until PR CI, merge, and the resulting `main` CI succeed; Milestone 5 remains **Pending**.
+
+### Remote (Pull Request #5 and `main`)
+
+- Pull Request #5, `Milestone 4 postgres`, merged into `main`.
+- Pull request CI passed (green).
+- The resulting `main` push CI passed (green).
+- Milestone 4 completion gate is satisfied; Milestone 4 is **Complete** and Milestone 5 is **Current** but paused pending the ownership walkthrough.
 
 ## Next steps
 
-1. Open the Milestone 4 pull request and confirm CI passes (including Postgres integration tests).
-2. Merge the pull request; confirm the resulting `main` push CI is green.
-3. After remote validation, mark Milestone 4 **Complete** and Milestone 5 **Current**.
-4. Do not begin the research-job HTTP API before that.
+1. Complete an application ownership walkthrough covering Milestones 1–4 (foundation, CI, domain model, and PostgreSQL persistence).
+2. After that walkthrough, begin Milestone 5: database-backed research-job HTTP API.
+3. Do not implement Milestone 5 endpoints, schemas, or services before the walkthrough is done.
 
 ## Active blockers
 
-None. Outstanding Milestone 4 completion steps are pull-request CI, merge, and the resulting `main` CI.
+None for Milestone 4. Milestone 5 implementation is paused until the Milestones 1–4 ownership walkthrough is completed.
