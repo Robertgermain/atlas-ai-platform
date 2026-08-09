@@ -76,6 +76,8 @@ def truncate_integration_tables(*, database_url: str, engine: Engine) -> None:
             text(
                 """
                 TRUNCATE TABLE
+                    tool_invocation_attempts,
+                    tool_invocations,
                     model_invocation_attempts,
                     model_invocations,
                     workflow_node_executions,

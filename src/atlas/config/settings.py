@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = Field(default=None)
     anthropic_api_key: SecretStr | None = Field(default=None)
 
+    # Governed research tools (Milestone 9). Defaults keep CI offline.
+    tool_provider: Literal["fake", "tavily"] = Field(default="fake")
+    tool_fetch_enabled: bool = Field(default=False)
+    tool_attempt_timeout_seconds: float = Field(default=8.0, gt=0)
+    research_node_tool_deadline_seconds: float = Field(default=45.0, gt=0)
+    tool_max_logical_calls_per_research_node: int = Field(default=6, ge=1)
+    tool_max_attempts_per_call: int = Field(default=2, ge=1, le=2)
+    tavily_api_key: SecretStr | None = Field(default=None)
+
 
 def get_settings() -> Settings:
     """Return settings from the current environment."""

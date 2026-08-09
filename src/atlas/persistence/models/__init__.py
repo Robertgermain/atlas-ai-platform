@@ -6,6 +6,10 @@ from atlas.persistence.models.model_invocation import (
     ModelInvocationModel,
 )
 from atlas.persistence.models.research_job import ResearchJobModel
+from atlas.persistence.models.tool_invocation import (
+    ToolInvocationAttemptModel,
+    ToolInvocationModel,
+)
 from atlas.persistence.models.workflow import (
     WorkflowExecutionModel,
     WorkflowNodeExecutionModel,
@@ -16,6 +20,8 @@ __all__ = [
     "ModelInvocationAttemptModel",
     "ModelInvocationModel",
     "ResearchJobModel",
+    "ToolInvocationAttemptModel",
+    "ToolInvocationModel",
     "WorkflowExecutionModel",
     "WorkflowNodeExecutionModel",
 ]

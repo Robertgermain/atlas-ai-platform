@@ -7,6 +7,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.19.1",
     "fastapi>=0.116.0",
+    "fastmcp>=2.0",
+    "httpx>=0.28.1",
     "langchain-anthropic>=1.5.4",
     "langchain-core>=1.5.3",
     "langchain-openai>=1.4.2",
