@@ -76,6 +76,18 @@ class _FakeRepository:
         del session, job
         raise NotImplementedError
 
+    def claim_next(self, session: Session, **kwargs: object) -> None:
+        del session, kwargs
+        raise NotImplementedError
+
+    def finalize_completion(self, session: Session, **kwargs: object) -> bool:
+        del session, kwargs
+        raise NotImplementedError
+
+    def finalize_failure(self, session: Session, **kwargs: object) -> bool:
+        del session, kwargs
+        raise NotImplementedError
+
 
 def test_submit_creates_pending_job() -> None:
     repo = _FakeRepository()

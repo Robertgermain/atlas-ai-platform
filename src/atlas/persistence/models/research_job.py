@@ -93,6 +93,22 @@ class ResearchJobModel(Base):
             """,
             name="ck_research_jobs_idempotency_pair",
         ),
+        CheckConstraint(
+            """
+            (
+              lease_expires_at IS NULL
+              AND claim_token IS NULL
+            )
+            OR
+            (
+              lease_expires_at IS NOT NULL
+              AND claim_token IS NOT NULL
+              AND length(trim(claim_token)) > 0
+              AND length(claim_token) = 64
+            )
+            """,
+            name="ck_research_jobs_claim_lease_pair",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
@@ -116,3 +132,8 @@ class ResearchJobModel(Base):
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)

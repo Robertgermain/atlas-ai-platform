@@ -2,8 +2,8 @@
 
 - Last updated: 2026-08-09
 - Phase: Local implementation foundation
-- Milestone: Database-backed research-job API (Milestone 5)
-- Implementation status: Milestone 5 implemented and locally verified; awaiting PR review, merge, and `main` CI before completion
+- Milestone: Background execution and recovery foundation (Milestone 6)
+- Implementation status: Milestone 6 implemented and locally verified; awaiting PR review, merge, and `main` CI before completion
 
 ## Objective
 
@@ -17,26 +17,26 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 
 - A minimal repository baseline and one flat `docs/` folder.
 - `docs/LOCAL_BUILD_PLAN.md` as the ordered local roadmap and milestone checklist.
-- Research, product requirements, testing strategy, and a technical-design document with validated local foundation, CI, domain, and persistence decisions.
+- Research, product requirements, testing strategy, and a technical-design document with validated local foundation through the research-job worker slice.
 - Root instructions for AI assistants and this current-state handoff.
 - Local environment and ignore files; committed `.env.example` (no secrets).
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
 - `src/atlas` package with FastAPI `GET /health` (liveness) and `GET /ready` (Postgres readiness).
-- Pytest, Ruff (format + lint), and mypy configuration; domain, readiness, guard, and PostgreSQL integration tests.
-- GitHub Actions CI with Postgres 16 service targeting `atlas_test`, green on `main` through Pull Request #5.
+- Pytest, Ruff (format + lint), and mypy configuration; domain, API, worker, and PostgreSQL integration tests.
+- GitHub Actions CI with Postgres 16 service targeting `atlas_test`, green on `main` through Pull Request #7.
 - `atlas.domain` package with slotted `ResearchJob`, `reconstitute(...)`, and lifecycle transitions.
 - Docker Compose Postgres 16 on host port `5433` with databases `atlas` and `atlas_test`.
-- SQLAlchemy 2.x + psycopg3 + Alembic persistence for `research_jobs`, concrete `SqlAlchemyResearchJobRepository`, and explicit `session_scope` transactions, merged via Pull Request #5.
-- Completed Milestones 1–4 application ownership walkthrough; Milestone 5 implementation approved and coded on branch `milestone-5-research-job-api`.
-- `POST /v1/research-jobs` and `GET /v1/research-jobs/{job_id}` with Pydantic contracts, `ResearchJobService`, required `Idempotency-Key`, and structured API errors.
-- Alembic revision `20260808_0002` adds nullable idempotency metadata with pair CHECK and unique non-null keys.
+- SQLAlchemy 2.x + psycopg3 + Alembic persistence for `research_jobs`, including idempotency metadata (`20260808_0002`) and claim lease/token columns (`20260809_0003`).
+- `POST /v1/research-jobs` and `GET /v1/research-jobs/{job_id}` with Pydantic contracts, `ResearchJobService`, required `Idempotency-Key`, and structured API errors (merged via Pull Request #7).
+- Background worker (`python -m atlas.worker`) with PostgreSQL `FOR UPDATE SKIP LOCKED` claiming, claim-token fencing, deterministic processing, orchestration timeout, and bounded shutdown (does not hard-kill processor threads).
 
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
-- Background workers, agents, brokers, Redis, Kafka, pgvector, application Docker image, Kubernetes, Terraform, or AWS resources.
+- Agents, LangGraph, LLM calls, brokers, Redis, Kafka, pgvector, application/worker Docker images, Kubernetes, Terraform, or AWS resources.
+- Heartbeat lease renewal or hard cancellation of in-flight processor threads.
 - Validated quality, latency, reliability, or cost benchmarks.
-- Milestone 5 remote CI / merge to `main` (local gates only so far).
+- Milestone 6 remote CI / merge to `main` (local gates only so far).
 
 ## Decisions
 
@@ -58,17 +58,21 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Durable jobs are rebuilt with `ResearchJob.reconstitute(...)`; persistence mapping does not bypass domain validation.
 - Timestamps are timezone-aware, deterministic when supplied, normalized to UTC, and must not move earlier than `updated_at`.
 - PostgreSQL is the authoritative store for research jobs; settings use `pydantic-settings` (`ATLAS_DATABASE_URL`).
-- Persistence uses sync SQLAlchemy 2.x and psycopg3; repository is a concrete class (no unused Protocol in Milestone 4).
+- Persistence uses sync SQLAlchemy 2.x and psycopg3; the repository implements the application `ResearchJobRepository` Protocol.
 - Integration tests guard destructive operations with SQLAlchemy URL parsing (`atlas_test` or `*_test` only), reset once per suite via `DROP SCHEMA public CASCADE` + `CREATE SCHEMA public` (AUTOCOMMIT), then `alembic upgrade head`, and truncate between tests.
 - `/health` is process liveness without DB I/O; `/ready` lazily checks Postgres, maps SQLAlchemy database errors to controlled `503`, and does not hide unexpected programming errors or expose credentials.
-- The Milestones 1–4 application ownership walkthrough is complete.
 - Research-job HTTP create uses server-generated UUID4 ids; the domain still receives caller-supplied ids from the application service.
 - API create requires `Idempotency-Key` (max 128); same key and payload replays with `202`; same key and different payload returns `409`.
 - Idempotency metadata lives on `research_jobs` as nullable `idempotency_key` / `request_fingerprint` with a both-null-or-both-set CHECK; PostgreSQL unique allows multiple NULL keys.
 - Request fingerprints hash a deterministic canonical JSON create representation (currently only normalized `question`).
-- `ResearchJobRepository` Protocol and `ResearchJobIdempotencyRecord` are the application port; idempotency metadata is not on the domain entity or public responses.
+- `ResearchJobRepository` Protocol and `ResearchJobIdempotencyRecord` / `ClaimedResearchJob` are application ports; claim/lease metadata is not on the domain entity or public responses.
 - Research-job API maps only `OperationalError` to structured `503`; validation uses a shared `ErrorResponse` envelope at `422`.
 - Raw idempotency key values are not echoed in API responses, structured error details, or logs.
+- Worker claims use `secrets.token_hex(32)` on every claim/reclaim; fenced finalize requires matching job id, `RUNNING`, and claim token; zero-row updates mean ownership loss.
+- Processing is at-least-once: the claim token fences stale DB finalization but cannot undo duplicate in-process work or future external side effects.
+- Worker defaults: poll 1s, processing timeout 5s, lease 30s; no heartbeat renewal.
+- Processing timeout is an orchestration timeout via `Future.result(timeout=...)` on a single-thread executor; late results are ignored permanently and cannot finalize.
+- Shutdown stops new claims and waits at most `shutdown_grace_seconds` (default = processing timeout) before `ThreadPoolExecutor.shutdown(wait=False)`. Milestone 6 does not kill blocked processor threads; a hung non-daemon thread may keep the process alive until the callable returns or the process is force-killed. Hard termination of arbitrary LLM/tool work requires process isolation later.
 
 ## Verification (Milestone 1)
 
@@ -143,9 +147,11 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Pull Request #5, `Milestone 4 postgres`, merged into `main`.
 - Pull request CI passed (green).
 - The resulting `main` push CI passed (green).
-- Milestone 4 completion gate is satisfied; Milestone 4 is **Complete** and Milestone 5 is **Current**.
+- Milestone 4 completion gate is satisfied.
 
-## Verification (Milestone 5 — local)
+## Verification (Milestone 5)
+
+### Local
 
 - `uv sync --frozen` → success
 - `uv run ruff format --check .` → success
@@ -153,13 +159,29 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - `uv run mypy src tests` → success (46 source files)
 - `ATLAS_DATABASE_URL=.../atlas_test uv run pytest` → 109 passed
 - `git diff --check` → clean
-- Covers create/get API contracts, idempotent replay and conflict, narrow `OperationalError`→503, migration `0001` legacy row → `0002`, and concurrent duplicate submissions.
+
+### Remote (Pull Request #7 and `main`)
+
+- Pull Request #7, `Milestone 5 research job api`, merged into `main` as commit `743f0bb`.
+- Pull request CI passed (green).
+- The resulting `main` push CI passed (green).
+- Milestone 5 completion gate is satisfied; Milestone 5 is **Complete** and Milestone 6 is **Current**.
+
+## Verification (Milestone 6 — local)
+
+- `uv sync --frozen` → success
+- `uv run ruff format --check .` → success
+- `uv run ruff check .` → all checks passed
+- `uv run mypy src tests` → success (54 source files)
+- `ATLAS_DATABASE_URL=.../atlas_test uv run pytest` → 125 passed
+- `git diff --check` → clean
+- Covers concurrent `SKIP LOCKED` claiming, two-job concurrent claims, stale-token fencing after reclaim, API→worker→GET success/failure/timeout, bounded shutdown with a still-blocked processor, and migration head `20260809_0003`.
 
 ## Next steps
 
-1. Review the Milestone 5 diff, then open a PR and confirm CI green.
-2. After merge and resulting `main` CI green, mark Milestone 5 **Complete** and Milestone 6 **Current**.
-3. Do not begin Milestone 6 background-worker work until that completion gate passes.
+1. Review the Milestone 6 diff, then open a PR and confirm CI green.
+2. After merge and resulting `main` CI green, mark Milestone 6 **Complete** and Milestone 7 **Current**.
+3. Do not begin Milestone 7 LangGraph work until that completion gate passes.
 
 ## Active blockers
 
