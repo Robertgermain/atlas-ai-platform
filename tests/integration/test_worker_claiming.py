@@ -250,24 +250,38 @@ def test_concurrent_claims_two_pending_jobs(
 
 
 def test_worker_processes_job_end_to_end(
+    test_database_url: str,
     session_factory: sessionmaker[Session],
 ) -> None:
+    from atlas.workflow import LangGraphResearchProcessor, create_checkpoint_runtime
+
     _seed_pending(session_factory, job_id="worker-e2e", question="End to end")
+    runtime = create_checkpoint_runtime(test_database_url)
     worker = ResearchJobWorker(
         session_factory=session_factory,
         repository=SqlAlchemyResearchJobRepository(),
+        processor=LangGraphResearchProcessor(
+            checkpointer=runtime.checkpointer,
+            session_factory=session_factory,
+        ),
         poll_interval_seconds=0.01,
-        processing_timeout_seconds=5.0,
+        processing_timeout_seconds=15.0,
         lease_seconds=30.0,
     )
     try:
         assert worker.run_once() is True
     finally:
         worker.close()
+        runtime.close()
 
     repo = SqlAlchemyResearchJobRepository()
     with session_scope(session_factory) as session:
         loaded = repo.get(session, "worker-e2e")
     assert loaded is not None
     assert loaded.status is ResearchJobStatus.COMPLETED
-    assert loaded.result == "Research completed for: End to end"
+    assert loaded.result is not None
+    assert "Question:" in loaded.result
+    assert "End to end" in loaded.result
+    assert "Plan:" in loaded.result
+    assert "Findings:" in loaded.result
+    assert "Draft:" in loaded.result

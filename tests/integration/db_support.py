@@ -14,6 +14,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.engine.url import make_url
 
 from atlas.persistence.exceptions import UnsafeTestDatabaseError
+from atlas.workflow import create_checkpoint_runtime, initialize_checkpointer_schema
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -57,8 +58,31 @@ def run_migrations(database_url: str) -> None:
             os.environ["ATLAS_DATABASE_URL"] = previous
 
 
-def truncate_research_jobs(*, database_url: str, engine: Engine) -> None:
-    """Remove all research_jobs rows on a guarded test database."""
+def initialize_langgraph_checkpoint_schema(database_url: str) -> None:
+    """Create LangGraph-owned checkpoint tables once (idempotent setup())."""
+    assert_safe_test_database(database_url)
+    runtime = create_checkpoint_runtime(database_url)
+    try:
+        initialize_checkpointer_schema(runtime)
+    finally:
+        runtime.close()
+
+
+def truncate_integration_tables(*, database_url: str, engine: Engine) -> None:
+    """Clear Atlas job/audit rows and LangGraph checkpoint data between tests."""
     assert_safe_test_database(database_url)
     with engine.begin() as connection:
-        connection.execute(text("TRUNCATE TABLE research_jobs"))
+        connection.execute(
+            text(
+                """
+                TRUNCATE TABLE
+                    workflow_node_executions,
+                    workflow_executions,
+                    research_jobs,
+                    checkpoint_writes,
+                    checkpoint_blobs,
+                    checkpoints
+                RESTART IDENTITY CASCADE
+                """
+            )
+        )

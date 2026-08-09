@@ -134,23 +134,23 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 7 — Deterministic LangGraph workflow
 
-**Status:** Current
-
-**Note:** Milestone 6 is complete on `main` (Pull Request #8). Implementation is paused until the planned Milestones 1–6 architecture and code-ownership walkthrough is completed.
+**Status:** Complete
 
 **Goal:** Introduce explicit, checkpointed AI workflow orchestration without live models.
 
-**Build:** Typed graph state; validate, plan, fake-research, draft, and complete nodes; checkpoints; workflow/node execution records; deterministic fake model and tool.
+**Build:** Typed graph state; validate, plan, fake-research, draft, and complete nodes; Postgres checkpoints; workflow/node execution records; deterministic fake model and tool.
 
 **Why fake AI first:** Workflow correctness and recovery must be testable without API keys, model variability, network failures, or cost.
 
 **Completion gate:** The graph executes deterministically, persists progress, resumes after interruption, and maps failures to controlled job state.
 
+**Verified locally:** 135 pytest tests green against `atlas_test`, including official `interrupt_after=["plan"]` restart recovery after disposing processor/graph/checkpointer connections and resuming with `graph.invoke(None, config)`, plus safe class-only node-failure persistence.
+
 ---
 
 ## Milestone 8 — Real model-provider adapters
 
-**Status:** Pending
+**Status:** Current
 
 **Goal:** Add real LLM behavior without coupling Atlas to one provider.
 

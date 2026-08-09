@@ -18,7 +18,7 @@ class Settings(BaseSettings):
         default="postgresql+psycopg://atlas:atlas@127.0.0.1:5433/atlas",
     )
     worker_poll_interval_seconds: float = Field(default=1.0, gt=0)
-    worker_processing_timeout_seconds: float = Field(default=5.0, gt=0)
+    worker_processing_timeout_seconds: float = Field(default=15.0, gt=0)
     worker_lease_seconds: float = Field(default=30.0, gt=0)
 
 

@@ -11,9 +11,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from tests.integration.db_support import (
     assert_safe_test_database,
+    initialize_langgraph_checkpoint_schema,
     reset_schema_to_empty,
     run_migrations,
-    truncate_research_jobs,
+    truncate_integration_tables,
 )
 
 DEFAULT_TEST_DATABASE_URL = "postgresql+psycopg://atlas:atlas@127.0.0.1:5433/atlas_test"
@@ -31,6 +32,7 @@ def engine(test_database_url: str) -> Iterator[Engine]:
     try:
         reset_schema_to_empty(database_url=test_database_url, engine=engine)
         run_migrations(test_database_url)
+        initialize_langgraph_checkpoint_schema(test_database_url)
         yield engine
     finally:
         engine.dispose()
@@ -47,6 +49,9 @@ def session_factory(engine: Engine) -> sessionmaker[Session]:
 
 
 @pytest.fixture(autouse=True)
-def cleanup_research_jobs(test_database_url: str, engine: Engine) -> Iterator[None]:
+def cleanup_integration_tables(
+    test_database_url: str,
+    engine: Engine,
+) -> Iterator[None]:
     yield
-    truncate_research_jobs(database_url=test_database_url, engine=engine)
+    truncate_integration_tables(database_url=test_database_url, engine=engine)

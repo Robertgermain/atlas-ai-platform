@@ -7,13 +7,11 @@ import secrets
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from threading import Event
 from typing import TYPE_CHECKING
 
-from atlas.application.job_processing import (
-    ResearchJobProcessor,
-    process_research_question,
-)
+from atlas.application.job_processing import ResearchJobProcessor
 from atlas.application.ports import ClaimedResearchJob, ResearchJobRepository
 from atlas.persistence.db import session_scope
 
@@ -28,7 +26,7 @@ PROCESSING_TIMEOUT_REASON = "Processing timed out."
 class ResearchJobWorker:
     """Claim, process, and fenced-finalize research jobs.
 
-    Shutdown guarantee (Milestone 6):
+    Shutdown guarantee (Milestone 6/7):
     - After ``request_shutdown`` / ``close``, the worker claims no new jobs.
     - Orchestration waits at most ``shutdown_grace_seconds`` for an in-flight or
       abandoned processor future, then returns without blocking forever.
@@ -41,8 +39,8 @@ class ResearchJobWorker:
       returns, ``close()`` abandons the wait after the grace period using
       ``shutdown(wait=False)``, but the OS process may still remain alive until
       the thread finishes or the process is force-killed (SIGKILL).
-    - Hard termination of arbitrary LLM/tool work requires process isolation or
-      an external worker system; Milestone 6 does not provide that.
+    - Hard termination of arbitrary LLM/tool/graph work requires process
+      isolation later. Milestone 7 does not strengthen this fencing.
     """
 
     def __init__(
@@ -50,9 +48,9 @@ class ResearchJobWorker:
         *,
         session_factory: sessionmaker[Session],
         repository: ResearchJobRepository,
-        processor: ResearchJobProcessor = process_research_question,
+        processor: ResearchJobProcessor,
         poll_interval_seconds: float = 1.0,
-        processing_timeout_seconds: float = 5.0,
+        processing_timeout_seconds: float = 15.0,
         lease_seconds: float = 30.0,
         shutdown_grace_seconds: float | None = None,
         shutdown_event: Event | None = None,
@@ -88,7 +86,7 @@ class ResearchJobWorker:
         self._shutdown_event.set()
 
     def close(self) -> None:
-        """Apply the bounded Milestone 6 shutdown policy.
+        """Apply the bounded shutdown policy.
 
         Stops new claims, waits at most ``shutdown_grace_seconds`` for processor
         work, then returns. Does not kill threads and does not guarantee process
@@ -152,7 +150,13 @@ class ResearchJobWorker:
             )
 
     def _process_claimed(self, claimed: ClaimedResearchJob) -> None:
-        future = self._executor.submit(self._processor, claimed.job.question)
+        future = self._executor.submit(
+            partial(
+                self._processor,
+                claimed.job.question,
+                job_id=claimed.job.id,
+            )
+        )
         self._inflight_future = future
         try:
             result = future.result(timeout=self._processing_timeout_seconds)
@@ -225,7 +229,7 @@ class ResearchJobWorker:
                 "abandoning wait without killing the thread. Claim fencing "
                 "prevents stale finalization. The process may remain alive "
                 "until the thread finishes or is force-killed. Hard "
-                "termination of arbitrary LLM/tool work requires process "
+                "termination of arbitrary LLM/tool/graph work requires process "
                 "isolation or an external worker system.",
                 timeout,
             )
