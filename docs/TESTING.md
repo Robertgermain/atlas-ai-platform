@@ -43,5 +43,13 @@ When the first vertical slice is chosen, define its acceptance criteria, fixture
 
 ## Background worker testing (Milestone 6)
 
-- Unit tests cover deterministic processing, ordinary processor exceptions (safe failure reason, no secret leakage), orchestration timeout with late results ignored, bounded `close()` while a processor remains blocked, shutdown preventing new claims, and in-flight shutdown within grace.
-- PostgreSQL integration tests cover concurrent `FOR UPDATE SKIP LOCKED` exclusivity (lock held across sessions), concurrent claims of two pending jobs, stale-token fencing after reclaim, API→worker→GET for success/failure/timeout, reclaim-then-stale-finalize rejection, and Alembic head `20260809_0003`.
+- Unit tests cover ordinary processor exceptions (safe failure reason, no secret leakage), orchestration timeout with late results ignored, bounded `close()` while a processor remains blocked, shutdown preventing new claims, and in-flight shutdown within grace.
+- PostgreSQL integration tests cover concurrent `FOR UPDATE SKIP LOCKED` exclusivity (lock held across sessions), concurrent claims of two pending jobs, stale-token fencing after reclaim, API→worker→GET for success/failure/timeout, reclaim-then-stale-finalize rejection, and Alembic head through claim-lease migration `20260809_0003` (superseded locally by `20260809_0004` after Milestone 7).
+
+## Deterministic LangGraph workflow testing (Milestone 7)
+
+- Unit tests cover deterministic fake planner/tool output and end-to-end graph completion with an in-memory checkpointer for pure logic.
+- Node-failure tests cover ordinary exceptions producing FAILED attempt records, class-only sanitized persisted errors (no raw exception text such as `sk-secret-value`), and process-control exceptions (`KeyboardInterrupt`) propagating without fail-audit handling.
+- PostgreSQL resume test uses LangGraph `interrupt_after=["plan"]`, confirms the plan checkpoint, disposes processor/graph/checkpointer/connections, builds fresh B instances, resumes with `graph.invoke(None, config)` for the same `thread_id`, and proves `validate`/`plan` are not executed again.
+- Integration tests cover API→worker→LangGraph→GET completion, report structure (`Question`/`Plan`/`Findings`/`Draft`), per-attempt workflow/node history, abandon of prior `RUNNING` executions on a new attempt, and Alembic head `20260809_0004`.
+- Suite isolation truncates Atlas audit tables and LangGraph checkpoint data between tests after one-time `PostgresSaver.setup()` at session start.

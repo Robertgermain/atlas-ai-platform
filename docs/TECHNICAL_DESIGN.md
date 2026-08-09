@@ -15,7 +15,7 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - `GET /ready` lazily checks PostgreSQL connectivity; SQLAlchemy database errors return `503 {"status":"not_ready"}` without exposing credentials, while unexpected programming errors propagate.
 - Quality gates are Ruff format, Ruff lint, mypy (strict, `src` and `tests`), and Pytest.
 - Ruff owns formatting and import sorting; black and isort are not dependencies.
-- Runtime dependencies (FastAPI, Uvicorn, SQLAlchemy, psycopg, Alembic, pydantic-settings) are separated from development dependencies (Pytest, httpx2, Ruff, mypy).
+- Runtime dependencies (FastAPI, Uvicorn, SQLAlchemy, psycopg, Alembic, pydantic-settings, langgraph, langgraph-checkpoint-postgres) are separated from development dependencies (Pytest, httpx2, Ruff, mypy).
 
 ### Continuous integration
 
@@ -49,7 +49,7 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - Duplicate primary keys raise `ResearchJobAlreadyExistsError`; duplicate idempotency keys raise `IdempotencyKeyConflictError`; unrelated integrity failures are re-raised unchanged. `session_scope` performs rollback when exceptions escape.
 - Job ids are capped at 128 characters in the domain (`MAX_RESEARCH_JOB_ID_LENGTH`), matching the persistence column.
 - Status-specific timestamp orderings are enforced in domain reconstitution and mirrored by database CHECK constraints.
-- Integration-test helpers live only under `tests/integration/`; they parse URLs with SQLAlchemy, require `atlas_test` or `*_test`, reset once per suite with AUTOCOMMIT `DROP SCHEMA public CASCADE` / `CREATE SCHEMA public`, run `alembic upgrade head`, and truncate between tests.
+- Integration-test helpers live only under `tests/integration/`; they parse URLs with SQLAlchemy, require `atlas_test` or `*_test`, reset once per suite with AUTOCOMMIT `DROP SCHEMA public CASCADE` / `CREATE SCHEMA public`, run `alembic upgrade head`, initialize LangGraph checkpoint tables via `PostgresSaver.setup()`, and truncate Atlas job/audit rows plus checkpoint data between tests.
 
 ### Research-job HTTP API
 
@@ -70,14 +70,26 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - `ClaimedResearchJob` carries the domain job plus claim token; lease/token columns are not on the domain entity or public API schemas.
 - Domain `start()` / `complete()` / `fail()` remain authoritative; repository claim/finalize applies those transitions then persists.
 - Fenced finalize requires matching job id, `RUNNING` status, and claim token in one transaction; clears token/lease atomically on success; returns `False` without modifying the row on ownership loss.
-- Deterministic processor receives only the question and returns `Research completed for: {question}`.
-- Defaults: poll 1s, processing timeout 5s, lease 30s; no heartbeat renewal.
+- `ResearchJobProcessor` is a Protocol: `(question: str, *, job_id: str) -> str`. The worker owns claim/finalize and does not import LangGraph.
+- Defaults: poll 1s, processing timeout 15s, lease 30s; no heartbeat renewal.
 - Processing timeout is orchestration-only (`Future.result(timeout=…)` on a single-thread executor). Late results are ignored permanently and cannot finalize. New claims are refused while an abandoned processor still occupies the pool thread.
-- Bounded shutdown: stop claiming, wait at most `shutdown_grace_seconds` (default equals the processing timeout), then `shutdown(wait=False)`. Milestone 6 does **not** kill processor threads and does **not** guarantee process exit if a callable remains blocked; operators may need SIGKILL. Hard termination of arbitrary LLM/tool work requires process isolation or an external worker later.
+- Bounded shutdown: stop claiming, wait at most `shutdown_grace_seconds` (default equals the processing timeout), then `shutdown(wait=False)`. Python cannot kill processor threads and does not guarantee process exit if a callable remains blocked; operators may need SIGKILL. Hard termination of arbitrary LLM/tool/graph work requires process isolation or an external worker later. Milestone 7 does not strengthen these non-guarantees.
 - Processing is at-least-once: claim tokens fence stale database finalization but cannot undo duplicate in-process work.
-- Verified on `main` through Pull Request #8 (pull-request CI and resulting `main` CI green).
+- Verified on `main` through Pull Request #8 for the worker foundation; Milestone 7 extends the default processor to LangGraph.
 
-These decisions cover the verified foundation through the background-worker slice. They do not imply LangGraph, agents, messaging, or cloud topology choices.
+### Deterministic LangGraph workflow
+
+- Package `atlas.workflow` holds typed state, five deterministic nodes (`validate` → `plan` → `research` → `draft` → `complete`), fake planner/tool, sync `PostgresSaver` runtime, and `LangGraphResearchProcessor`.
+- Stable LangGraph `thread_id` is the research `job_id`. Resume of unfinished work uses `graph.invoke(None, config)` and must not resend the original input.
+- Checkpoint tables are LangGraph-owned and created only through an explicit worker-startup `PostgresSaver.setup()` path (not per job). Atlas Alembic migration `20260809_0004` owns `workflow_executions` and `workflow_node_executions`.
+- Checkpoint writes and Atlas audit writes use separate connections/transactions and are not atomic together; after a crash they may briefly disagree. Checkpoints are the resume source of truth; audit rows are operational history.
+- One `workflow_executions` row per worker processing attempt; attempts for a job share `thread_id`. Reclaim creates a new execution and marks prior `RUNNING` executions `ABANDONED` when practical. Node attempts are append-only with unique `(workflow_execution_id, node_name, attempt)`.
+- Node wrappers and workflow-level processor handling catch `Exception` only so `KeyboardInterrupt` / `SystemExit` propagate; ordinary node failures mark audit rows failed. Persisted node errors are class-only (`<ExceptionClass>: node execution failed`) and never store raw exception messages.
+- Graph nodes never call `finalize_*` or mutate `ResearchJob` lifecycle.
+- Final result is a deterministic report with sections `Question`, `Plan`, `Findings`, and `Draft`.
+- No live LLM, live search, RAG/pgvector, Redis, Kafka, specialist agents, or cloud infrastructure in this slice.
+
+These decisions cover the verified foundation through the deterministic LangGraph workflow slice. They do not imply live providers, agents, messaging, or cloud topology choices.
 
 ## Why the full diagram comes later
 

@@ -16,7 +16,7 @@ The repository has a verified Python 3.12 / FastAPI local foundation (`GET /heal
 
 ## Current milestone
 
-Milestone 7 (deterministic LangGraph workflow) is Current, but implementation is paused until a complete architecture and code-ownership walkthrough of Milestones 1–6 is finished. Milestone 6 delivered the background worker with PostgreSQL claim-token fencing and is complete on `main`. After the walkthrough, LangGraph and later AI workflow capabilities proceed. The comprehensive Visio and AWS design remains deferred until working local components can be mapped to the cloud with evidence.
+Milestone 7 provides the deterministic, checkpointed LangGraph research workflow behind the worker processor boundary. Milestone 8 (real model-provider adapters) is Current. The worker still owns claim/finalize fencing; LangGraph owns deterministic node progression and Postgres checkpoints. GitHub Actions remains the source of truth for remote CI. The comprehensive Visio and AWS design remains deferred until working local components can be mapped to the cloud with evidence.
 
 ### Run locally
 

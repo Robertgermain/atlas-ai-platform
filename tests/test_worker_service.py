@@ -115,6 +115,10 @@ class _FakeRepository:
         return True
 
 
+def _echo_processor(question: str, *, job_id: str) -> str:
+    return f"echo:{job_id}:{question}"
+
+
 def test_run_once_completes_deterministically() -> None:
     repo = _FakeRepository()
     job = ResearchJob.create("job-1", "What is Atlas?", at=T0)
@@ -122,6 +126,7 @@ def test_run_once_completes_deterministically() -> None:
     worker = ResearchJobWorker(
         session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
         repository=repo,
+        processor=_echo_processor,
         poll_interval_seconds=0.01,
         processing_timeout_seconds=1.0,
         lease_seconds=1.0,
@@ -130,7 +135,7 @@ def test_run_once_completes_deterministically() -> None:
         assert worker.run_once() is True
         loaded = repo.jobs["job-1"]
         assert loaded.status is ResearchJobStatus.COMPLETED
-        assert loaded.result == "Research completed for: What is Atlas?"
+        assert loaded.result == "echo:job-1:What is Atlas?"
         assert repo.completions
     finally:
         worker.close()
@@ -142,9 +147,9 @@ def test_timeout_finalizes_failure_and_ignores_late_result() -> None:
     repo.seed_pending(job)
     late_results: list[str] = []
 
-    def slow_processor(question: str) -> str:
+    def slow_processor(question: str, *, job_id: str) -> str:
         time.sleep(0.2)
-        result = f"LATE:{question}"
+        result = f"LATE:{job_id}:{question}"
         late_results.append(result)
         return result
 
@@ -164,10 +169,9 @@ def test_timeout_finalizes_failure_and_ignores_late_result() -> None:
         assert loaded.failure_reason == PROCESSING_TIMEOUT_REASON
         assert repo.completions == []
         assert len(repo.failures) == 1
-        # Allow the slow processor to finish naturally; late success must not complete.
         time.sleep(0.3)
         assert loaded.status is ResearchJobStatus.FAILED
-        assert late_results == ["LATE:slow question"]
+        assert late_results == ["LATE:job-timeout:slow question"]
         assert repo.completions == []
     finally:
         worker.close()
@@ -178,7 +182,8 @@ def test_processor_exception_fails_without_leaking_details() -> None:
     repo.seed_pending(ResearchJob.create("job-boom", "question", at=T0))
     secret = "super-secret-token"
 
-    def boom(_question: str) -> str:
+    def boom(question: str, *, job_id: str) -> str:
+        del question, job_id
         raise RuntimeError(f"db password={secret}")
 
     worker = ResearchJobWorker(
@@ -209,6 +214,7 @@ def test_shutdown_prevents_new_claims() -> None:
     worker = ResearchJobWorker(
         session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
         repository=repo,
+        processor=_echo_processor,
         shutdown_event=shutdown,
     )
     try:
@@ -223,7 +229,8 @@ def test_close_is_bounded_while_processor_remains_blocked() -> None:
     repo.seed_pending(ResearchJob.create("job-block", "blocked", at=T0))
     release = Event()
 
-    def blocked_processor(_question: str) -> str:
+    def blocked_processor(question: str, *, job_id: str) -> str:
+        del question, job_id
         release.wait(timeout=30)
         return "should-not-finalize"
 
@@ -249,12 +256,10 @@ def test_close_is_bounded_while_processor_remains_blocked() -> None:
         assert worker.processor_wait_abandoned is True
         assert loaded.status is ResearchJobStatus.FAILED
         assert repo.completions == []
-        # Further claims must not start while the pool thread is still occupied.
         repo.seed_pending(ResearchJob.create("job-next", "next", at=T0))
         assert worker.run_once() is False
     finally:
         release.set()
-        # Give the blocked thread a moment to exit after release.
         time.sleep(0.05)
 
 
@@ -263,10 +268,10 @@ def test_shutdown_with_processing_in_flight_completes_within_grace() -> None:
     repo.seed_pending(ResearchJob.create("job-inflight", "almost done", at=T0))
     started = Event()
 
-    def slow_ok(question: str) -> str:
+    def slow_ok(question: str, *, job_id: str) -> str:
         started.set()
         time.sleep(0.15)
-        return f"Research completed for: {question}"
+        return f"echo:{job_id}:{question}"
 
     worker = ResearchJobWorker(
         session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]

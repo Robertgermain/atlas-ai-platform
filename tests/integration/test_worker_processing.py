@@ -17,6 +17,7 @@ from atlas.domain import ResearchJob, ResearchJobStatus
 from atlas.main import app
 from atlas.persistence.db import reset_engine_cache, session_scope
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
+from atlas.workflow import LangGraphResearchProcessor, create_checkpoint_runtime
 
 T0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
 
@@ -27,15 +28,29 @@ def _api_client(session_factory: sessionmaker[Session]) -> TestClient:
     return TestClient(app)
 
 
+def _assert_report_structure(result: str, question: str) -> None:
+    assert "Question:" in result
+    assert question in result
+    assert "Plan:" in result
+    assert "Findings:" in result
+    assert "Draft:" in result
+
+
 def test_api_create_then_worker_completes(
+    test_database_url: str,
     session_factory: sessionmaker[Session],
 ) -> None:
     client = _api_client(session_factory)
+    runtime = create_checkpoint_runtime(test_database_url)
     worker = ResearchJobWorker(
         session_factory=session_factory,
         repository=SqlAlchemyResearchJobRepository(),
+        processor=LangGraphResearchProcessor(
+            checkpointer=runtime.checkpointer,
+            session_factory=session_factory,
+        ),
         poll_interval_seconds=0.01,
-        processing_timeout_seconds=5.0,
+        processing_timeout_seconds=15.0,
         lease_seconds=30.0,
     )
 
@@ -57,11 +72,12 @@ def test_api_create_then_worker_completes(
         assert fetched.status_code == 200
         body = fetched.json()
         assert body["status"] == "COMPLETED"
-        assert body["result"] == "Research completed for: Worker path"
+        _assert_report_structure(body["result"], "Worker path")
         assert "claim_token" not in body
         assert "lease_expires_at" not in body
     finally:
         worker.close()
+        runtime.close()
         app.dependency_overrides.clear()
         reset_engine_cache()
 
@@ -72,7 +88,8 @@ def test_api_observes_failed_processor(
     client = _api_client(session_factory)
     secret = "super-secret-db-password"
 
-    def boom(_question: str) -> str:
+    def boom(question: str, *, job_id: str) -> str:
+        del question, job_id
         raise ValueError(f"connection failed using {secret}")
 
     worker = ResearchJobWorker(
@@ -80,7 +97,7 @@ def test_api_observes_failed_processor(
         repository=SqlAlchemyResearchJobRepository(),
         processor=boom,
         poll_interval_seconds=0.01,
-        processing_timeout_seconds=5.0,
+        processing_timeout_seconds=15.0,
         lease_seconds=30.0,
     )
     try:
@@ -113,7 +130,8 @@ def test_api_observes_processing_timeout(
     client = _api_client(session_factory)
     release = Event()
 
-    def blocked(_question: str) -> str:
+    def blocked(question: str, *, job_id: str) -> str:
+        del question, job_id
         release.wait(timeout=30)
         return "late-should-not-win"
 
@@ -158,6 +176,7 @@ def test_api_observes_processing_timeout(
 
 
 def test_reclaim_after_lease_expiry_and_stale_finalize_rejected(
+    test_database_url: str,
     session_factory: sessionmaker[Session],
 ) -> None:
     repo = SqlAlchemyResearchJobRepository()
@@ -193,17 +212,23 @@ def test_reclaim_after_lease_expiry_and_stale_finalize_rejected(
         )
         session.commit()
 
+    runtime = create_checkpoint_runtime(test_database_url)
     worker_b = ResearchJobWorker(
         session_factory=session_factory,
         repository=repo,
+        processor=LangGraphResearchProcessor(
+            checkpointer=runtime.checkpointer,
+            session_factory=session_factory,
+        ),
         poll_interval_seconds=0.01,
-        processing_timeout_seconds=5.0,
+        processing_timeout_seconds=15.0,
         lease_seconds=30.0,
     )
     try:
         assert worker_b.run_once() is True
     finally:
         worker_b.close()
+        runtime.close()
 
     with session_scope(session_factory) as session:
         owned_a = repo.finalize_completion(
@@ -218,4 +243,4 @@ def test_reclaim_after_lease_expiry_and_stale_finalize_rejected(
     assert owned_a is False
     assert loaded is not None
     assert loaded.status is ResearchJobStatus.COMPLETED
-    assert loaded.result == "Research completed for: Reclaim me"
+    _assert_report_structure(loaded.result or "", "Reclaim me")

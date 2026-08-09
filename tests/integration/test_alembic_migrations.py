@@ -12,7 +12,11 @@ from sqlalchemy.orm import sessionmaker
 
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
-from tests.integration.db_support import REPO_ROOT, assert_safe_test_database
+from tests.integration.db_support import (
+    REPO_ROOT,
+    assert_safe_test_database,
+    initialize_langgraph_checkpoint_schema,
+)
 
 
 def _alembic_config(database_url: str) -> Config:
@@ -58,7 +62,9 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
         version = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-    assert version == "20260809_0003"
+    assert version == "20260809_0004"
+    assert inspector.has_table("workflow_executions")
+    assert inspector.has_table("workflow_node_executions")
 
 
 def test_legacy_row_survives_upgrade_from_0001(
@@ -119,7 +125,7 @@ def test_legacy_row_survives_upgrade_from_0001(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
 
-        assert version == "20260809_0003"
+        assert version == "20260809_0004"
         assert row["id"] == "legacy-job"
         assert row["question"] == "legacy question"
         assert row["status"] == "PENDING"
@@ -152,6 +158,7 @@ def test_legacy_row_survives_upgrade_from_0001(
         try:
             _reset_public_schema(engine)
             command.upgrade(config, "head")
+            initialize_langgraph_checkpoint_schema(test_database_url)
         finally:
             if previous is None:
                 os.environ.pop("ATLAS_DATABASE_URL", None)

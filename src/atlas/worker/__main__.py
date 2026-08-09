@@ -10,6 +10,11 @@ from atlas.application.worker import ResearchJobWorker
 from atlas.config import get_settings
 from atlas.persistence.db import get_session_factory
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
+from atlas.workflow import (
+    LangGraphResearchProcessor,
+    create_checkpoint_runtime,
+    initialize_checkpointer_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +26,17 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     settings = get_settings()
+    session_factory = get_session_factory()
+    checkpoint_runtime = create_checkpoint_runtime(settings.database_url)
+    initialize_checkpointer_schema(checkpoint_runtime)
+    processor = LangGraphResearchProcessor(
+        checkpointer=checkpoint_runtime.checkpointer,
+        session_factory=session_factory,
+    )
     worker = ResearchJobWorker(
-        session_factory=get_session_factory(),
+        session_factory=session_factory,
         repository=SqlAlchemyResearchJobRepository(),
+        processor=processor,
         poll_interval_seconds=settings.worker_poll_interval_seconds,
         processing_timeout_seconds=settings.worker_processing_timeout_seconds,
         lease_seconds=settings.worker_lease_seconds,
@@ -42,7 +55,10 @@ def main() -> int:
         settings.worker_processing_timeout_seconds,
         settings.worker_lease_seconds,
     )
-    worker.run_forever()
+    try:
+        worker.run_forever()
+    finally:
+        checkpoint_runtime.close()
     logger.info("Research-job worker stopped")
     return 0
 
