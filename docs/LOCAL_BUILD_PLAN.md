@@ -87,7 +87,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 4 — PostgreSQL persistence
 
-**Status:** Current
+**Status:** Complete
 
 **Goal:** Make PostgreSQL the authoritative store for research jobs.
 
@@ -101,7 +101,9 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 5 — Database-backed research-job API
 
-**Status:** Pending
+**Status:** Current
+
+**Note:** Implementation is paused until the planned Milestones 1–4 application ownership walkthrough is completed.
 
 **Goal:** Deliver the first durable product workflow.
 

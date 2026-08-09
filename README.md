@@ -16,4 +16,4 @@ The repository has a verified Python 3.12 / FastAPI local foundation (`GET /heal
 
 ## Current milestone
 
-Make PostgreSQL the authoritative store for research jobs (Compose, SQLAlchemy/Alembic, repository, readiness, and integration tests). The research-job HTTP API and AI workflow capabilities follow after remote validation of this slice. The comprehensive Visio and AWS design remains deferred until working local components can be mapped to the cloud with evidence.
+Milestone 5 (database-backed research-job API) is Current, but implementation is paused until a complete application ownership walkthrough of Milestones 1–4 is finished. After that checkpoint, the research-job HTTP API and later AI workflow capabilities proceed. The comprehensive Visio and AWS design remains deferred until working local components can be mapped to the cloud with evidence.
