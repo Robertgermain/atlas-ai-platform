@@ -41,7 +41,7 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 
 ### PostgreSQL persistence
 
-- Local Postgres 16 runs via Docker Compose; host port `5433` maps to container `5432`; databases `atlas` (app) and `atlas_test` (tests).
+- Local Postgres 16 runs via Docker Compose; host port `127.0.0.1:5433` maps to container `5432` (localhost-only publish); databases `atlas` (app) and `atlas_test` (tests). Compose credentials are development-only.
 - Settings load `ATLAS_DATABASE_URL` through `pydantic-settings`; engines and sessions are created lazily.
 - ORM model `research_jobs` uses `TIMESTAMPTZ` columns and CHECK constraints for status/field combinations as defense in depth.
 - Nullable `idempotency_key` / `request_fingerprint` columns support API idempotency; a CHECK requires both null or both set; a unique constraint applies to non-null keys (PostgreSQL treats NULLs as distinct).
@@ -142,7 +142,7 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - Research node: after search evidence persists, retrieve operator-corpus (and appropriate filters), link retrieved IDs to the job, merge/dedupe with search IDs preserving rank order, apply evidence-pack caps, draft, and validate citations. No invented citations when retrieval yields nothing usable. Checkpoints lacking Slice 10B fields remain backward-compatible (runtime context carries retriever; not checkpointed).
 - Offline eval fixture + Recall@K / MRR@K gate (Recall@5 ≥ 0.80, MRR@5 ≥ 0.70) validates deterministic fake embeddings and **exact** cosine pipeline geometry — not real-world semantic quality. Opt-in live embedding checks use `ATLAS_ENABLE_LIVE_EMBEDDING_TESTS=1` and never run in default CI.
 
-These decisions cover the verified foundation through Milestone 10 Complete on `main` (`bfabd59`) and Milestone 11 Slices 11A–11B locally (specialists, capability isolation, ablation, cited-report E2E). They do not imply grading/repair (Milestone 12), production semantic retrieval quality, messaging, or cloud topology choices.
+These decisions cover the verified foundation through Milestone 10 Complete on `main` (`bfabd59`) and Milestone 11 Slices 11A–11B (specialists, capability isolation, ablation, cited-report E2E). Milestone 11 was originally merged via PR #14 (`005ea58`, green CI), reverted by PR #15 (`e675f43`) for process reasons, and is being restored on `restore-milestone-11-specialists`. They do not imply grading/repair (Milestone 12), production semantic retrieval quality, messaging, or cloud topology choices.
 
 ### Specialist agents (Milestone 11)
 

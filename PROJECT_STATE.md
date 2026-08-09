@@ -2,8 +2,8 @@
 
 - Last updated: 2026-08-09
 - Phase: Local implementation foundation
-- Milestone: Specialist agents and report synthesis (Milestone 11) — **Current** (Slices 11A and 11B implemented locally; PR/`main` CI outstanding)
-- Implementation status: Milestone 10 is **Complete** through Pull Request #13 (`bfabd59`; PR CI and resulting `main` CI green). Milestone 11 Slices 11A–11B are implemented and locally verified on `milestone-11-specialist-agents`. Final Milestone 11 PR CI and resulting `main` CI remain outstanding. Do not mark Milestone 11 Complete yet.
+- Milestone: Specialist agents and report synthesis (Milestone 11) — **Current** (restoring reviewed implementation after accidental revert)
+- Implementation status: Milestone 10 is **Complete** through Pull Request #13 (`bfabd59`; PR CI and resulting `main` CI green). Milestone 11 Slices 11A–11B were reviewed and merged via Pull Request #14 (`005ea58`; PR CI and resulting `main` CI green), then reverted by Pull Request #15 (`e675f43`) due to a workflow/process error, not an identified code defect. Branch `restore-milestone-11-specialists` restores the reviewed Milestone 11 implementation (cherry-pick of `9d4e2f4` onto reverted `main` at `e675f43`). Milestone 11 remains **Current** until the restoration PR and resulting `main` CI pass. Milestone 12 remains **Pending**. Do not mark Milestone 11 Complete yet.
 
 ## Objective
 
@@ -17,15 +17,15 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 
 - A minimal repository baseline and one flat `docs/` folder.
 - `docs/LOCAL_BUILD_PLAN.md` as the ordered local roadmap and milestone checklist.
-- Research, product requirements, testing strategy, and a technical-design document with validated local foundation through Milestone 10.
+- Research, product requirements, testing strategy, and a technical-design document with validated local foundation through Milestone 10 plus restored Milestone 11 specialists on this branch.
 - Root instructions for AI assistants and this current-state handoff.
 - Local environment and ignore files; committed `.env.example` (no secrets).
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
 - `src/atlas` package with FastAPI `GET /health` (liveness) and `GET /ready` (Postgres readiness).
-- Pytest, Ruff (format + lint), and mypy configuration; domain, API, worker, workflow, model, tool, MCP, evidence, embedding, and PostgreSQL/pgvector integration tests.
-- GitHub Actions CI with Postgres 16 + pgvector (`pgvector/pgvector:pg16`) targeting `atlas_test`; `main` is green through Pull Request #13 (Milestone 10).
+- Pytest, Ruff (format + lint), and mypy configuration; domain, API, worker, workflow, model, tool, MCP, evidence, embedding, specialist, and PostgreSQL/pgvector integration tests.
+- GitHub Actions CI with Postgres 16 + pgvector (`pgvector/pgvector:pg16`) targeting `atlas_test`; `main` currently at the PR #15 revert (`e675f43`); Milestone 10 remains the last durable Complete milestone on `main` until restoration merges.
 - `atlas.domain` package with slotted `ResearchJob`, `reconstitute(...)`, and lifecycle transitions.
-- Docker Compose PostgreSQL 16 + pgvector on host port `5433` with databases `atlas` and `atlas_test`.
+- Docker Compose PostgreSQL 16 + pgvector published on `127.0.0.1:5433` only, with databases `atlas` and `atlas_test`. Development credentials are local-only.
 - SQLAlchemy 2.x + psycopg3 + Alembic persistence through head `20260809_0008` (pgvector embeddings). Prior: evidence foundation `20260809_0007`; jobs, claims/leases, workflow audit, model ledger, tool ledger.
 - Research-job HTTP APIs plus evidence APIs: `POST /v1/evidence/documents`, `GET /v1/evidence/items/{id}`, `GET /v1/research-jobs/{id}/citations`.
 - Background worker (`python -m atlas.worker`) with PostgreSQL claiming, fencing, and LangGraph orchestration (Milestones 6–9).
@@ -40,7 +40,7 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
-- Final Milestone 11 pull-request CI and resulting `main` CI (Slices 11A–11B implemented locally).
+- Durable Milestone 11 presence on `main` after the PR #15 revert (restoration PR/`main` CI outstanding).
 - Grading, repair routing, autonomous retry policy, Redis, Kafka, application/worker Docker images, Kubernetes, Terraform, or AWS resources.
 - HTTP MCP listeners, remote MCP consumption, or MCP authentication.
 - Heartbeat lease renewal or hard cancellation of in-flight processor threads.
@@ -102,6 +102,7 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Milestone 10 is Complete through Pull Request #13 (`bfabd59`). Document identity, hash semantics, citation composite FK, idempotent report artifacts, embeddings profile `embeddings.v1`, exact vs HNSW retrieval, and offline fake-embedding eval remain as validated in Milestone 10.
 - Embedding identity is `(evidence_item_id, embedding_profile)`; existing embeddings are never overwritten silently. Profile is settings-restricted to `Literal["embeddings.v1"]` at 1536 dimensions with a partial HNSW cosine index for that profile.
 - Retrieval: exact cosine for offline CI metric gate; HNSW-eligible candidate path for production-oriented local default. Offline thresholds Recall@5 ≥ 0.80 and MRR@5 ≥ 0.70 validate fixture geometry, not real semantic quality. Opt-in live embedding tests require `ATLAS_ENABLE_LIVE_EMBEDDING_TESTS=1`.
+- Local Compose Postgres binds to `127.0.0.1:5433` only so the development database is not published on all interfaces.
 
 ## Verification (Milestone 9)
 
@@ -121,25 +122,33 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 
 - `uv sync --frozen`, Ruff format/lint, mypy, full Pytest against `atlas_test` (221 passed, 4 skipped), Alembic head `20260809_0008`, offline Recall@5/MRR@5 = 1.00/1.00 (pipeline geometry), opt-in live OpenAI embedding dimensions 1536, and `git diff --check` were verified on the Milestone 10 branch before merge.
 
-## Verification (Milestone 11 — Slices 11A–11B local)
+## Verification (Milestone 11)
 
-### Local
+### Remote (original merge, then revert)
 
-- Branch `milestone-11-specialist-agents` at `bfabd59` base; Milestone 11 changes uncommitted pending final review.
-- Slice 11A: specialist contracts, linear topology with `verify_citations`, checkpoint resume, fail-closed unlinked citations.
-- Slice 11B: capability-isolation composition/spy tests; model/tool ledger attribution (`plan`/`draft` models, `research` tools only; `verify_citations` audit without model/tool rows); deterministic boundary/ablation suite; full API→worker→citations E2E with provenance and resume idempotency; draft-failure blocks complete; bounded execution confirmations.
-- Quality gates: `uv sync --frozen`, Ruff format/lint, mypy, full Pytest against `atlas_test` → **258 passed, 4 skipped**; `git diff --check` clean; Alembic head `20260809_0008`; default suite makes no live provider calls.
+- Pull Request #14, `feat: add bounded specialist agent workflow (#14)`, merged into `main` as commit `005ea58`. Pull-request CI and resulting `main` CI passed.
+- Pull Request #15, `Revert "feat: add bounded specialist agent workflow (#14)" (#15)`, merged into `main` as commit `e675f43` due to a workflow/process error, not an identified code defect. Revert CI and resulting `main` CI passed.
+- After the revert, `main` no longer contains Milestone 11.
+
+### Restoration branch (local)
+
+- Branch `restore-milestone-11-specialists` created from reverted `main` (`e675f43`); reviewed Milestone 11 commit `9d4e2f4` cherry-picked as `34565ec`.
+- Confirmed restored package `atlas.specialists`, graph topology with `verify_citations`, and specialist unit/integration/E2E suites; Milestone 11 implementation tree matches the reviewed commit.
+- Local corrections on this branch (uncommitted pending review): localhost-only Compose Postgres bind (`127.0.0.1:5433:5432`) and factual restoration documentation.
+- Quality gates: `uv sync --frozen`, Ruff format/lint, mypy, full Pytest against `atlas_test` → **258 passed, 4 skipped**; `git diff --check` clean; Alembic head `20260809_0008`.
+- Default suite makes no live provider calls (live model/tool/embedding tests remain opt-in skipped). `.env` is gitignored and not tracked.
 
 ### Outstanding before Milestone 11 Complete
 
-- Final Milestone 11 pull-request CI and resulting `main` CI
+- Restoration pull-request CI and resulting `main` CI
 
 ## Next steps
 
-1. Stop for final Milestone 11 review (Slices 11A–11B).
-2. Open one Milestone 11 PR after approval; do not create a documentation-only PR.
-3. Do not mark Milestone 11 Complete until PR/`main` CI pass.
+1. Stop for restoration review (docs + localhost Compose bind).
+2. Open the Milestone 11 restoration PR after approval.
+3. Do not mark Milestone 11 Complete until restoration PR/`main` CI pass.
+4. Do not begin Milestone 12 while Milestone 11 is Current.
 
 ## Active blockers
 
-None for Milestone 11 local review.
+None for restoration review.

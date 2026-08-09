@@ -213,7 +213,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Completion gate:** A complete cited report is produced; agent loops are bounded; handoffs are typed; each specialist has test or evaluation evidence supporting its role.
 
-**Local implementation status:** Slices 11A and 11B implemented and locally verified on `milestone-11-specialist-agents` (topology `validate → plan → research → draft → verify_citations → complete`; capability isolation; ledger/audit attribution; boundary/ablation evidence; full cited-report E2E; no migration). Final PR/`main` CI remain outstanding. Do not mark Milestone 11 Complete yet.
+**Local implementation status:** Slices 11A and 11B were reviewed and merged via Pull Request #14 (`005ea58`); PR CI and resulting `main` CI passed. Pull Request #15 (`e675f43`) reverted #14 due to a workflow/process error, not an identified code defect. Branch `restore-milestone-11-specialists` restores the reviewed Milestone 11 implementation (cherry-pick of `9d4e2f4` onto reverted `main`). Topology `validate → plan → research → draft → verify_citations → complete`; capability isolation; ledger/audit attribution; boundary/ablation evidence; full cited-report E2E; no migration. Milestone 11 remains **Current** until the restoration PR and resulting `main` CI pass. Do not mark Milestone 11 Complete yet.
 
 ---
 
