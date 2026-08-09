@@ -13,6 +13,13 @@ class ResearchJobAlreadyExistsError(PersistenceError):
         super().__init__(f"Research job already exists: {job_id}")
 
 
+class IdempotencyKeyConflictError(PersistenceError):
+    """Raised when inserting a research job whose idempotency key already exists."""
+
+    def __init__(self) -> None:
+        super().__init__("Idempotency key already exists.")
+
+
 class ResearchJobNotFoundError(PersistenceError):
     """Raised when updating a research job that does not exist."""
 

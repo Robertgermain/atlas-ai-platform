@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, String, Text
+from sqlalchemy import CheckConstraint, DateTime, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from atlas.persistence.models.base import Base
@@ -13,6 +13,10 @@ class ResearchJobModel(Base):
 
     __tablename__ = "research_jobs"
     __table_args__ = (
+        UniqueConstraint(
+            "idempotency_key",
+            name="uq_research_jobs_idempotency_key",
+        ),
         CheckConstraint(
             "status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED')",
             name="ck_research_jobs_status",
@@ -73,6 +77,22 @@ class ResearchJobModel(Base):
             """,
             name="ck_research_jobs_status_fields",
         ),
+        CheckConstraint(
+            """
+            (
+              idempotency_key IS NULL
+              AND request_fingerprint IS NULL
+            )
+            OR
+            (
+              idempotency_key IS NOT NULL
+              AND request_fingerprint IS NOT NULL
+              AND length(trim(idempotency_key)) > 0
+              AND length(request_fingerprint) = 64
+            )
+            """,
+            name="ck_research_jobs_idempotency_pair",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
@@ -94,3 +114,5 @@ class ResearchJobModel(Base):
     )
     result: Mapped[str | None] = mapped_column(Text, nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -1,9 +1,9 @@
 # Atlas AI Platform — Project State
 
-- Last updated: 2026-08-08
+- Last updated: 2026-08-09
 - Phase: Local implementation foundation
 - Milestone: Database-backed research-job API (Milestone 5)
-- Implementation status: Milestone 4 complete on `main`; Milestone 5 is Current but paused until the Milestones 1–4 ownership walkthrough is completed
+- Implementation status: Milestone 5 implemented and locally verified; awaiting PR review, merge, and `main` CI before completion
 
 ## Objective
 
@@ -27,13 +27,16 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - `atlas.domain` package with slotted `ResearchJob`, `reconstitute(...)`, and lifecycle transitions.
 - Docker Compose Postgres 16 on host port `5433` with databases `atlas` and `atlas_test`.
 - SQLAlchemy 2.x + psycopg3 + Alembic persistence for `research_jobs`, concrete `SqlAlchemyResearchJobRepository`, and explicit `session_scope` transactions, merged via Pull Request #5.
+- Completed Milestones 1–4 application ownership walkthrough; Milestone 5 implementation approved and coded on branch `milestone-5-research-job-api`.
+- `POST /v1/research-jobs` and `GET /v1/research-jobs/{job_id}` with Pydantic contracts, `ResearchJobService`, required `Idempotency-Key`, and structured API errors.
+- Alembic revision `20260808_0002` adds nullable idempotency metadata with pair CHECK and unique non-null keys.
 
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
-- Research-job HTTP API, agents, brokers, Redis, Kafka, pgvector, application Docker image, Kubernetes, Terraform, or AWS resources.
-- A completed Milestones 1–4 application ownership walkthrough (required before Milestone 5 implementation).
+- Background workers, agents, brokers, Redis, Kafka, pgvector, application Docker image, Kubernetes, Terraform, or AWS resources.
 - Validated quality, latency, reliability, or cost benchmarks.
+- Milestone 5 remote CI / merge to `main` (local gates only so far).
 
 ## Decisions
 
@@ -58,7 +61,14 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Persistence uses sync SQLAlchemy 2.x and psycopg3; repository is a concrete class (no unused Protocol in Milestone 4).
 - Integration tests guard destructive operations with SQLAlchemy URL parsing (`atlas_test` or `*_test` only), reset once per suite via `DROP SCHEMA public CASCADE` + `CREATE SCHEMA public` (AUTOCOMMIT), then `alembic upgrade head`, and truncate between tests.
 - `/health` is process liveness without DB I/O; `/ready` lazily checks Postgres, maps SQLAlchemy database errors to controlled `503`, and does not hide unexpected programming errors or expose credentials.
-- Milestone 5 implementation is paused until a complete application ownership walkthrough of Milestones 1–4 is finished.
+- The Milestones 1–4 application ownership walkthrough is complete.
+- Research-job HTTP create uses server-generated UUID4 ids; the domain still receives caller-supplied ids from the application service.
+- API create requires `Idempotency-Key` (max 128); same key and payload replays with `202`; same key and different payload returns `409`.
+- Idempotency metadata lives on `research_jobs` as nullable `idempotency_key` / `request_fingerprint` with a both-null-or-both-set CHECK; PostgreSQL unique allows multiple NULL keys.
+- Request fingerprints hash a deterministic canonical JSON create representation (currently only normalized `question`).
+- `ResearchJobRepository` Protocol and `ResearchJobIdempotencyRecord` are the application port; idempotency metadata is not on the domain entity or public responses.
+- Research-job API maps only `OperationalError` to structured `503`; validation uses a shared `ErrorResponse` envelope at `422`.
+- Raw idempotency key values are not echoed in API responses, structured error details, or logs.
 
 ## Verification (Milestone 1)
 
@@ -133,14 +143,24 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Pull Request #5, `Milestone 4 postgres`, merged into `main`.
 - Pull request CI passed (green).
 - The resulting `main` push CI passed (green).
-- Milestone 4 completion gate is satisfied; Milestone 4 is **Complete** and Milestone 5 is **Current** but paused pending the ownership walkthrough.
+- Milestone 4 completion gate is satisfied; Milestone 4 is **Complete** and Milestone 5 is **Current**.
+
+## Verification (Milestone 5 — local)
+
+- `uv sync --frozen` → success
+- `uv run ruff format --check .` → success
+- `uv run ruff check .` → all checks passed
+- `uv run mypy src tests` → success (46 source files)
+- `ATLAS_DATABASE_URL=.../atlas_test uv run pytest` → 109 passed
+- `git diff --check` → clean
+- Covers create/get API contracts, idempotent replay and conflict, narrow `OperationalError`→503, migration `0001` legacy row → `0002`, and concurrent duplicate submissions.
 
 ## Next steps
 
-1. Complete an application ownership walkthrough covering Milestones 1–4 (foundation, CI, domain model, and PostgreSQL persistence).
-2. After that walkthrough, begin Milestone 5: database-backed research-job HTTP API.
-3. Do not implement Milestone 5 endpoints, schemas, or services before the walkthrough is done.
+1. Review the Milestone 5 diff, then open a PR and confirm CI green.
+2. After merge and resulting `main` CI green, mark Milestone 5 **Complete** and Milestone 6 **Current**.
+3. Do not begin Milestone 6 background-worker work until that completion gate passes.
 
 ## Active blockers
 
-None for Milestone 4. Milestone 5 implementation is paused until the Milestones 1–4 ownership walkthrough is completed.
+None.

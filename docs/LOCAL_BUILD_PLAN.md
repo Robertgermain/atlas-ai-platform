@@ -103,7 +103,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Status:** Current
 
-**Note:** Implementation is paused until the planned Milestones 1–4 application ownership walkthrough is completed.
+**Note:** Implementation is locally verified on `milestone-5-research-job-api`. Keep **Current** until PR CI, merge, and resulting `main` CI pass; then mark Complete.
 
 **Goal:** Deliver the first durable product workflow.
 

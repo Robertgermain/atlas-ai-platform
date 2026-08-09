@@ -16,4 +16,4 @@ The repository has a verified Python 3.12 / FastAPI local foundation (`GET /heal
 
 ## Current milestone
 
-Milestone 5 (database-backed research-job API) is Current, but implementation is paused until a complete application ownership walkthrough of Milestones 1–4 is finished. After that checkpoint, the research-job HTTP API and later AI workflow capabilities proceed. The comprehensive Visio and AWS design remains deferred until working local components can be mapped to the cloud with evidence.
+Milestone 5 (database-backed research-job API) is Current. Local implementation is verified (`POST`/`GET /v1/research-jobs` with idempotency); completion still requires PR CI, merge, and `main` CI. Background workers remain Milestone 6. The comprehensive Visio and AWS design remains deferred until working local components can be mapped to the cloud with evidence.
