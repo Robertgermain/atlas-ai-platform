@@ -142,18 +142,7 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - Research node: after search evidence persists, retrieve operator-corpus (and appropriate filters), link retrieved IDs to the job, merge/dedupe with search IDs preserving rank order, apply evidence-pack caps, draft, and validate citations. No invented citations when retrieval yields nothing usable. Checkpoints lacking Slice 10B fields remain backward-compatible (runtime context carries retriever; not checkpointed).
 - Offline eval fixture + Recall@K / MRR@K gate (Recall@5 ≥ 0.80, MRR@5 ≥ 0.70) validates deterministic fake embeddings and **exact** cosine pipeline geometry — not real-world semantic quality. Opt-in live embedding checks use `ATLAS_ENABLE_LIVE_EMBEDDING_TESTS=1` and never run in default CI.
 
-These decisions cover the verified foundation through Milestone 10 Complete on `main` (`bfabd59`) and Milestone 11 Slices 11A–11B locally (specialists, capability isolation, ablation, cited-report E2E). They do not imply grading/repair (Milestone 12), production semantic retrieval quality, messaging, or cloud topology choices.
-
-### Specialist agents (Milestone 11)
-
-- Package `atlas.specialists` owns typed handoffs for planner, research/retrieval, synthesizer, and deterministic citation verifier.
-- LangGraph topology is linear: `validate → plan → research → draft → verify_citations → complete` (no autonomous specialist loops). The synthesizer runs behind the existing `draft` node name; model-ledger identity remains `plan`/`draft`.
-- Capability isolation is composition-proven: planner holds only the model planner port; research alone receives the governed executor and retriever; synthesizer receives drafter + evidence-pack ingest; citation verifier receives only deterministic citation/evidence services; `complete` formats and persists only.
-- Planner retains the established exactly-three-task contract. Research findings are bounded (`MAX_RESEARCH_FINDINGS=6`) and are never padded/fabricated. Research evidence IDs are merged with order-preserving first-seen deduplication (tool/search first, then retrieval). A retriever may not be composed without evidence ingest (fail-closed configuration); ingest-only or neither is allowed for isolated tests.
-- Synthesizer rejects claims citing evidence IDs outside the supplied pack (no silent stripping). Citation verifier fail-closes against durable `evidence_job_links` plus evidence→document→source resolution and does not write model- or tool-ledger rows. It is deterministic architecture enforcement, not a Milestone 12 model grader.
-- `ReportArtifactService.persist_final` continues to invoke `CitationValidator` as defense in depth after the verifier node.
-- Ledger/audit reuse only: existing `workflow_node_executions`, `model_invocations`, and `tool_invocations`. No specialist ledger table and no Alembic migration (`workflow_node_executions.node_name` accepts arbitrary non-empty strings; head remains `20260809_0008`).
-- Slice 11B proves attribution (`plan`/`draft` model rows; `research` tool rows; `verify_citations` audit without model/tool rows), labeled boundary/ablation evidence, and full API→worker→citations E2E with resume idempotency of report artifacts, claims, citations, and evidence-job links.
+These decisions cover the verified foundation through Milestone 10 Slice 10B locally. They do not imply production semantic retrieval quality, specialists, messaging, or cloud topology choices.
 
 ## Why the full diagram comes later
 

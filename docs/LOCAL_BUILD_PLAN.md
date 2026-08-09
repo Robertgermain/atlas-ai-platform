@@ -184,26 +184,26 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 10 — Evidence, provenance, RAG, and pgvector
 
-**Status:** Complete
+**Status:** Current
 
 **Goal:** Produce traceable evidence and semantic retrieval rather than ungrounded chat responses.
 
 **Build in two reviewed slices (one final PR, two mandatory review stops):**
 
-1. **Slice 10A (Complete):** Sources, documents, evidence items, claims, citations, hashes, provenance, report artifacts, JSON text/Markdown ingest, structured draft claims, citation integrity, idempotent report persistence.
-2. **Slice 10B (Complete):** pgvector, versioned embeddings (`embeddings.v1` / 1536-d), fake + optional OpenAI LangChain adapters, metadata filters, HNSW cosine index, exact vs HNSW retrieval, workflow retrieval→link→pack→draft→citation, and offline retrieval evaluation (fake embeddings; pipeline geometry only).
+1. **Slice 10A (approved; locally verified):** Sources, documents, evidence items, claims, citations, hashes, provenance, report artifacts, JSON text/Markdown ingest, structured draft claims, citation integrity, idempotent report persistence.
+2. **Slice 10B (implemented locally; under final review):** pgvector, versioned embeddings (`embeddings.v1` / 1536-d), fake + optional OpenAI LangChain adapters, metadata filters, HNSW cosine index, exact vs HNSW retrieval, workflow retrieval→link→pack→draft→citation, and offline retrieval evaluation (fake embeddings; pipeline geometry only).
 
 **Why evidence comes first:** Embeddings are useful only when retrieved material retains identity, provenance, and a relationship to report claims.
 
-**Completion gate:** A citation maps to stored evidence and its source; ingestion is safely repeatable; retrieval preserves provenance and passes a small measured relevance baseline.
+**Completion gate:** A citation maps to stored evidence and its source; ingestion is safely repeatable; retrieval preserves provenance and passes a small measured relevance baseline. Do not mark Complete until pull-request CI plus resulting `main` CI pass.
 
-**Local implementation status:** Complete through Pull Request #13 (`bfabd59`). PR CI and resulting `main` CI passed.
+**Local implementation status:** Slices 10A and 10B implemented and locally verified on `milestone-10-evidence-rag` (Alembic head `20260809_0008`). Final Milestone 10 PR CI and resulting `main` CI remain outstanding. Do not mark Milestone 10 Complete yet.
 
 ---
 
 ## Milestone 11 — Specialist agents and report synthesis
 
-**Status:** Current
+**Status:** Pending
 
 **Goal:** Expand the proven workflow into bounded specialists that improve measurable outcomes.
 
@@ -212,8 +212,6 @@ The local platform is complete when a new developer can clone Atlas, configure s
 **Why not earlier:** Multi-agent systems increase handoffs, cost, latency, and failure modes. A single workflow provides the baseline needed to justify each specialist.
 
 **Completion gate:** A complete cited report is produced; agent loops are bounded; handoffs are typed; each specialist has test or evaluation evidence supporting its role.
-
-**Local implementation status:** Slices 11A and 11B implemented and locally verified on `milestone-11-specialist-agents` (topology `validate → plan → research → draft → verify_citations → complete`; capability isolation; ledger/audit attribution; boundary/ablation evidence; full cited-report E2E; no migration). Final PR/`main` CI remain outstanding. Do not mark Milestone 11 Complete yet.
 
 ---
 

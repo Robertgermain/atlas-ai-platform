@@ -107,7 +107,6 @@ def test_api_create_then_langgraph_worker_completes(
                 "plan",
                 "research",
                 "draft",
-                "verify_citations",
                 "complete",
             }
             assert all(node.attempt == 1 for node in nodes)
@@ -226,7 +225,6 @@ def test_interrupt_then_worker_resume_creates_second_execution(
     assert counters["plan"] == 1
     assert counters["research"] == 1
     assert counters["draft"] == 1
-    assert counters["verify_citations"] == 1
     assert counters["complete"] == 1
 
 
