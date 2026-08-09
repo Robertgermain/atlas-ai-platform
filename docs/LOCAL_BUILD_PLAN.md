@@ -73,7 +73,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 3 — ResearchJob domain model
 
-**Status:** Current
+**Status:** Complete
 
 **Goal:** Define a research job and its lifecycle independently of HTTP and storage.
 
@@ -87,7 +87,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 4 — PostgreSQL persistence
 
-**Status:** Pending
+**Status:** Current
 
 **Goal:** Make PostgreSQL the authoritative store for research jobs.
 

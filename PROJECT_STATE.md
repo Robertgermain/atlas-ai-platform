@@ -2,8 +2,8 @@
 
 - Last updated: 2026-08-08
 - Phase: Local implementation foundation
-- Milestone: ResearchJob domain model (Milestone 3)
-- Implementation status: Milestone 3 implemented and verified locally; awaiting commit, PR validation, and merge
+- Milestone: PostgreSQL persistence (Milestone 4)
+- Implementation status: Milestone 3 complete on `main`; typed `ResearchJob` domain lifecycle verified locally and on GitHub Actions
 
 ## Objective
 
@@ -22,15 +22,14 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Local environment and ignore files.
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
 - `src/atlas` package with a FastAPI app exposing `GET /health`.
-- Pytest, Ruff (format + lint), and mypy configuration; health contract test.
-- Minimal GitHub Actions workflow at `.github/workflows/ci.yml` (PR and `main` push; `contents: read`), green on `main` after Pull Request #2.
-- `atlas.domain` package with slotted `ResearchJob`, status enum, domain exceptions, and lifecycle transitions `PENDING → RUNNING → COMPLETED | FAILED` (local, not yet merged).
+- Pytest, Ruff (format + lint), and mypy configuration; health and ResearchJob domain tests.
+- Minimal GitHub Actions workflow at `.github/workflows/ci.yml` (PR and `main` push; `contents: read`), green on `main` through Pull Request #3.
+- `atlas.domain` package with slotted `ResearchJob`, status enum, domain exceptions, and lifecycle transitions `PENDING → RUNNING → COMPLETED | FAILED`, merged via Pull Request #3.
 
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
-- Merged Milestone 3 changes on `main` (local verification is complete; commit/PR/merge remain).
-- PostgreSQL persistence, research-job HTTP API, agents, brokers, containers, Kubernetes, Terraform, or AWS resources.
+- PostgreSQL persistence, Docker Compose database topology, SQLAlchemy/Alembic, settings/session ownership, research-job repositories, research-job HTTP API, agents, brokers, containers, Kubernetes, Terraform, or AWS resources.
 - Validated quality, latency, reliability, or cost benchmarks.
 
 ## Decisions
@@ -93,21 +92,26 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 
 ## Verification (Milestone 3)
 
-- `uv sync --frozen` → success
+### Local
+
 - `uv run ruff format --check .` → success
 - `uv run ruff check .` → all checks passed
-- `uv run mypy src tests` → success (7 source files)
+- `uv run mypy src tests` → success
 - `uv run pytest` → 50 passed (health + ResearchJob lifecycle)
 - Domain package uses standard-library imports only; no FastAPI, database, or agent dependencies.
-- Milestone 3 remains **Current** until commit, PR CI, and merge succeed; Milestone 4 remains **Pending**.
+
+### Remote (Pull Request #3 and `main`)
+
+- Pull Request #3, `feat: add ResearchJob domain lifecycle`, merged into `main`.
+- Pull request CI passed (green).
+- The resulting `main` push CI passed (green).
+- Milestone 3 completion gate is satisfied; Milestone 3 is **Complete** and Milestone 4 is **Current**.
 
 ## Next steps
 
-1. Commit and push Milestone 3.
-2. Open a pull request and confirm CI passes.
-3. After remote validation, mark Milestone 3 **Complete** and Milestone 4 **Current**.
-4. Do not begin PostgreSQL work before that.
+1. Agree on the Milestone 4 PostgreSQL persistence proposal, then implement it as a reviewed vertical slice.
+2. Do not begin the research-job HTTP API (Milestone 5) or AI workflow work until Milestone 4 is complete and reviewed.
 
 ## Active blockers
 
-None. Remote validation (commit, PR CI, and merge) remains an outstanding Milestone 3 completion step.
+None.
