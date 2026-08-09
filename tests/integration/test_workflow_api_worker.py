@@ -73,6 +73,20 @@ def test_api_create_then_langgraph_worker_completes(
         body = fetched.json()
         assert body["status"] == "COMPLETED"
         _assert_report_structure(body["result"], question)
+        assert "Citations:" in body["result"]
+
+        citations = client.get(f"/v1/research-jobs/{job_id}/citations")
+        assert citations.status_code == 200
+        cite_body = citations.json()
+        assert cite_body["research_job_id"] == job_id
+        assert cite_body["report_artifact_id"] is not None
+        assert len(cite_body["citations"]) >= 1
+        first_cite = cite_body["citations"][0]
+        assert first_cite["claim_id"]
+        assert first_cite["evidence_item_id"]
+        assert first_cite["document_id"]
+        assert first_cite["source_id"]
+        assert first_cite["source_canonical_uri"]
 
         with session_factory() as session:
             executions = session.scalars(

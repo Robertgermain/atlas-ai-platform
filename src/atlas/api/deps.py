@@ -8,6 +8,10 @@ from fastapi import Depends
 from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.application.research_jobs import ResearchJobService
+from atlas.config.settings import get_settings
+from atlas.embeddings.composition import build_text_embedder
+from atlas.evidence.retrieve import EvidenceEmbeddingService
+from atlas.evidence.service import EvidenceIngestService, ReportArtifactService
 from atlas.persistence.db import get_session_factory
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
 
@@ -37,3 +41,31 @@ def provide_research_job_service(
         session_factory=session_factory,
         repository=repository,
     )
+
+
+def provide_evidence_ingest_service(
+    session_factory: Annotated[
+        sessionmaker[Session],
+        Depends(provide_session_factory),
+    ],
+) -> EvidenceIngestService:
+    settings = get_settings()
+    embedder = build_text_embedder(settings)
+    embedding_service = EvidenceEmbeddingService(
+        session_factory=session_factory,
+        embedder=embedder,
+        embedding_profile=settings.embedding_profile,
+    )
+    return EvidenceIngestService(
+        session_factory=session_factory,
+        embedding_service=embedding_service,
+    )
+
+
+def provide_report_artifact_service(
+    session_factory: Annotated[
+        sessionmaker[Session],
+        Depends(provide_session_factory),
+    ],
+) -> ReportArtifactService:
+    return ReportArtifactService(session_factory=session_factory)

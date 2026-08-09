@@ -1,0 +1,82 @@
+{
+  "corpus": [
+    {
+      "id": "quantum-crypto",
+      "corpus_key": "eval-quantum-crypto",
+      "title": "Quantum cryptography primer",
+      "text": "Quantum cryptography protocols use photon polarization and quantum key distribution. Entanglement enables secure key exchange resistant to eavesdropping."
+    },
+    {
+      "id": "sailboat-care",
+      "corpus_key": "eval-sailboat-care",
+      "title": "Sailboat maintenance guide",
+      "text": "Sailboat hull cleaning, mast rigging inspection, and marine varnish protect wooden decks during coastal sailing seasons."
+    },
+    {
+      "id": "db-indexing",
+      "corpus_key": "eval-db-indexing",
+      "title": "Database indexing notes",
+      "text": "B-tree indexes accelerate equality lookups. Vector indexes such as HNSW support approximate nearest neighbor search over embeddings."
+    },
+    {
+      "id": "baking-bread",
+      "corpus_key": "eval-baking-bread",
+      "title": "Artisan bread baking",
+      "text": "Sourdough fermentation, gluten development, and steam ovens produce crusty artisan loaves with open crumb structure."
+    },
+    {
+      "id": "orbit-mechanics",
+      "corpus_key": "eval-orbit-mechanics",
+      "title": "Orbital mechanics summary",
+      "text": "Keplerian orbits, Hohmann transfers, and delta-v budgets govern spacecraft trajectory planning between planetary bodies."
+    },
+    {
+      "id": "rag-systems",
+      "corpus_key": "eval-rag-systems",
+      "title": "Retrieval augmented generation",
+      "text": "Retrieval augmented generation embeds documents, stores vectors in pgvector, and retrieves provenance-preserving evidence chunks for grounded drafting."
+    }
+  ],
+  "queries": [
+    {
+      "id": "q-quantum",
+      "query": "quantum cryptography key distribution entanglement",
+      "relevant_corpus_keys": ["eval-quantum-crypto"]
+    },
+    {
+      "id": "q-sailing",
+      "query": "sailboat mast rigging marine varnish hull",
+      "relevant_corpus_keys": ["eval-sailboat-care"]
+    },
+    {
+      "id": "q-vector",
+      "query": "vector indexes HNSW nearest neighbor embeddings",
+      "relevant_corpus_keys": ["eval-db-indexing", "eval-rag-systems"]
+    },
+    {
+      "id": "q-bread",
+      "query": "sourdough fermentation artisan bread crumb",
+      "relevant_corpus_keys": ["eval-baking-bread"]
+    },
+    {
+      "id": "q-orbit",
+      "query": "Hohmann transfer delta-v spacecraft orbit",
+      "relevant_corpus_keys": ["eval-orbit-mechanics"]
+    },
+    {
+      "id": "q-rag",
+      "query": "retrieval augmented generation pgvector provenance evidence",
+      "relevant_corpus_keys": ["eval-rag-systems"]
+    },
+    {
+      "id": "q-crypto-photon",
+      "query": "photon polarization secure eavesdropping resistance",
+      "relevant_corpus_keys": ["eval-quantum-crypto"]
+    },
+    {
+      "id": "q-kepler",
+      "query": "Keplerian orbits planetary trajectory planning",
+      "relevant_corpus_keys": ["eval-orbit-mechanics"]
+    }
+  ]
+}

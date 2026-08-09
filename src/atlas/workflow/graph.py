@@ -10,6 +10,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
 
+from atlas.evidence.contracts import ClaimStructured, SourceKind
+from atlas.evidence.retrieve import EvidenceRetriever
+from atlas.evidence.service import EvidenceIngestService, ReportArtifactService
 from atlas.models.contracts import DraftRequest, PlanRequest
 from atlas.models.fakes import (
     DeterministicResearchDrafter,
@@ -42,7 +45,9 @@ class ResearchGraphState(TypedDict):
     question: str
     plan: list[str]
     findings: list[str]
+    evidence_item_ids: list[str]
     draft: str
+    claims: list[dict[str, Any]]
     result: str
 
 
@@ -78,6 +83,10 @@ class WorkflowRuntimeContext:
     workflow_execution_id: str | None = None
     hooks: NodeAuditHooks | None = None
     node_counters: dict[str, int] | None = None
+    evidence_ingest: EvidenceIngestService | None = None
+    report_service: ReportArtifactService | None = None
+    evidence_retriever: EvidenceRetriever | None = None
+    retrieval_k: int = 5
 
 
 # Backward-compatible alias during Milestone 9 rename.
@@ -89,9 +98,13 @@ def default_fake_runtime_context(
     hooks: NodeAuditHooks | None = None,
     node_counters: dict[str, int] | None = None,
     plan_prompt_version: str = "plan.v1",
-    draft_prompt_version: str = "draft.v1",
+    draft_prompt_version: str = "draft.v2",
     fetch_enabled: bool = False,
     workflow_execution_id: str | None = None,
+    evidence_ingest: EvidenceIngestService | None = None,
+    report_service: ReportArtifactService | None = None,
+    evidence_retriever: EvidenceRetriever | None = None,
+    retrieval_k: int = 5,
 ) -> WorkflowRuntimeContext:
     """Build a deterministic fake planner/drafter/tools runtime context."""
     from atlas.config.settings import Settings
@@ -109,6 +122,7 @@ def default_fake_runtime_context(
         fetch_enabled=fetch_enabled,
         budgets=budgets,
         policy_assert=policy.assert_allowed,
+        evidence_ingest=evidence_ingest,
     )
     return WorkflowRuntimeContext(
         planner=DeterministicResearchPlanner(),
@@ -119,6 +133,10 @@ def default_fake_runtime_context(
         workflow_execution_id=workflow_execution_id,
         hooks=hooks,
         node_counters=node_counters,
+        evidence_ingest=evidence_ingest,
+        report_service=report_service,
+        evidence_retriever=evidence_retriever,
+        retrieval_k=retrieval_k,
     )
 
 
@@ -129,9 +147,31 @@ def initial_graph_state(*, job_id: str, question: str) -> ResearchGraphState:
         "question": question,
         "plan": [],
         "findings": [],
+        "evidence_item_ids": [],
         "draft": "",
+        "claims": [],
         "result": "",
     }
+
+
+def _state_evidence_ids(state: ResearchGraphState) -> list[str]:
+    raw = state.get("evidence_item_ids")
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw]
+
+
+def _state_claims(state: ResearchGraphState) -> list[ClaimStructured]:
+    raw = state.get("claims")
+    if not isinstance(raw, list) or not raw:
+        return []
+    claims: list[ClaimStructured] = []
+    for item in raw:
+        if isinstance(item, ClaimStructured):
+            claims.append(item)
+        elif isinstance(item, dict):
+            claims.append(ClaimStructured.model_validate(item))
+    return claims
 
 
 def validate_node(state: ResearchGraphState) -> dict[str, Any]:
@@ -166,7 +206,7 @@ def research_node(
     *,
     workflow_node_attempt: int | None = None,
 ) -> dict[str, Any]:
-    """Run governed research tools for each plan task."""
+    """Run governed research tools, retrieve corpus evidence, and merge IDs."""
     plan = state["plan"]
     if len(plan) != 3:
         raise ValueError("plan must contain exactly three tasks")
@@ -175,13 +215,46 @@ def research_node(
         workflow_execution_id=runtime.context.workflow_execution_id,
         workflow_node_attempt=workflow_node_attempt,
     )
-    findings = runtime.context.research_executor.research(
+    outcome = runtime.context.research_executor.research(
         plan=plan,
         context=context,
     )
-    if len(findings) != 3:
+    if len(outcome.findings) != 3:
         raise ValueError("research must produce exactly three findings")
-    return {"findings": findings}
+
+    evidence_ids = list(outcome.evidence_item_ids)
+    retriever = runtime.context.evidence_retriever
+    ingest = runtime.context.evidence_ingest
+    if retriever is not None:
+        query = " ".join([state["question"], *plan])
+        # Default path follows settings.retrieval_use_hnsw (HNSW locally).
+        # Offline CI eval forces mode="exact" so approximate index behavior
+        # cannot gate Recall@K / MRR thresholds.
+        retrieved = retriever.retrieve(
+            query=query,
+            k=runtime.context.retrieval_k,
+            source_kinds=[SourceKind.CORPUS_TEXT],
+            research_job_id=None,
+            include_operator_corpus=True,
+        )
+        retrieved_ids = [item.evidence.id for item in retrieved]
+        if retrieved_ids and ingest is not None:
+            ingest.link_evidence_to_job(
+                research_job_id=state["job_id"],
+                evidence_item_ids=retrieved_ids,
+                workflow_execution_id=runtime.context.workflow_execution_id,
+            )
+        # Preserve ranking: search evidence first, then retrieved; dedupe.
+        seen = set(evidence_ids)
+        for item_id in retrieved_ids:
+            if item_id not in seen:
+                evidence_ids.append(item_id)
+                seen.add(item_id)
+
+    return {
+        "findings": list(outcome.findings),
+        "evidence_item_ids": evidence_ids,
+    }
 
 
 def draft_node(
@@ -193,6 +266,12 @@ def draft_node(
     findings = state["findings"]
     if len(findings) != len(plan):
         raise ValueError("findings must align with plan tasks")
+    evidence_ids = _state_evidence_ids(state)
+    evidence_pack = []
+    if runtime.context.evidence_ingest is not None and evidence_ids:
+        evidence_pack = runtime.context.evidence_ingest.build_drafter_evidence_pack(
+            evidence_ids
+        )
     result = runtime.context.drafter.draft(
         DraftRequest(
             job_id=state["job_id"],
@@ -200,24 +279,47 @@ def draft_node(
             plan=plan,
             findings=findings,
             prompt_version=runtime.context.draft_prompt_version,
+            evidence=evidence_pack,
         )
     )
-    return {"draft": result.draft}
+    claims = list(result.claims)
+    if not evidence_pack:
+        claims = []
+    return {
+        "draft": result.draft,
+        "claims": [claim.model_dump() for claim in claims],
+    }
 
 
-def complete_node(state: ResearchGraphState) -> dict[str, Any]:
-    """Format the final stable research report."""
+def complete_node(
+    state: ResearchGraphState,
+    runtime: Runtime[WorkflowRuntimeContext],
+) -> dict[str, Any]:
+    """Format the final stable research report and persist the artifact."""
     draft = state["draft"]
     if not draft.strip():
         raise ValueError("draft must be non-empty before complete")
-    return {
-        "result": format_research_report(
-            question=state["question"],
-            plan=state["plan"],
-            findings=state["findings"],
-            draft=draft,
+    claims = _state_claims(state)
+    if not _state_evidence_ids(state):
+        claims = []
+    report = format_research_report(
+        question=state["question"],
+        plan=state["plan"],
+        findings=state["findings"],
+        draft=draft,
+        claims=claims,
+    )
+    if (
+        runtime.context.report_service is not None
+        and runtime.context.workflow_execution_id is not None
+    ):
+        runtime.context.report_service.persist_final(
+            research_job_id=state["job_id"],
+            workflow_execution_id=runtime.context.workflow_execution_id,
+            body_text=report,
+            claims=claims,
         )
-    }
+    return {"result": report}
 
 
 NodeFn = Callable[..., Mapping[str, Any]]
@@ -255,19 +357,6 @@ def _wrap_node(
     return wrapped
 
 
-def _as_runtime_node(
-    node_fn: Callable[[ResearchGraphState], Mapping[str, Any]],
-) -> Callable[[ResearchGraphState, Runtime[WorkflowRuntimeContext]], Mapping[str, Any]]:
-    def adapted(
-        state: ResearchGraphState,
-        runtime: Runtime[WorkflowRuntimeContext],
-    ) -> Mapping[str, Any]:
-        del runtime
-        return node_fn(state)
-
-    return adapted
-
-
 def build_research_graph(
     *,
     checkpointer: object,
@@ -291,10 +380,7 @@ def build_research_graph(
     graph.add_node("plan", cast(Any, _wrap_node("plan", plan_node)))
     graph.add_node("research", cast(Any, _wrap_node("research", research_node)))
     graph.add_node("draft", cast(Any, _wrap_node("draft", draft_node)))
-    graph.add_node(
-        "complete",
-        cast(Any, _wrap_node("complete", _as_runtime_node(complete_node))),
-    )
+    graph.add_node("complete", cast(Any, _wrap_node("complete", complete_node)))
     graph.add_edge(START, "validate")
     graph.add_edge("validate", "plan")
     graph.add_edge("plan", "research")
@@ -305,3 +391,16 @@ def build_research_graph(
         checkpointer=cast(Any, checkpointer),
         interrupt_after=list(interrupt_after) if interrupt_after else None,
     )
+
+
+def _as_runtime_node(
+    node_fn: Callable[[ResearchGraphState], Mapping[str, Any]],
+) -> Callable[[ResearchGraphState, Runtime[WorkflowRuntimeContext]], Mapping[str, Any]]:
+    def adapted(
+        state: ResearchGraphState,
+        runtime: Runtime[WorkflowRuntimeContext],
+    ) -> Mapping[str, Any]:
+        del runtime
+        return node_fn(state)
+
+    return adapted

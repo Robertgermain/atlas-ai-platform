@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from atlas.evidence.contracts import ClaimStructured
 from atlas.models.contracts import (
     DraftRequest,
     DraftResult,
@@ -34,6 +35,20 @@ def _build_draft(*, question: str, plan: list[str], findings: list[str]) -> str:
     )
 
 
+def _build_claims(request: DraftRequest) -> list[ClaimStructured]:
+    if not request.evidence:
+        return []
+    claims: list[ClaimStructured] = []
+    for item in request.evidence:
+        claims.append(
+            ClaimStructured(
+                text=f"Supported by evidence from {item.source_display_uri}",
+                evidence_item_ids=[item.evidence_item_id],
+            )
+        )
+    return claims
+
+
 class DeterministicResearchPlanner:
     """Atlas fake planner implementing ResearchPlanner without LangChain."""
 
@@ -62,6 +77,7 @@ class DeterministicResearchDrafter:
                 plan=list(request.plan),
                 findings=list(request.findings),
             ),
+            claims=_build_claims(request),
             meta=ModelCallMeta(
                 provider=ProviderId.FAKE,
                 model="deterministic-fake",

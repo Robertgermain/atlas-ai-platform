@@ -115,3 +115,4 @@ class ToolInvocationResult(BaseModel):
     output: dict[str, Any]
     meta: ToolResultMeta
     finding_text: str
+    invocation_id: str | None = None

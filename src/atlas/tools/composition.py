@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
 
     from atlas.config.settings import Settings
+    from atlas.evidence.service import EvidenceIngestService
 
 
 def build_tool_budgets(settings: Settings) -> ToolBudgets:
@@ -72,6 +73,7 @@ def build_research_executor(
     *,
     session_factory: sessionmaker[Session] | None = None,
     use_ledger: bool = True,
+    evidence_ingest: EvidenceIngestService | None = None,
 ) -> ResearchPlanExecutor:
     """Compose the research-node executor.
 
@@ -114,6 +116,7 @@ def build_research_executor(
         return LedgerBackedResearchExecutor(
             service=service,
             fetch_enabled=fetch_enabled and ToolId.FETCH_URL in registry.list_ids(),
+            evidence_ingest=evidence_ingest,
         )
 
     fetch_tool = None
@@ -125,6 +128,7 @@ def build_research_executor(
         fetch_enabled=fetch_enabled,
         budgets=budgets,
         policy_assert=policy.assert_allowed,
+        evidence_ingest=evidence_ingest,
     )
 
 
