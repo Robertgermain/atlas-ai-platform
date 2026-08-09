@@ -5,9 +5,14 @@ from atlas.domain.exceptions import (
     InvalidResearchJobError,
     InvalidTransitionError,
 )
-from atlas.domain.research_job import ResearchJob, ResearchJobStatus
+from atlas.domain.research_job import (
+    MAX_RESEARCH_JOB_ID_LENGTH,
+    ResearchJob,
+    ResearchJobStatus,
+)
 
 __all__ = [
+    "MAX_RESEARCH_JOB_ID_LENGTH",
     "DomainError",
     "InvalidResearchJobError",
     "InvalidTransitionError",
