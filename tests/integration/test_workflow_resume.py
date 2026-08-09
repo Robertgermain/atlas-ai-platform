@@ -72,4 +72,5 @@ def test_interrupt_after_plan_survives_full_runtime_disposal(
     assert counters["plan"] == 1
     assert counters["research"] == 1
     assert counters["draft"] == 1
+    assert counters["verify_citations"] == 1
     assert counters["complete"] == 1
