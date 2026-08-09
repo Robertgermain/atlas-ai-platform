@@ -3,7 +3,7 @@
 - Last updated: 2026-08-09
 - Phase: Local implementation foundation
 - Milestone: Real model-provider adapters (Milestone 8)
-- Implementation status: Milestone 7 is complete. Milestone 8 is Current and awaits an approved implementation proposal.
+- Implementation status: Milestone 7 is complete. Milestone 8 is Current; local automated gates and opt-in live OpenAI/Anthropic verification passed on `milestone-8-model-providers`. Pull-request CI and resulting `main` CI remain outstanding before Complete.
 
 ## Objective
 
@@ -17,26 +17,29 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 
 - A minimal repository baseline and one flat `docs/` folder.
 - `docs/LOCAL_BUILD_PLAN.md` as the ordered local roadmap and milestone checklist.
-- Research, product requirements, testing strategy, and a technical-design document with validated local foundation through the deterministic LangGraph workflow slice.
+- Research, product requirements, testing strategy, and a technical-design document with validated local foundation through the Milestone 8 model-provider slice.
 - Root instructions for AI assistants and this current-state handoff.
 - Local environment and ignore files; committed `.env.example` (no secrets).
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
 - `src/atlas` package with FastAPI `GET /health` (liveness) and `GET /ready` (Postgres readiness).
-- Pytest, Ruff (format + lint), and mypy configuration; domain, API, worker, workflow, and PostgreSQL integration tests.
-- GitHub Actions CI with Postgres 16 service targeting `atlas_test`, green on `main` through Pull Request #8 (Milestone 6).
+- Pytest, Ruff (format + lint), and mypy configuration; domain, API, worker, workflow, model, and PostgreSQL integration tests.
+- GitHub Actions CI with Postgres 16 service targeting `atlas_test`; `main` is green through Pull Request #10 (Milestone 7 LangGraph workflow). Milestone 8 remote verification is still pending its pull request and the resulting `main` workflow.
 - `atlas.domain` package with slotted `ResearchJob`, `reconstitute(...)`, and lifecycle transitions.
 - Docker Compose Postgres 16 on host port `5433` with databases `atlas` and `atlas_test`.
-- SQLAlchemy 2.x + psycopg3 + Alembic persistence for `research_jobs`, including idempotency metadata (`20260808_0002`), claim lease/token columns (`20260809_0003`), and Atlas-owned workflow execution history (`20260809_0004`).
+- SQLAlchemy 2.x + psycopg3 + Alembic persistence for `research_jobs`, including idempotency metadata (`20260808_0002`), claim lease/token columns (`20260809_0003`), Atlas-owned workflow execution history (`20260809_0004`), and model invocation ledger tables (`20260809_0005`).
 - `POST /v1/research-jobs` and `GET /v1/research-jobs/{job_id}` with Pydantic contracts, `ResearchJobService`, required `Idempotency-Key`, and structured API errors (merged via Pull Request #7).
-- Background worker (`python -m atlas.worker`) with PostgreSQL `FOR UPDATE SKIP LOCKED` claiming, claim-token fencing, orchestration timeout, and bounded shutdown (does not hard-kill processor threads), merged via Pull Request #8 and extended in Milestone 7.
-- Deterministic LangGraph research workflow behind `ResearchJobProcessor` (`job_id` keyword; `thread_id = job_id`): validate → plan → research → draft → complete; sync `PostgresSaver` checkpoints; Atlas audit tables for per-attempt workflow/node history; fake planner/tool only.
+- Background worker (`python -m atlas.worker`) with PostgreSQL `FOR UPDATE SKIP LOCKED` claiming, claim-token fencing, orchestration timeout, and bounded shutdown (does not hard-kill processor threads), merged via Pull Request #8 and extended in Milestones 7–8.
+- LangGraph research workflow behind `ResearchJobProcessor` (`job_id` keyword; `thread_id = job_id`): validate → plan → research → draft → complete; sync `PostgresSaver` checkpoints; Atlas audit tables for per-attempt workflow/node history.
+- Model-provider adapters (`atlas.models`): LangChain `BaseChatModel` boundary; OpenAI (`ChatOpenAI` + Responses API) and Anthropic (`ChatAnthropic`) composed only in configuration; default `fake` deterministic planner/drafter Protocols; LangGraph `ModelRuntimeContext`; two-table invocation ledger with fail-fast in-progress conflicts and deadline-based stale reclaim.
 
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
-- Live LLM providers, live web search, RAG/pgvector, MCP, specialist agents, grading, Redis, Kafka, application/worker Docker images, Kubernetes, Terraform, or AWS resources.
+- Live web search, RAG/pgvector, MCP, specialist agents, grading, Redis, Kafka, application/worker Docker images, Kubernetes, Terraform, or AWS resources.
 - Heartbeat lease renewal or hard cancellation of in-flight processor threads.
+- Exactly-once provider billing guarantees after crash between provider success and ledger commit.
 - Validated quality, latency, reliability, or cost benchmarks.
+- Remote CI verification for Milestone 8 (pending PR and main).
 
 ## Decisions
 
@@ -70,15 +73,20 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Raw idempotency key values are not echoed in API responses, structured error details, or logs.
 - Worker claims use `secrets.token_hex(32)` on every claim/reclaim; fenced finalize requires matching job id, `RUNNING`, and claim token; zero-row updates mean ownership loss.
 - Processing is at-least-once: the claim token fences stale DB finalization but cannot undo duplicate in-process work or future external side effects.
-- Worker defaults: poll 1s, processing timeout 15s, lease 30s; no heartbeat renewal.
-- Processing timeout is an orchestration timeout via `Future.result(timeout=...)` on a single-thread executor; late results are ignored permanently and cannot finalize. Python cannot forcibly stop an already-running processor thread; Milestone 7 does not claim stronger fencing than Milestone 6.
+- Worker defaults (Milestone 8): poll 1s, processing timeout 60s (orchestration-only `Future.result`; does not kill threads), lease 90s; provider request timeout / attempt deadline 25s (not a hard whole-invoke wall clock); no heartbeat renewal.
+- Processing timeout is an orchestration timeout via `Future.result(timeout=...)` on a single-thread executor; late results are ignored permanently and cannot finalize. Python cannot forcibly stop an already-running processor thread.
 - Shutdown stops new claims and waits at most `shutdown_grace_seconds` (default = processing timeout) before `ThreadPoolExecutor.shutdown(wait=False)`. A hung non-daemon thread may keep the process alive until the callable returns or the process is force-killed.
 - `ResearchJobProcessor` requires `question` and keyword-only `job_id`; the worker injects `LangGraphResearchProcessor` and must not import LangGraph.
-- LangGraph owns node progression and durable checkpoints (`PostgresSaver`, tables via one-time worker-startup `setup()`). Atlas Alembic owns `workflow_executions` / `workflow_node_executions`. Checkpoint and audit writes are not one atomic transaction and may briefly disagree after a crash.
+- LangGraph owns node progression and durable checkpoints (`PostgresSaver`, tables via one-time worker-startup `setup()`). Atlas Alembic owns `workflow_executions` / `workflow_node_executions` / model invocation ledger. Checkpoint, audit, and ledger writes are not one atomic transaction and may briefly disagree after a crash.
 - One `workflow_executions` row per worker processing attempt; all attempts share `thread_id = research_job_id`. Reclaim creates a new execution and marks prior `RUNNING` rows `ABANDONED` when practical. Node history stores one row per `(workflow_execution_id, node_name, attempt)`.
 - Workflow/node failure handling catches `Exception` only; process-control exceptions propagate. Persisted node errors are class-only (`<ExceptionClass>: node execution failed`) with no raw exception text.
 - Graph nodes never finalize `ResearchJob` rows.
-- Deterministic report sections: `Question`, `Plan`, `Findings`, `Draft`.
+- Report sections: `Question`, `Plan`, `Findings`, `Draft`.
+- LangChain `BaseChatModel` is the model boundary; provider SDKs and `ChatOpenAI`/`ChatAnthropic` stay in composition only.
+- Model wiring uses LangGraph `ModelRuntimeContext` + `context_schema` + `invoke(..., context=...)` + `Runtime[...]`; not a module-level model `ContextVar`.
+- Default provider is `fake`; real providers require explicit selection and credentials. Plan/draft are model-backed; validate/research/complete stay deterministic for Milestone 8.
+- Invocation ledger is two tables (`model_invocations`, `model_invocation_attempts`). Concurrent same-key calls fail fast with `ModelInvocationInProgressError`. Stale reclaim requires expired attempt deadline and invalid research-job claim. Attempt finalization uses conditional `STARTED`→terminal updates and active-attempt checks so a late superseded attempt cannot overwrite newer ledger state (`ModelAttemptOwnershipLostError`). Exactly-once provider billing is not claimed.
+- Ledger never stores API keys, raw exception messages, complete prompts, or complete model responses. Estimated cost is versioned and may be null.
 
 ## Verification (Milestone 1)
 
@@ -206,12 +214,40 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 
 ### Remote
 
-- GitHub Actions pull-request and main-branch histories are the source of truth for remote CI verification.
+- Pull Request #10, `feat: add deterministic LangGraph workflow`, merged into `main` as commit `5a6d19c`.
+- GitHub Actions pull-request and resulting `main` CI for that merge are the source of truth for Milestone 7 remote verification.
+
+## Verification (Milestone 8)
+
+### Local
+
+- `uv sync --frozen` → success
+- `uv run ruff format --check .` → success
+- `uv run ruff check .` → all checks passed
+- `uv run mypy src tests` → success (79 source files)
+- `ATLAS_DATABASE_URL=.../atlas_test uv run pytest` → 156 passed, 2 skipped (live tests skipped in the default suite)
+- `git diff --check` → clean
+- Default suite makes no live provider network calls.
+- Covers mocked OpenAI/Anthropic adapters, ledger success/replay, fail-fast in-progress conflicts, stale reclaim after deadline + invalid claim, late superseded-attempt fencing, Atlas-only error classes in ledger rows, and Alembic head `20260809_0005`.
+
+### Opt-in live providers
+
+- `.env` is gitignored (confirmed via `git check-ignore`; contents not inspected in documentation).
+- `ATLAS_ENABLE_LIVE_MODEL_TESTS=1 uv run pytest tests/models/test_live_providers.py -v` → 2 passed:
+  - `test_live_openai_structured_plan` (LangChain → OpenAI, provider-default model)
+  - `test_live_anthropic_structured_plan` (LangChain → Anthropic, provider-default model)
+- No global `ATLAS_MODEL_NAME` override was used for the live run.
+- Live verification used local ignored credentials only; keys were not logged, committed, or copied into docs/tests/examples.
+
+### Remote
+
+- Pending: pull-request CI and resulting `main` CI must pass before Milestone 8 is marked Complete.
+- Milestone 8 remains **Current**.
 
 ## Next steps
 
-1. Prepare and review the Milestone 8 implementation proposal.
-2. Do not implement Milestone 8 until the Milestone 7 pull request and resulting main-branch CI are green.
+1. Open the Milestone 8 pull request from `milestone-8-model-providers` and confirm PR CI + resulting `main` CI are green.
+2. Only then mark Milestone 8 Complete and advance Milestone 9 to Current.
 3. Do not expand into later roadmap capabilities ahead of their milestones.
 
 ## Active blockers

@@ -12,20 +12,23 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from atlas.config.settings import Settings, get_settings
+from atlas.models.composition import build_planner_and_drafter
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.workflow import SqlAlchemyWorkflowRepository
 from atlas.workflow.graph import (
+    ModelRuntimeContext,
     NodeAuditHooks,
     build_research_graph,
+    default_fake_runtime_context,
     initial_graph_state,
-    set_node_counters,
-    set_node_hooks,
 )
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
     from sqlalchemy.orm import Session, sessionmaker
 
+    from atlas.models.ports import ResearchDrafter, ResearchPlanner
     from atlas.workflow.graph import ResearchGraphState
 
 
@@ -132,9 +135,10 @@ class RepositoryNodeAuditHooks(NodeAuditHooks):
 
 
 class LangGraphResearchProcessor:
-    """ResearchJobProcessor backed by the deterministic LangGraph workflow.
+    """ResearchJobProcessor backed by the LangGraph research workflow.
 
     Does not finalize ResearchJob rows; the worker retains job lifecycle ownership.
+    Plan and draft use ResearchPlanner/ResearchDrafter ports from runtime context.
     """
 
     def __init__(
@@ -142,15 +146,24 @@ class LangGraphResearchProcessor:
         *,
         checkpointer: PostgresSaver,
         session_factory: sessionmaker[Session],
+        settings: Settings | None = None,
         repository: SqlAlchemyWorkflowRepository | None = None,
         interrupt_after: Sequence[str] | None = None,
         node_counters: dict[str, int] | None = None,
+        planner: ResearchPlanner | None = None,
+        drafter: ResearchDrafter | None = None,
     ) -> None:
         self._session_factory = session_factory
+        self._settings = settings or get_settings()
         self._repository = repository or SqlAlchemyWorkflowRepository()
         self._node_counters = node_counters
+        self._planner_override = planner
+        self._drafter_override = drafter
         self._graph: CompiledStateGraph[
-            ResearchGraphState, None, ResearchGraphState, ResearchGraphState
+            ResearchGraphState,
+            ModelRuntimeContext,
+            ResearchGraphState,
+            ResearchGraphState,
         ] = build_research_graph(
             checkpointer=checkpointer,
             interrupt_after=interrupt_after,
@@ -179,30 +192,69 @@ class LangGraphResearchProcessor:
             repository=self._repository,
             workflow_execution_id=execution_id,
         )
-        set_node_hooks(hooks)
-        set_node_counters(self._node_counters)
+        context = self._build_context(
+            workflow_execution_id=execution_id,
+            hooks=hooks,
+        )
         try:
-            try:
-                result = self._invoke(question=question, job_id=job_id, config=config)
-            except Exception:
-                with session_scope(self._session_factory) as session:
-                    self._repository.fail_execution(
-                        session,
-                        execution_id=execution_id,
-                        at=datetime.now(UTC),
-                    )
-                raise
-            else:
-                with session_scope(self._session_factory) as session:
-                    self._repository.complete_execution(
-                        session,
-                        execution_id=execution_id,
-                        at=datetime.now(UTC),
-                    )
-                return result
-        finally:
-            set_node_hooks(None)
-            set_node_counters(None)
+            result = self._invoke(
+                question=question,
+                job_id=job_id,
+                config=config,
+                context=context,
+            )
+        except Exception:
+            with session_scope(self._session_factory) as session:
+                self._repository.fail_execution(
+                    session,
+                    execution_id=execution_id,
+                    at=datetime.now(UTC),
+                )
+            raise
+        else:
+            with session_scope(self._session_factory) as session:
+                self._repository.complete_execution(
+                    session,
+                    execution_id=execution_id,
+                    at=datetime.now(UTC),
+                )
+            return result
+
+    def _build_context(
+        self,
+        *,
+        workflow_execution_id: str,
+        hooks: NodeAuditHooks | None,
+    ) -> ModelRuntimeContext:
+        if self._planner_override is not None and self._drafter_override is not None:
+            return ModelRuntimeContext(
+                planner=self._planner_override,
+                drafter=self._drafter_override,
+                plan_prompt_version=self._settings.plan_prompt_version,
+                draft_prompt_version=self._settings.draft_prompt_version,
+                hooks=hooks,
+                node_counters=self._node_counters,
+            )
+        if self._settings.model_provider == "fake":
+            return default_fake_runtime_context(
+                hooks=hooks,
+                node_counters=self._node_counters,
+                plan_prompt_version=self._settings.plan_prompt_version,
+                draft_prompt_version=self._settings.draft_prompt_version,
+            )
+        planner, drafter = build_planner_and_drafter(
+            self._settings,
+            session_factory=self._session_factory,
+            workflow_execution_id=workflow_execution_id,
+        )
+        return ModelRuntimeContext(
+            planner=planner,
+            drafter=drafter,
+            plan_prompt_version=self._settings.plan_prompt_version,
+            draft_prompt_version=self._settings.draft_prompt_version,
+            hooks=hooks,
+            node_counters=self._node_counters,
+        )
 
     def _invoke(
         self,
@@ -210,10 +262,11 @@ class LangGraphResearchProcessor:
         question: str,
         job_id: str,
         config: RunnableConfig,
+        context: ModelRuntimeContext,
     ) -> str:
         snapshot = self._graph.get_state(config)
         if snapshot.values and snapshot.next:
-            final_state = self._graph.invoke(None, config)
+            final_state = self._graph.invoke(None, config, context=context)
         elif snapshot.values and not snapshot.next:
             existing = snapshot.values.get("result")
             if isinstance(existing, str) and existing.strip():
@@ -221,11 +274,13 @@ class LangGraphResearchProcessor:
             final_state = self._graph.invoke(
                 initial_graph_state(job_id=job_id, question=question),
                 config,
+                context=context,
             )
         else:
             final_state = self._graph.invoke(
                 initial_graph_state(job_id=job_id, question=question),
                 config,
+                context=context,
             )
 
         if not isinstance(final_state, dict):

@@ -1,8 +1,8 @@
 # Atlas AI Platform
 
-Atlas is a planned production-oriented, multi-agent deep-research platform and a hands-on AI/backend/cloud engineering portfolio project.
+Atlas is an in-progress production-oriented multi-agent deep-research platform and a hands-on AI/backend/cloud engineering portfolio project.
 
-The repository has a verified Python 3.12 / FastAPI local foundation (`GET /health`) and continues through small, tested vertical slices so every folder and file has a clear purpose.
+The repository already has a working local backend and workflow foundation: Python 3.12 / FastAPI (`GET /health`, `GET /ready`, research-job APIs), PostgreSQL persistence, a background worker, a LangGraph research workflow, and Milestone 8 model-provider adapters (default `fake`, optional OpenAI/Anthropic). Work continues through small, tested vertical slices so every folder and file has a clear purpose.
 
 ## Read in this order
 
@@ -16,7 +16,7 @@ The repository has a verified Python 3.12 / FastAPI local foundation (`GET /heal
 
 ## Current milestone
 
-Milestone 7 provides the deterministic, checkpointed LangGraph research workflow behind the worker processor boundary. Milestone 8 (real model-provider adapters) is Current. The worker still owns claim/finalize fencing; LangGraph owns deterministic node progression and Postgres checkpoints. GitHub Actions remains the source of truth for remote CI. The comprehensive Visio and AWS design remains deferred until working local components can be mapped to the cloud with evidence.
+Milestone 8 adds real model-provider adapters (OpenAI and Anthropic) behind LangChain `BaseChatModel`, with a durable invocation ledger and `fake` as the default provider. Plan and draft are model-backed; validate, research, and complete remain deterministic. Local automated gates and opt-in live OpenAI/Anthropic verification have passed. Do not mark Milestone 8 Complete until pull-request CI and resulting `main` CI pass. The comprehensive Visio and AWS design remains deferred.
 
 ### Run locally
 
@@ -37,5 +37,7 @@ uv run alembic upgrade head
 uv run uvicorn atlas.main:app --reload
 
 # 5. Start the worker (terminal 2)
+# Default ATLAS_MODEL_PROVIDER=fake (no live LLM calls).
+# For real providers: set ATLAS_MODEL_PROVIDER=openai|anthropic and the matching API key.
 uv run python -m atlas.worker
 ```

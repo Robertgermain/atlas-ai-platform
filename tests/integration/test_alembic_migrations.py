@@ -62,9 +62,23 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
         version = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-    assert version == "20260809_0004"
+    assert version == "20260809_0005"
     assert inspector.has_table("workflow_executions")
     assert inspector.has_table("workflow_node_executions")
+    assert inspector.has_table("model_invocations")
+    assert inspector.has_table("model_invocation_attempts")
+
+    model_constraints = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("model_invocations")
+    }
+    assert "ck_model_invocations_status" in model_constraints
+    assert "ck_model_invocations_status_fields" in model_constraints
+    attempt_uniques = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("model_invocation_attempts")
+    }
+    assert "uq_model_invocation_attempts_number" in attempt_uniques
 
 
 def test_legacy_row_survives_upgrade_from_0001(
@@ -125,7 +139,7 @@ def test_legacy_row_survives_upgrade_from_0001(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
 
-        assert version == "20260809_0004"
+        assert version == "20260809_0005"
         assert row["id"] == "legacy-job"
         assert row["question"] == "legacy question"
         assert row["status"] == "PENDING"

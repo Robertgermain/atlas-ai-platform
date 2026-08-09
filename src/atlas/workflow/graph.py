@@ -1,20 +1,22 @@
-"""Typed LangGraph research workflow (deterministic nodes only)."""
+"""Typed LangGraph research workflow with model runtime context."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import Runtime
 
-from atlas.workflow.fakes import (
-    build_draft,
-    build_research_plan,
-    format_research_report,
-    run_fake_research,
+from atlas.models.contracts import DraftRequest, PlanRequest
+from atlas.models.fakes import (
+    DeterministicResearchDrafter,
+    DeterministicResearchPlanner,
 )
+from atlas.models.ports import ResearchDrafter, ResearchPlanner
+from atlas.workflow.fakes import format_research_report, run_fake_research
 
 NODE_NAMES: tuple[str, ...] = (
     "validate",
@@ -26,7 +28,7 @@ NODE_NAMES: tuple[str, ...] = (
 
 
 class ResearchGraphState(TypedDict):
-    """Typed channels for the deterministic research graph."""
+    """Typed channels for the research graph."""
 
     job_id: str
     question: str
@@ -52,24 +54,38 @@ class NodeAuditHooks:
         raise NotImplementedError
 
 
-_node_hooks: ContextVar[NodeAuditHooks | None] = ContextVar(
-    "atlas_workflow_node_hooks",
-    default=None,
-)
-_node_counters: ContextVar[dict[str, int] | None] = ContextVar(
-    "atlas_workflow_node_counters",
-    default=None,
-)
+@dataclass(frozen=True, slots=True)
+class ModelRuntimeContext:
+    """LangGraph runtime context for model-backed plan/draft nodes.
+
+    Passed via ``graph.invoke(..., context=...)`` and read through
+    ``Runtime[ModelRuntimeContext]``. Not stored in checkpoints.
+    """
+
+    planner: ResearchPlanner
+    drafter: ResearchDrafter
+    plan_prompt_version: str
+    draft_prompt_version: str
+    hooks: NodeAuditHooks | None = None
+    node_counters: dict[str, int] | None = None
 
 
-def set_node_hooks(hooks: NodeAuditHooks | None) -> None:
-    """Bind audit hooks for the current worker processing attempt."""
-    _node_hooks.set(hooks)
-
-
-def set_node_counters(counters: dict[str, int] | None) -> None:
-    """Bind optional per-node execution counters (tests)."""
-    _node_counters.set(counters)
+def default_fake_runtime_context(
+    *,
+    hooks: NodeAuditHooks | None = None,
+    node_counters: dict[str, int] | None = None,
+    plan_prompt_version: str = "plan.v1",
+    draft_prompt_version: str = "draft.v1",
+) -> ModelRuntimeContext:
+    """Build a deterministic fake planner/drafter runtime context."""
+    return ModelRuntimeContext(
+        planner=DeterministicResearchPlanner(),
+        drafter=DeterministicResearchDrafter(),
+        plan_prompt_version=plan_prompt_version,
+        draft_prompt_version=draft_prompt_version,
+        hooks=hooks,
+        node_counters=node_counters,
+    )
 
 
 def initial_graph_state(*, job_id: str, question: str) -> ResearchGraphState:
@@ -95,9 +111,19 @@ def validate_node(state: ResearchGraphState) -> dict[str, Any]:
     return {"job_id": job_id, "question": question}
 
 
-def plan_node(state: ResearchGraphState) -> dict[str, Any]:
-    """Produce a bounded deterministic plan."""
-    return {"plan": build_research_plan(state["question"])}
+def plan_node(
+    state: ResearchGraphState,
+    runtime: Runtime[ModelRuntimeContext],
+) -> dict[str, Any]:
+    """Produce a bounded research plan through the planner port."""
+    result = runtime.context.planner.plan(
+        PlanRequest(
+            job_id=state["job_id"],
+            question=state["question"],
+            prompt_version=runtime.context.plan_prompt_version,
+        )
+    )
+    return {"plan": list(result.tasks)}
 
 
 def research_node(state: ResearchGraphState) -> dict[str, Any]:
@@ -108,19 +134,25 @@ def research_node(state: ResearchGraphState) -> dict[str, Any]:
     return {"findings": [run_fake_research(task) for task in plan]}
 
 
-def draft_node(state: ResearchGraphState) -> dict[str, Any]:
-    """Draft a deterministic intermediate report."""
+def draft_node(
+    state: ResearchGraphState,
+    runtime: Runtime[ModelRuntimeContext],
+) -> dict[str, Any]:
+    """Draft an intermediate report through the drafter port."""
     plan = state["plan"]
     findings = state["findings"]
     if len(findings) != len(plan):
         raise ValueError("findings must align with plan tasks")
-    return {
-        "draft": build_draft(
+    result = runtime.context.drafter.draft(
+        DraftRequest(
+            job_id=state["job_id"],
             question=state["question"],
             plan=plan,
             findings=findings,
+            prompt_version=runtime.context.draft_prompt_version,
         )
-    }
+    )
+    return {"draft": result.draft}
 
 
 def complete_node(state: ResearchGraphState) -> dict[str, Any]:
@@ -138,21 +170,27 @@ def complete_node(state: ResearchGraphState) -> dict[str, Any]:
     }
 
 
+NodeFn = Callable[..., Mapping[str, Any]]
+
+
 def _wrap_node(
     node_name: str,
-    node_fn: Callable[[ResearchGraphState], Mapping[str, Any]],
-) -> Callable[[ResearchGraphState], dict[str, Any]]:
-    def wrapped(state: ResearchGraphState) -> dict[str, Any]:
-        counters = _node_counters.get()
+    node_fn: NodeFn,
+) -> Callable[[ResearchGraphState, Runtime[ModelRuntimeContext]], dict[str, Any]]:
+    def wrapped(
+        state: ResearchGraphState,
+        runtime: Runtime[ModelRuntimeContext],
+    ) -> dict[str, Any]:
+        counters = runtime.context.node_counters
         if counters is not None:
             counters[node_name] = counters.get(node_name, 0) + 1
 
-        hooks = _node_hooks.get()
+        hooks = runtime.context.hooks
         attempt: int | None = None
         if hooks is not None:
             attempt = hooks.begin(node_name)
         try:
-            result = dict(node_fn(state))
+            result = dict(node_fn(state, runtime))
         except Exception as exc:
             if hooks is not None and attempt is not None:
                 hooks.fail(node_name, attempt, exc)
@@ -164,21 +202,49 @@ def _wrap_node(
     return wrapped
 
 
+def _as_runtime_node(
+    node_fn: Callable[[ResearchGraphState], Mapping[str, Any]],
+) -> Callable[[ResearchGraphState, Runtime[ModelRuntimeContext]], Mapping[str, Any]]:
+    def adapted(
+        state: ResearchGraphState,
+        runtime: Runtime[ModelRuntimeContext],
+    ) -> Mapping[str, Any]:
+        del runtime
+        return node_fn(state)
+
+    return adapted
+
+
 def build_research_graph(
     *,
     checkpointer: object,
     interrupt_after: Sequence[str] | None = None,
 ) -> CompiledStateGraph[
-    ResearchGraphState, None, ResearchGraphState, ResearchGraphState
+    ResearchGraphState,
+    ModelRuntimeContext,
+    ResearchGraphState,
+    ResearchGraphState,
 ]:
     """Compile the five-node research graph with the given checkpointer."""
-    graph = StateGraph(ResearchGraphState)
+    graph: StateGraph[ResearchGraphState, ModelRuntimeContext] = StateGraph(
+        ResearchGraphState,
+        context_schema=ModelRuntimeContext,
+    )
     # LangGraph NodeCallable typing rejects our wrapped callables without cast.
-    graph.add_node("validate", cast(Any, _wrap_node("validate", validate_node)))
+    graph.add_node(
+        "validate",
+        cast(Any, _wrap_node("validate", _as_runtime_node(validate_node))),
+    )
     graph.add_node("plan", cast(Any, _wrap_node("plan", plan_node)))
-    graph.add_node("research", cast(Any, _wrap_node("research", research_node)))
+    graph.add_node(
+        "research",
+        cast(Any, _wrap_node("research", _as_runtime_node(research_node))),
+    )
     graph.add_node("draft", cast(Any, _wrap_node("draft", draft_node)))
-    graph.add_node("complete", cast(Any, _wrap_node("complete", complete_node)))
+    graph.add_node(
+        "complete",
+        cast(Any, _wrap_node("complete", _as_runtime_node(complete_node))),
+    )
     graph.add_edge(START, "validate")
     graph.add_edge("validate", "plan")
     graph.add_edge("plan", "research")

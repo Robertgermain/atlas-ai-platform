@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import pytest
+from langgraph.runtime import Runtime
 
 from atlas.workflow.graph import (
+    ModelRuntimeContext,
     NodeAuditHooks,
     ResearchGraphState,
     _wrap_node,
+    default_fake_runtime_context,
     initial_graph_state,
-    set_node_hooks,
 )
 from atlas.workflow.processor import sanitize_node_error
 
@@ -31,6 +33,10 @@ class _RecordingHooks(NodeAuditHooks):
         self.fail_calls.append((node_name, attempt, error))
 
 
+def _runtime_with_hooks(hooks: NodeAuditHooks) -> Runtime[ModelRuntimeContext]:
+    return Runtime(context=default_fake_runtime_context(hooks=hooks))
+
+
 def test_sanitize_node_error_is_class_only_and_omits_secrets() -> None:
     secret = "sk-secret-value"
     sanitized = sanitize_node_error(RuntimeError(f"token={secret}"))
@@ -43,16 +49,18 @@ def test_node_wrapper_marks_ordinary_exception_failed() -> None:
     hooks = _RecordingHooks()
     secret = "sk-secret-value"
 
-    def boom(_state: ResearchGraphState) -> dict[str, object]:
+    def boom(
+        _state: ResearchGraphState,
+        _runtime: Runtime[ModelRuntimeContext],
+    ) -> dict[str, object]:
         raise ValueError(f"provider said {secret}")
 
     wrapped = _wrap_node("plan", boom)
-    set_node_hooks(hooks)
-    try:
-        with pytest.raises(ValueError, match=secret):
-            wrapped(initial_graph_state(job_id="job-1", question="q"))
-    finally:
-        set_node_hooks(None)
+    with pytest.raises(ValueError, match=secret):
+        wrapped(
+            initial_graph_state(job_id="job-1", question="q"),
+            _runtime_with_hooks(hooks),
+        )
 
     assert hooks.begin_calls == ["plan"]
     assert hooks.complete_calls == []
@@ -67,16 +75,18 @@ def test_node_wrapper_marks_ordinary_exception_failed() -> None:
 def test_node_wrapper_propagates_keyboard_interrupt_without_fail_audit() -> None:
     hooks = _RecordingHooks()
 
-    def boom(_state: ResearchGraphState) -> dict[str, object]:
+    def boom(
+        _state: ResearchGraphState,
+        _runtime: Runtime[ModelRuntimeContext],
+    ) -> dict[str, object]:
         raise KeyboardInterrupt
 
     wrapped = _wrap_node("plan", boom)
-    set_node_hooks(hooks)
-    try:
-        with pytest.raises(KeyboardInterrupt):
-            wrapped(initial_graph_state(job_id="job-1", question="q"))
-    finally:
-        set_node_hooks(None)
+    with pytest.raises(KeyboardInterrupt):
+        wrapped(
+            initial_graph_state(job_id="job-1", question="q"),
+            _runtime_with_hooks(hooks),
+        )
 
     assert hooks.begin_calls == ["plan"]
     assert hooks.fail_calls == []
@@ -86,16 +96,18 @@ def test_node_wrapper_propagates_keyboard_interrupt_without_fail_audit() -> None
 def test_node_wrapper_propagates_system_exit_without_fail_audit() -> None:
     hooks = _RecordingHooks()
 
-    def boom(_state: ResearchGraphState) -> dict[str, object]:
+    def boom(
+        _state: ResearchGraphState,
+        _runtime: Runtime[ModelRuntimeContext],
+    ) -> dict[str, object]:
         raise SystemExit(2)
 
     wrapped = _wrap_node("plan", boom)
-    set_node_hooks(hooks)
-    try:
-        with pytest.raises(SystemExit):
-            wrapped(initial_graph_state(job_id="job-1", question="q"))
-    finally:
-        set_node_hooks(None)
+    with pytest.raises(SystemExit):
+        wrapped(
+            initial_graph_state(job_id="job-1", question="q"),
+            _runtime_with_hooks(hooks),
+        )
 
     assert hooks.begin_calls == ["plan"]
     assert hooks.fail_calls == []
