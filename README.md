@@ -16,7 +16,7 @@ The repository has a verified Python 3.12 / FastAPI local foundation (`GET /heal
 
 ## Current milestone
 
-Milestone 6 (background execution and recovery foundation) is Current. Local implementation is verified (`python -m atlas.worker` with PostgreSQL claim-token fencing); completion still requires PR CI, merge, and `main` CI. LangGraph remains Milestone 7. The comprehensive Visio and AWS design remains deferred until working local components can be mapped to the cloud with evidence.
+Milestone 7 (deterministic LangGraph workflow) is Current, but implementation is paused until a complete architecture and code-ownership walkthrough of Milestones 1–6 is finished. Milestone 6 delivered the background worker with PostgreSQL claim-token fencing and is complete on `main`. After the walkthrough, LangGraph and later AI workflow capabilities proceed. The comprehensive Visio and AWS design remains deferred until working local components can be mapped to the cloud with evidence.
 
 ### Run locally
 

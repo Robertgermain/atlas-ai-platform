@@ -63,7 +63,7 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - The application service is FastAPI-independent but coordinates SQLAlchemy `sessionmaker`/`session_scope` transactions; no Unit of Work abstraction.
 - Verified on `main` through Pull Request #7 (pull-request CI and resulting `main` CI green).
 
-### Background worker (Milestone 6, locally verified)
+### Background worker
 
 - Separate process entrypoint: `python -m atlas.worker`.
 - Claims use `SELECT … FOR UPDATE SKIP LOCKED` for `PENDING` or lease-expired `RUNNING` jobs; every claim/reclaim sets a new `secrets.token_hex(32)` token and `lease_expires_at`.
@@ -75,8 +75,9 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - Processing timeout is orchestration-only (`Future.result(timeout=…)` on a single-thread executor). Late results are ignored permanently and cannot finalize. New claims are refused while an abandoned processor still occupies the pool thread.
 - Bounded shutdown: stop claiming, wait at most `shutdown_grace_seconds` (default equals the processing timeout), then `shutdown(wait=False)`. Milestone 6 does **not** kill processor threads and does **not** guarantee process exit if a callable remains blocked; operators may need SIGKILL. Hard termination of arbitrary LLM/tool work requires process isolation or an external worker later.
 - Processing is at-least-once: claim tokens fence stale database finalization but cannot undo duplicate in-process work.
+- Verified on `main` through Pull Request #8 (pull-request CI and resulting `main` CI green).
 
-These decisions cover the verified foundation through the locally validated worker slice. They do not imply LangGraph, agents, messaging, or cloud topology choices.
+These decisions cover the verified foundation through the background-worker slice. They do not imply LangGraph, agents, messaging, or cloud topology choices.
 
 ## Why the full diagram comes later
 
