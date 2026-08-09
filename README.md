@@ -16,7 +16,7 @@ The repository already has a working local backend and workflow foundation: Pyth
 
 ## Current milestone
 
-Milestone 9 is Complete through Pull Request #12. Milestone 10 is Current: Slice 10A (approved) adds durable sources/documents/evidence items, job-linked provenance, structured claims/citations, idempotent report artifacts, JSON text/Markdown ingest, and `GET /v1/research-jobs/{id}/citations`. Slice 10B adds pgvector embeddings (`embeddings.v1` / 1536-d), semantic retrieval with provenance, workflow retrieval→citation integration, and offline fake-embedding evaluation (pipeline geometry only). Final Milestone 10 PR CI and resulting `main` CI remain outstanding — do not mark Milestone 10 Complete yet. The comprehensive Visio and AWS design remains deferred.
+Milestone 10 is Complete through Pull Request #13 (`bfabd59`). Milestone 11 is Current: bounded specialists (`atlas.specialists`), deterministic `verify_citations`, capability isolation, boundary/ablation evidence, and full cited-report E2E are implemented locally. Final PR/`main` CI remain outstanding — do not mark Milestone 11 Complete yet. The comprehensive Visio and AWS design remains deferred.
 
 ### Run locally
 

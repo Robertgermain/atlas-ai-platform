@@ -22,7 +22,6 @@ from atlas.workflow.graph import (
     NodeAuditHooks,
     WorkflowRuntimeContext,
     build_research_graph,
-    default_fake_runtime_context,
     initial_graph_state,
 )
 
@@ -234,6 +233,11 @@ class LangGraphResearchProcessor:
     ) -> WorkflowRuntimeContext:
         from atlas.embeddings.composition import build_text_embedder
         from atlas.evidence.retrieve import EvidenceEmbeddingService, EvidenceRetriever
+        from atlas.evidence.service import CitationValidator
+        from atlas.specialists.citation_verifier import DurableCitationVerifier
+        from atlas.specialists.planner import BoundedPlannerSpecialist
+        from atlas.specialists.research import GovernedResearchRetrievalSpecialist
+        from atlas.specialists.synthesizer import BoundedReportSynthesizer
 
         embedder = build_text_embedder(self._settings)
         embedding_service = EvidenceEmbeddingService(
@@ -258,65 +262,45 @@ class LangGraphResearchProcessor:
             use_ledger=True,
             evidence_ingest=evidence_ingest,
         )
-        if self._planner_override is not None and self._drafter_override is not None:
-            return WorkflowRuntimeContext(
-                planner=self._planner_override,
-                drafter=self._drafter_override,
-                research_executor=research_executor,
-                plan_prompt_version=self._settings.plan_prompt_version,
-                draft_prompt_version=self._settings.draft_prompt_version,
-                workflow_execution_id=workflow_execution_id,
-                hooks=hooks,
-                node_counters=self._node_counters,
-                evidence_ingest=evidence_ingest,
-                report_service=report_service,
-                evidence_retriever=evidence_retriever,
-                retrieval_k=self._settings.retrieval_default_k,
-            )
-        if self._settings.model_provider == "fake":
-            ctx = default_fake_runtime_context(
-                hooks=hooks,
-                node_counters=self._node_counters,
-                plan_prompt_version=self._settings.plan_prompt_version,
-                draft_prompt_version=self._settings.draft_prompt_version,
-                fetch_enabled=self._settings.tool_fetch_enabled,
-                workflow_execution_id=workflow_execution_id,
-                evidence_ingest=evidence_ingest,
-                report_service=report_service,
-                evidence_retriever=evidence_retriever,
-                retrieval_k=self._settings.retrieval_default_k,
-            )
-            return WorkflowRuntimeContext(
-                planner=ctx.planner,
-                drafter=ctx.drafter,
-                research_executor=research_executor,
-                plan_prompt_version=self._settings.plan_prompt_version,
-                draft_prompt_version=self._settings.draft_prompt_version,
-                workflow_execution_id=workflow_execution_id,
-                hooks=hooks,
-                node_counters=self._node_counters,
-                evidence_ingest=evidence_ingest,
-                report_service=report_service,
-                evidence_retriever=evidence_retriever,
-                retrieval_k=self._settings.retrieval_default_k,
-            )
-        planner, drafter = build_planner_and_drafter(
-            self._settings,
-            session_factory=self._session_factory,
-            workflow_execution_id=workflow_execution_id,
+        citation_verifier = DurableCitationVerifier(
+            citation_validator=CitationValidator(session_factory=self._session_factory),
+            evidence_ingest=evidence_ingest,
         )
+        if self._planner_override is not None and self._drafter_override is not None:
+            planner = self._planner_override
+            drafter = self._drafter_override
+        elif self._settings.model_provider == "fake":
+            from atlas.models.fakes import (
+                DeterministicResearchDrafter,
+                DeterministicResearchPlanner,
+            )
+
+            planner = DeterministicResearchPlanner()
+            drafter = DeterministicResearchDrafter()
+        else:
+            planner, drafter = build_planner_and_drafter(
+                self._settings,
+                session_factory=self._session_factory,
+                workflow_execution_id=workflow_execution_id,
+            )
         return WorkflowRuntimeContext(
-            planner=planner,
-            drafter=drafter,
-            research_executor=research_executor,
+            planner_specialist=BoundedPlannerSpecialist(planner),
+            research_specialist=GovernedResearchRetrievalSpecialist(
+                research_executor=research_executor,
+                evidence_ingest=evidence_ingest,
+                evidence_retriever=evidence_retriever,
+            ),
+            synthesizer=BoundedReportSynthesizer(
+                drafter=drafter,
+                evidence_ingest=evidence_ingest,
+            ),
+            citation_verifier=citation_verifier,
             plan_prompt_version=self._settings.plan_prompt_version,
             draft_prompt_version=self._settings.draft_prompt_version,
             workflow_execution_id=workflow_execution_id,
             hooks=hooks,
             node_counters=self._node_counters,
-            evidence_ingest=evidence_ingest,
             report_service=report_service,
-            evidence_retriever=evidence_retriever,
             retrieval_k=self._settings.retrieval_default_k,
         )
 
