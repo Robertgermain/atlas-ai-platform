@@ -5,7 +5,11 @@ description = "Atlas AI Platform — local deep-research foundation"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "alembic>=1.19.1",
     "fastapi>=0.116.0",
+    "psycopg[binary]>=3",
+    "pydantic-settings>=2.15.0",
+    "sqlalchemy>=2.0",
     "uvicorn[standard]>=0.35.0",
 ]
 
@@ -35,8 +39,12 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["atlas", "tests"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
 mypy_path = "src"
+explicit_package_bases = true
 files = ["src", "tests"]

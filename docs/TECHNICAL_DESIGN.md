@@ -11,10 +11,11 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - Python 3.12 is the only supported runtime (`requires-python = ">=3.12,<3.13"`), managed with `uv` and a committed lockfile.
 - Application code lives under `src/atlas` and is installed as the `atlas` package.
 - The FastAPI application entrypoint is `atlas.main:app`.
-- `GET /health` is the first HTTP contract and returns `{"status": "ok"}` for liveness checks.
+- `GET /health` is process liveness and does not open database connections.
+- `GET /ready` lazily checks PostgreSQL connectivity; SQLAlchemy database errors return `503 {"status":"not_ready"}` without exposing credentials, while unexpected programming errors propagate.
 - Quality gates are Ruff format, Ruff lint, mypy (strict, `src` and `tests`), and Pytest.
 - Ruff owns formatting and import sorting; black and isort are not dependencies.
-- Runtime dependencies (FastAPI, Uvicorn) are separated from development dependencies (Pytest, httpx2, Ruff, mypy).
+- Runtime dependencies (FastAPI, Uvicorn, SQLAlchemy, psycopg, Alembic, pydantic-settings) are separated from development dependencies (Pytest, httpx2, Ruff, mypy).
 
 ### Continuous integration
 
@@ -24,6 +25,7 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - `setup-uv` is configured with `version: "0.11.8"`, `python-version: "3.12"`, and `enable-cache: true`.
 - Dependencies install with `uv sync --frozen`.
 - CI runs the same local gates: `ruff format --check .`, `ruff check .`, `mypy src tests`, and `pytest`.
+- CI provides a Postgres 16 service and sets `ATLAS_DATABASE_URL` to the dedicated `atlas_test` database; Pytest owns empty-schema reset and Alembic upgrade.
 
 ### ResearchJob domain model
 
@@ -35,8 +37,20 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - Optional timezone-aware timestamps make creation and transitions deterministic; omitted timestamps default to current UTC. Supplied timezone-aware timestamps are normalized to UTC.
 - Timestamps must be timezone-aware and must not move earlier than the job's `updated_at`.
 - Domain errors are `InvalidResearchJobError` for field/timestamp invariants and `InvalidTransitionError` for illegal status changes.
+- Durable state is rebuilt with `ResearchJob.reconstitute(...)`, which validates status/field consistency without applying transitions.
 
-These decisions are limited to the verified foundation, CI, and domain slices. They do not imply database, agent, messaging, container, or cloud topology choices.
+### PostgreSQL persistence
+
+- Local Postgres 16 runs via Docker Compose; host port `5433` maps to container `5432`; databases `atlas` (app) and `atlas_test` (tests).
+- Settings load `ATLAS_DATABASE_URL` through `pydantic-settings`; engines and sessions are created lazily.
+- ORM model `research_jobs` uses `TIMESTAMPTZ` columns and CHECK constraints for status/field combinations as defense in depth.
+- `SqlAlchemyResearchJobRepository` is a concrete repository (`add` / `get` / `save`) with caller-owned `session_scope` transactions.
+- Duplicate primary keys raise `ResearchJobAlreadyExistsError` with the original `IntegrityError` as `__cause__`; unrelated integrity failures are re-raised unchanged. `session_scope` performs rollback when exceptions escape.
+- Job ids are capped at 128 characters in the domain (`MAX_RESEARCH_JOB_ID_LENGTH`), matching the persistence column.
+- Status-specific timestamp orderings are enforced in domain reconstitution and mirrored by database CHECK constraints.
+- Integration-test helpers live only under `tests/integration/`; they parse URLs with SQLAlchemy, require `atlas_test` or `*_test`, reset once per suite with AUTOCOMMIT `DROP SCHEMA public CASCADE` / `CREATE SCHEMA public`, run `alembic upgrade head`, and truncate between tests.
+
+These decisions are limited to the verified foundation, CI, domain, and persistence slices. They do not imply job HTTP APIs, agents, messaging, or cloud topology choices.
 
 ## Why the full diagram comes later
 

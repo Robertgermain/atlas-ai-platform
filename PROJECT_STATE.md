@@ -3,7 +3,7 @@
 - Last updated: 2026-08-08
 - Phase: Local implementation foundation
 - Milestone: PostgreSQL persistence (Milestone 4)
-- Implementation status: Milestone 3 complete on `main`; typed `ResearchJob` domain lifecycle verified locally and on GitHub Actions
+- Implementation status: Milestone 4 implemented and verified locally; awaiting commit, PR validation, and merge
 
 ## Objective
 
@@ -17,19 +17,22 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 
 - A minimal repository baseline and one flat `docs/` folder.
 - `docs/LOCAL_BUILD_PLAN.md` as the ordered local roadmap and milestone checklist.
-- Research, product requirements, testing strategy, and a technical-design document with validated local foundation, CI, and domain decisions.
+- Research, product requirements, testing strategy, and a technical-design document with validated local foundation, CI, domain, and persistence decisions.
 - Root instructions for AI assistants and this current-state handoff.
-- Local environment and ignore files.
+- Local environment and ignore files; committed `.env.example` (no secrets).
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
-- `src/atlas` package with a FastAPI app exposing `GET /health`.
-- Pytest, Ruff (format + lint), and mypy configuration; health and ResearchJob domain tests.
-- Minimal GitHub Actions workflow at `.github/workflows/ci.yml` (PR and `main` push; `contents: read`), green on `main` through Pull Request #3.
-- `atlas.domain` package with slotted `ResearchJob`, status enum, domain exceptions, and lifecycle transitions `PENDING → RUNNING → COMPLETED | FAILED`, merged via Pull Request #3.
+- `src/atlas` package with FastAPI `GET /health` (liveness) and `GET /ready` (Postgres readiness).
+- Pytest, Ruff (format + lint), and mypy configuration; domain, readiness, guard, and PostgreSQL integration tests.
+- GitHub Actions CI with Postgres 16 service targeting `atlas_test` (workflow updated locally; remote run pending).
+- `atlas.domain` package with slotted `ResearchJob`, `reconstitute(...)`, and lifecycle transitions.
+- Docker Compose Postgres 16 on host port `5433` with databases `atlas` and `atlas_test`.
+- SQLAlchemy 2.x + psycopg3 + Alembic persistence for `research_jobs`, concrete `SqlAlchemyResearchJobRepository`, and explicit `session_scope` transactions (local, not yet merged).
 
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
-- PostgreSQL persistence, Docker Compose database topology, SQLAlchemy/Alembic, settings/session ownership, research-job repositories, research-job HTTP API, agents, brokers, containers, Kubernetes, Terraform, or AWS resources.
+- Merged Milestone 4 changes on `main` (local verification is complete; commit/PR/merge remain).
+- Research-job HTTP API, agents, brokers, Redis, Kafka, pgvector, application Docker image, Kubernetes, Terraform, or AWS resources.
 - Validated quality, latency, reliability, or cost benchmarks.
 
 ## Decisions
@@ -49,7 +52,12 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - `astral-sh/setup-uv` uses `version` and `python-version` (not `python-version-file`) for the pinned action.
 - Research-job identity is a caller-supplied stripped string; the domain does not generate UUIDs.
 - Domain creation always starts in `PENDING`; lifecycle changes go through `start()`, `complete()`, and `fail()` only.
+- Durable jobs are rebuilt with `ResearchJob.reconstitute(...)`; persistence mapping does not bypass domain validation.
 - Timestamps are timezone-aware, deterministic when supplied, normalized to UTC, and must not move earlier than `updated_at`.
+- PostgreSQL is the authoritative store for research jobs; settings use `pydantic-settings` (`ATLAS_DATABASE_URL`).
+- Persistence uses sync SQLAlchemy 2.x and psycopg3; repository is a concrete class (no unused Protocol in Milestone 4).
+- Integration tests guard destructive operations with SQLAlchemy URL parsing (`atlas_test` or `*_test` only), reset once per suite via `DROP SCHEMA public CASCADE` + `CREATE SCHEMA public` (AUTOCOMMIT), then `alembic upgrade head`, and truncate between tests.
+- `/health` is process liveness without DB I/O; `/ready` lazily checks Postgres, maps SQLAlchemy database errors to controlled `503`, and does not hide unexpected programming errors or expose credentials.
 
 ## Verification (Milestone 1)
 
@@ -105,13 +113,28 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Pull Request #3, `feat: add ResearchJob domain lifecycle`, merged into `main`.
 - Pull request CI passed (green).
 - The resulting `main` push CI passed (green).
-- Milestone 3 completion gate is satisfied; Milestone 3 is **Complete** and Milestone 4 is **Current**.
+- Milestone 3 completion gate is satisfied.
+
+## Verification (Milestone 4)
+
+### Local
+
+- Docker Compose Postgres 16 healthy with `atlas` and `atlas_test`.
+- `uv sync --frozen` → success
+- `uv run ruff format --check .` → success
+- `uv run ruff check .` → all checks passed
+- `uv run mypy src tests` → success (31 source files)
+- `ATLAS_DATABASE_URL=.../atlas_test uv run pytest` → 80 passed
+- Empty test schema migrates to Alembic head; repository persists across sessions; duplicate-key errors preserve `IntegrityError` cause; test-DB guard rejects non-test URLs without SQL.
+- Milestone 4 remains **Current** until commit, PR CI, and merge succeed; Milestone 5 remains **Pending**.
 
 ## Next steps
 
-1. Agree on the Milestone 4 PostgreSQL persistence proposal, then implement it as a reviewed vertical slice.
-2. Do not begin the research-job HTTP API (Milestone 5) or AI workflow work until Milestone 4 is complete and reviewed.
+1. Commit and push Milestone 4.
+2. Open a pull request and confirm CI passes (including Postgres integration tests).
+3. After remote validation, mark Milestone 4 **Complete** and Milestone 5 **Current**.
+4. Do not begin the research-job HTTP API before that.
 
 ## Active blockers
 
-None.
+None. Remote validation (commit, PR CI, and merge) remains an outstanding Milestone 4 completion step.
