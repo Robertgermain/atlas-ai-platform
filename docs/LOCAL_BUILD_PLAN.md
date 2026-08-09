@@ -101,9 +101,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 5 — Database-backed research-job API
 
-**Status:** Current
-
-**Note:** Implementation is locally verified on `milestone-5-research-job-api`. Keep **Current** until PR CI, merge, and resulting `main` CI pass; then mark Complete.
+**Status:** Complete
 
 **Goal:** Deliver the first durable product workflow.
 
@@ -122,7 +120,9 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 6 — Background execution and recovery foundation
 
-**Status:** Pending
+**Status:** Current
+
+**Note:** Implementation is locally verified on `milestone-6-background-worker`. Keep **Current** until PR CI, merge, and resulting `main` CI pass; then mark Complete.
 
 **Goal:** Run long-lived work outside the HTTP request.
 

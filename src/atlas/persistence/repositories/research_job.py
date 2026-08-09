@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import datetime
+
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from atlas.application.ports import ResearchJobIdempotencyRecord
-from atlas.domain import ResearchJob
+from atlas.application.ports import ClaimedResearchJob, ResearchJobIdempotencyRecord
+from atlas.domain import ResearchJob, ResearchJobStatus
 from atlas.persistence.exceptions import (
     IdempotencyKeyConflictError,
     ResearchJobAlreadyExistsError,
@@ -109,3 +111,104 @@ class SqlAlchemyResearchJobRepository:
             raise ResearchJobNotFoundError(job.id)
         apply_domain_to_orm(job, model)
         session.flush()
+
+    def claim_next(
+        self,
+        session: Session,
+        *,
+        now: datetime,
+        lease_expires_at: datetime,
+        claim_token: str,
+    ) -> ClaimedResearchJob | None:
+        """Atomically claim the next eligible job and attach claim metadata."""
+        statement = (
+            select(ResearchJobModel)
+            .where(
+                or_(
+                    ResearchJobModel.status == ResearchJobStatus.PENDING.value,
+                    and_(
+                        ResearchJobModel.status == ResearchJobStatus.RUNNING.value,
+                        ResearchJobModel.lease_expires_at.is_not(None),
+                        ResearchJobModel.lease_expires_at < now,
+                    ),
+                )
+            )
+            .order_by(ResearchJobModel.created_at.asc())
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        model = session.execute(statement).scalar_one_or_none()
+        if model is None:
+            return None
+
+        job = to_domain(model)
+        if job.status is ResearchJobStatus.PENDING:
+            job.start(at=now)
+        elif job.status is not ResearchJobStatus.RUNNING:
+            return None
+
+        apply_domain_to_orm(job, model)
+        model.claim_token = claim_token
+        model.lease_expires_at = lease_expires_at
+        session.flush()
+        return ClaimedResearchJob(job=to_domain(model), claim_token=claim_token)
+
+    def finalize_completion(
+        self,
+        session: Session,
+        *,
+        job_id: str,
+        claim_token: str,
+        result: str,
+        at: datetime,
+    ) -> bool:
+        """Complete a RUNNING job when the claim token still owns it."""
+        model = session.get(ResearchJobModel, job_id, with_for_update=True)
+        if not self._owns_running_claim(model, claim_token=claim_token):
+            return False
+        assert model is not None
+
+        job = to_domain(model)
+        job.complete(result, at=at)
+        apply_domain_to_orm(job, model)
+        model.claim_token = None
+        model.lease_expires_at = None
+        session.flush()
+        return True
+
+    def finalize_failure(
+        self,
+        session: Session,
+        *,
+        job_id: str,
+        claim_token: str,
+        reason: str,
+        at: datetime,
+    ) -> bool:
+        """Fail a RUNNING job when the claim token still owns it."""
+        model = session.get(ResearchJobModel, job_id, with_for_update=True)
+        if not self._owns_running_claim(model, claim_token=claim_token):
+            return False
+        assert model is not None
+
+        job = to_domain(model)
+        job.fail(reason, at=at)
+        apply_domain_to_orm(job, model)
+        model.claim_token = None
+        model.lease_expires_at = None
+        session.flush()
+        return True
+
+    @staticmethod
+    def _owns_running_claim(
+        model: ResearchJobModel | None,
+        *,
+        claim_token: str,
+    ) -> bool:
+        if model is None:
+            return False
+        if model.status != ResearchJobStatus.RUNNING.value:
+            return False
+        if model.claim_token != claim_token:
+            return False
+        return True

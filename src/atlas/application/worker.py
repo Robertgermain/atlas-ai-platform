@@ -1,0 +1,245 @@
+"""Background worker orchestration for research jobs."""
+
+from __future__ import annotations
+
+import logging
+import secrets
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+from datetime import UTC, datetime, timedelta
+from threading import Event
+from typing import TYPE_CHECKING
+
+from atlas.application.job_processing import (
+    ResearchJobProcessor,
+    process_research_question,
+)
+from atlas.application.ports import ClaimedResearchJob, ResearchJobRepository
+from atlas.persistence.db import session_scope
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session, sessionmaker
+
+logger = logging.getLogger(__name__)
+
+PROCESSING_TIMEOUT_REASON = "Processing timed out."
+
+
+class ResearchJobWorker:
+    """Claim, process, and fenced-finalize research jobs.
+
+    Shutdown guarantee (Milestone 6):
+    - After ``request_shutdown`` / ``close``, the worker claims no new jobs.
+    - Orchestration waits at most ``shutdown_grace_seconds`` for an in-flight or
+      abandoned processor future, then returns without blocking forever.
+    - Claim-token fencing still prevents abandoned/stale work from finalizing.
+    - At most one processor thread is used (``max_workers=1``).
+
+    Non-guarantee:
+    - Python cannot kill a blocked processor thread.
+    - ``ThreadPoolExecutor`` threads are non-daemon; if a processor never
+      returns, ``close()`` abandons the wait after the grace period using
+      ``shutdown(wait=False)``, but the OS process may still remain alive until
+      the thread finishes or the process is force-killed (SIGKILL).
+    - Hard termination of arbitrary LLM/tool work requires process isolation or
+      an external worker system; Milestone 6 does not provide that.
+    """
+
+    def __init__(
+        self,
+        *,
+        session_factory: sessionmaker[Session],
+        repository: ResearchJobRepository,
+        processor: ResearchJobProcessor = process_research_question,
+        poll_interval_seconds: float = 1.0,
+        processing_timeout_seconds: float = 5.0,
+        lease_seconds: float = 30.0,
+        shutdown_grace_seconds: float | None = None,
+        shutdown_event: Event | None = None,
+    ) -> None:
+        self._session_factory = session_factory
+        self._repository = repository
+        self._processor = processor
+        self._poll_interval_seconds = poll_interval_seconds
+        self._processing_timeout_seconds = processing_timeout_seconds
+        self._lease_seconds = lease_seconds
+        self._shutdown_grace_seconds = (
+            processing_timeout_seconds
+            if shutdown_grace_seconds is None
+            else shutdown_grace_seconds
+        )
+        self._shutdown_event = shutdown_event or Event()
+        self._executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="atlas-job-processor",
+        )
+        self._inflight_future: Future[str] | None = None
+        self._abandoned_future: Future[str] | None = None
+        self._closed = False
+        self._processor_wait_abandoned = False
+
+    @property
+    def processor_wait_abandoned(self) -> bool:
+        """True when close() stopped waiting on a still-running processor."""
+        return self._processor_wait_abandoned
+
+    def request_shutdown(self) -> None:
+        """Signal the worker loop to stop claiming new work."""
+        self._shutdown_event.set()
+
+    def close(self) -> None:
+        """Apply the bounded Milestone 6 shutdown policy.
+
+        Stops new claims, waits at most ``shutdown_grace_seconds`` for processor
+        work, then returns. Does not kill threads and does not guarantee process
+        exit if a processor remains blocked.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self._shutdown_event.set()
+        self._join_processor_bounded(self._shutdown_grace_seconds)
+        # wait=False: do not block forever on a hung callable.
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def run_forever(self) -> None:
+        """Poll and process jobs until shutdown is requested."""
+        try:
+            while not self._shutdown_event.is_set():
+                processed = self.run_once()
+                if not processed and not self._shutdown_event.is_set():
+                    self._shutdown_event.wait(self._poll_interval_seconds)
+        finally:
+            self.close()
+
+    def run_once(self) -> bool:
+        """Claim and process at most one job. Return True when a claim occurred."""
+        if self._shutdown_event.is_set():
+            return False
+
+        if not self._ready_for_new_claim():
+            return False
+
+        claimed = self._claim_next()
+        if claimed is None:
+            return False
+
+        self._process_claimed(claimed)
+        return True
+
+    def _ready_for_new_claim(self) -> bool:
+        """Refuse new claims while an abandoned processor still occupies the pool."""
+        abandoned = self._abandoned_future
+        if abandoned is None:
+            return True
+        if abandoned.done():
+            self._ignore_late_result(abandoned)
+            self._abandoned_future = None
+            return True
+        # Still running: do not submit more work (keeps thread count bounded).
+        return False
+
+    def _claim_next(self) -> ClaimedResearchJob | None:
+        now = datetime.now(UTC)
+        claim_token = secrets.token_hex(32)
+        lease_expires_at = now + timedelta(seconds=self._lease_seconds)
+        with session_scope(self._session_factory) as session:
+            return self._repository.claim_next(
+                session,
+                now=now,
+                lease_expires_at=lease_expires_at,
+                claim_token=claim_token,
+            )
+
+    def _process_claimed(self, claimed: ClaimedResearchJob) -> None:
+        future = self._executor.submit(self._processor, claimed.job.question)
+        self._inflight_future = future
+        try:
+            result = future.result(timeout=self._processing_timeout_seconds)
+        except FuturesTimeoutError:
+            # Orchestration timeout only: the callable may still be running.
+            self._finalize_failure(claimed, reason=PROCESSING_TIMEOUT_REASON)
+            self._abandoned_future = future
+            self._inflight_future = None
+            return
+        except Exception as exc:
+            self._finalize_failure(
+                claimed,
+                reason=f"Processing failed: {exc.__class__.__name__}",
+            )
+            self._inflight_future = None
+            self._ignore_late_result(future)
+            return
+
+        self._inflight_future = None
+        self._finalize_completion(claimed, result=result)
+
+    def _finalize_completion(self, claimed: ClaimedResearchJob, *, result: str) -> bool:
+        at = datetime.now(UTC)
+        with session_scope(self._session_factory) as session:
+            owned = self._repository.finalize_completion(
+                session,
+                job_id=claimed.job.id,
+                claim_token=claimed.claim_token,
+                result=result,
+                at=at,
+            )
+        if not owned:
+            logger.warning(
+                "Lost claim ownership while completing research job %s",
+                claimed.job.id,
+            )
+        return owned
+
+    def _finalize_failure(self, claimed: ClaimedResearchJob, *, reason: str) -> bool:
+        at = datetime.now(UTC)
+        with session_scope(self._session_factory) as session:
+            owned = self._repository.finalize_failure(
+                session,
+                job_id=claimed.job.id,
+                claim_token=claimed.claim_token,
+                reason=reason,
+                at=at,
+            )
+        if not owned:
+            logger.warning(
+                "Lost claim ownership while failing research job %s",
+                claimed.job.id,
+            )
+        return owned
+
+    def _join_processor_bounded(self, timeout: float) -> None:
+        """Wait briefly for processor work; never block indefinitely."""
+        future = self._inflight_future or self._abandoned_future
+        self._inflight_future = None
+        self._abandoned_future = None
+        if future is None:
+            return
+        try:
+            future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            self._processor_wait_abandoned = True
+            self._abandoned_future = future
+            logger.warning(
+                "Processor still running after %.3fs shutdown grace; "
+                "abandoning wait without killing the thread. Claim fencing "
+                "prevents stale finalization. The process may remain alive "
+                "until the thread finishes or is force-killed. Hard "
+                "termination of arbitrary LLM/tool work requires process "
+                "isolation or an external worker system.",
+                timeout,
+            )
+        except Exception:
+            # Late processor failure is ignored permanently.
+            return
+        # Late processor success is ignored permanently.
+
+    @staticmethod
+    def _ignore_late_result(future: Future[str]) -> None:
+        """Consume a finished future without using its value for finalization."""
+        if not future.done():
+            return
+        try:
+            future.result(timeout=0)
+        except Exception:
+            return

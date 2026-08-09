@@ -40,6 +40,7 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
     assert "ck_research_jobs_status" in constraint_names
     assert "ck_research_jobs_status_fields" in constraint_names
     assert "ck_research_jobs_idempotency_pair" in constraint_names
+    assert "ck_research_jobs_claim_lease_pair" in constraint_names
 
     unique_names = {
         constraint["name"]
@@ -50,12 +51,14 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
     columns = {column["name"] for column in inspector.get_columns("research_jobs")}
     assert "idempotency_key" in columns
     assert "request_fingerprint" in columns
+    assert "lease_expires_at" in columns
+    assert "claim_token" in columns
 
     with engine.connect() as connection:
         version = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-    assert version == "20260808_0002"
+    assert version == "20260809_0003"
 
 
 def test_legacy_row_survives_upgrade_from_0001(
@@ -101,7 +104,8 @@ def test_legacy_row_survives_upgrade_from_0001(
                 connection.execute(
                     text(
                         """
-                    SELECT id, question, status, idempotency_key, request_fingerprint
+                    SELECT id, question, status, idempotency_key, request_fingerprint,
+                           lease_expires_at, claim_token
                     FROM research_jobs
                     WHERE id = :id
                     """
@@ -115,12 +119,14 @@ def test_legacy_row_survives_upgrade_from_0001(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
 
-        assert version == "20260808_0002"
+        assert version == "20260809_0003"
         assert row["id"] == "legacy-job"
         assert row["question"] == "legacy question"
         assert row["status"] == "PENDING"
         assert row["idempotency_key"] is None
         assert row["request_fingerprint"] is None
+        assert row["lease_expires_at"] is None
+        assert row["claim_token"] is None
 
         factory = sessionmaker(
             bind=engine,

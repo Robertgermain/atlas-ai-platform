@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from sqlalchemy.orm import Session
@@ -18,8 +19,16 @@ class ResearchJobIdempotencyRecord:
     request_fingerprint: str
 
 
+@dataclass(frozen=True, slots=True)
+class ClaimedResearchJob:
+    """Domain job plus opaque claim token for fenced worker finalization."""
+
+    job: ResearchJob
+    claim_token: str
+
+
 class ResearchJobRepository(Protocol):
-    """Persistence operations required by the research-job application service."""
+    """Persistence operations required by research-job application services."""
 
     def add(
         self,
@@ -43,3 +52,35 @@ class ResearchJobRepository(Protocol):
 
     def save(self, session: Session, job: ResearchJob) -> None:
         """Update an existing research job."""
+
+    def claim_next(
+        self,
+        session: Session,
+        *,
+        now: datetime,
+        lease_expires_at: datetime,
+        claim_token: str,
+    ) -> ClaimedResearchJob | None:
+        """Atomically claim the next eligible job and attach claim metadata."""
+
+    def finalize_completion(
+        self,
+        session: Session,
+        *,
+        job_id: str,
+        claim_token: str,
+        result: str,
+        at: datetime,
+    ) -> bool:
+        """Complete a RUNNING job when the claim token still owns it."""
+
+    def finalize_failure(
+        self,
+        session: Session,
+        *,
+        job_id: str,
+        claim_token: str,
+        reason: str,
+        at: datetime,
+    ) -> bool:
+        """Fail a RUNNING job when the claim token still owns it."""

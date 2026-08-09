@@ -51,7 +51,7 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - Status-specific timestamp orderings are enforced in domain reconstitution and mirrored by database CHECK constraints.
 - Integration-test helpers live only under `tests/integration/`; they parse URLs with SQLAlchemy, require `atlas_test` or `*_test`, reset once per suite with AUTOCOMMIT `DROP SCHEMA public CASCADE` / `CREATE SCHEMA public`, run `alembic upgrade head`, and truncate between tests.
 
-### Research-job HTTP API (Milestone 5, locally verified)
+### Research-job HTTP API
 
 - Versioned routes live under `/v1`; `/health` and `/ready` remain unversioned ops endpoints.
 - `POST /v1/research-jobs` accepts a trimmed question (1–8000 chars) and required `Idempotency-Key` (max 128), creates a server-side UUID4 id via `ResearchJobService`, persists a `PENDING` job, and returns `202` with `ResearchJobResponse`.
@@ -61,8 +61,22 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - Structured `ErrorResponse` covers application errors and `RequestValidationError` (`422`). Only `sqlalchemy.exc.OperationalError` maps to research-job API `503`; other failures are not hidden as unavailable.
 - Idempotency key values are not returned in bodies, error details, or logs.
 - The application service is FastAPI-independent but coordinates SQLAlchemy `sessionmaker`/`session_scope` transactions; no Unit of Work abstraction.
+- Verified on `main` through Pull Request #7 (pull-request CI and resulting `main` CI green).
 
-These decisions cover the verified foundation through the locally validated research-job API slice. They do not imply background workers, agents, messaging, or cloud topology choices.
+### Background worker (Milestone 6, locally verified)
+
+- Separate process entrypoint: `python -m atlas.worker`.
+- Claims use `SELECT … FOR UPDATE SKIP LOCKED` for `PENDING` or lease-expired `RUNNING` jobs; every claim/reclaim sets a new `secrets.token_hex(32)` token and `lease_expires_at`.
+- `ClaimedResearchJob` carries the domain job plus claim token; lease/token columns are not on the domain entity or public API schemas.
+- Domain `start()` / `complete()` / `fail()` remain authoritative; repository claim/finalize applies those transitions then persists.
+- Fenced finalize requires matching job id, `RUNNING` status, and claim token in one transaction; clears token/lease atomically on success; returns `False` without modifying the row on ownership loss.
+- Deterministic processor receives only the question and returns `Research completed for: {question}`.
+- Defaults: poll 1s, processing timeout 5s, lease 30s; no heartbeat renewal.
+- Processing timeout is orchestration-only (`Future.result(timeout=…)` on a single-thread executor). Late results are ignored permanently and cannot finalize. New claims are refused while an abandoned processor still occupies the pool thread.
+- Bounded shutdown: stop claiming, wait at most `shutdown_grace_seconds` (default equals the processing timeout), then `shutdown(wait=False)`. Milestone 6 does **not** kill processor threads and does **not** guarantee process exit if a callable remains blocked; operators may need SIGKILL. Hard termination of arbitrary LLM/tool work requires process isolation or an external worker later.
+- Processing is at-least-once: claim tokens fence stale database finalization but cannot undo duplicate in-process work.
+
+These decisions cover the verified foundation through the locally validated worker slice. They do not imply LangGraph, agents, messaging, or cloud topology choices.
 
 ## Why the full diagram comes later
 
