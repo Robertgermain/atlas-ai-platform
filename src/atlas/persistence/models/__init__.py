@@ -19,6 +19,7 @@ from atlas.persistence.models.model_invocation import (
     ModelInvocationAttemptModel,
     ModelInvocationModel,
 )
+from atlas.persistence.models.outbox import OutboxEventModel
 from atlas.persistence.models.recovery import (
     HumanReviewDecisionModel,
     JobRecoveryAttemptModel,
@@ -48,6 +49,7 @@ __all__ = [
     "JobRecoveryAttemptModel",
     "ModelInvocationAttemptModel",
     "ModelInvocationModel",
+    "OutboxEventModel",
     "PolicyDecisionModel",
     "ReportArtifactModel",
     "ResearchJobModel",

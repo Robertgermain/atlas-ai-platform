@@ -19,6 +19,7 @@ from atlas.application.job_processing import (
 from atlas.application.ports import ClaimedResearchJob
 from atlas.application.worker import PROCESSING_TIMEOUT_REASON, ResearchJobWorker
 from atlas.domain import ResearchJob, ResearchJobStatus
+from atlas.outbox.fakes import RecordingOutbox
 
 T0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
 
@@ -202,6 +203,7 @@ def test_run_once_completes_deterministically() -> None:
         poll_interval_seconds=0.01,
         processing_timeout_seconds=1.0,
         lease_seconds=1.0,
+        outbox=RecordingOutbox(),
     )
     try:
         assert worker.run_once() is True
@@ -241,6 +243,7 @@ def test_timeout_finalizes_failure_and_ignores_late_result() -> None:
         processing_timeout_seconds=0.05,
         lease_seconds=1.0,
         shutdown_grace_seconds=1.0,
+        outbox=RecordingOutbox(),
     )
     try:
         assert worker.run_once() is True
@@ -281,6 +284,7 @@ def test_processor_exception_fails_without_leaking_details() -> None:
         poll_interval_seconds=0.01,
         processing_timeout_seconds=1.0,
         lease_seconds=1.0,
+        outbox=RecordingOutbox(),
     )
     try:
         assert worker.run_once() is True
@@ -304,6 +308,7 @@ def test_shutdown_prevents_new_claims() -> None:
         repository=repo,
         processor=_echo_processor,
         shutdown_event=shutdown,
+        outbox=RecordingOutbox(),
     )
     try:
         assert worker.run_once() is False
@@ -341,6 +346,7 @@ def test_close_is_bounded_while_processor_remains_blocked() -> None:
         processing_timeout_seconds=0.05,
         lease_seconds=1.0,
         shutdown_grace_seconds=0.1,
+        outbox=RecordingOutbox(),
     )
     try:
         assert worker.run_once() is True
@@ -391,6 +397,7 @@ def test_shutdown_with_processing_in_flight_completes_within_grace() -> None:
         processing_timeout_seconds=1.0,
         lease_seconds=1.0,
         shutdown_grace_seconds=1.0,
+        outbox=RecordingOutbox(),
     )
     from concurrent.futures import ThreadPoolExecutor
 
@@ -432,6 +439,7 @@ def test_paused_for_review_no_finalization() -> None:
         poll_interval_seconds=0.01,
         processing_timeout_seconds=1.0,
         lease_seconds=1.0,
+        outbox=RecordingOutbox(),
     )
     try:
         assert worker.run_once() is True
@@ -469,6 +477,7 @@ def test_retry_scheduled_no_finalization() -> None:
         poll_interval_seconds=0.01,
         processing_timeout_seconds=1.0,
         lease_seconds=1.0,
+        outbox=RecordingOutbox(),
     )
     try:
         assert worker.run_once() is True
@@ -505,6 +514,7 @@ def test_terminal_failed_finalizes_failure() -> None:
         poll_interval_seconds=0.01,
         processing_timeout_seconds=1.0,
         lease_seconds=1.0,
+        outbox=RecordingOutbox(),
     )
     try:
         assert worker.run_once() is True
@@ -539,6 +549,7 @@ def test_invalid_outcome_finalizes_failure() -> None:
         poll_interval_seconds=0.01,
         processing_timeout_seconds=1.0,
         lease_seconds=1.0,
+        outbox=RecordingOutbox(),
     )
     try:
         assert worker.run_once() is True

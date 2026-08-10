@@ -247,7 +247,8 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Completion gate:** Redis loss does not lose jobs; rate limits work concurrently; database updates and outbox events stay consistent; duplicate Kafka delivery is safe; replay and poison-message handling are tested.
 
-**Local implementation status:** Slice 13A (Redis-backed fixed-window rate limiting for `POST /v1/research-jobs` by direct peer IP; dedicated worker heartbeat thread with TTL keys; `noop` default coordination provider; pinned Redis 8.8.1 in Compose/CI) is implemented locally on `milestone-13-redis-kafka` and verified. Redis caching, transactional outbox, Kafka, consumers, and DLQ are deferred to Slices 13B/13C. Do not mark Milestone 13 Complete until Slice 13C and its PR/`main` CI pass.
+**Local implementation status:** Slice 13A is **Complete** through Pull Request #19 (`dc19714`; PR CI run #40 and resulting `main` CI run #41 passed): Redis-backed fixed-window rate limiting for `POST /v1/research-jobs` by direct peer IP; dedicated worker heartbeat thread with TTL keys; `noop` default coordination provider; pinned Redis 8.8.1 in Compose/CI. Slice 13B (typed research-job domain events + PostgreSQL transactional outbox + singleton advisory-lock relay with fake producer; global `outbox_position` head-of-line claiming; fresh post-producer lease fencing; strict stop-on-failure ordering) is the current implementation slice on `milestone-13-transactional-outbox` and under review. Kafka producers/consumers, inbox, DLQ, and Redis caching remain deferred to Slice 13C. Do not mark Milestone 13 Complete until Slice 13C and its PR/`main` CI pass.
+
 ## Milestone 14 — Observability and security
 
 **Status:** Pending

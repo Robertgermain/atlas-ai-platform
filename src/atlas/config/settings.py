@@ -80,6 +80,11 @@ class Settings(BaseSettings):
     heartbeat_interval_seconds: float = Field(default=5.0, gt=0)
     heartbeat_ttl_seconds: int = Field(default=15, ge=1)
 
+    # Transactional outbox relay (Milestone 13 Slice 13B). Kafka delivery is
+    # deferred; these knobs govern claim batching and publish leases only.
+    outbox_relay_batch_size: int = Field(default=50, ge=1, le=500)
+    outbox_publish_lease_seconds: float = Field(default=30.0, gt=0)
+
     @model_validator(mode="after")
     def _validate_heartbeat_timing(self) -> Self:
         if self.heartbeat_ttl_seconds < (2 * self.heartbeat_interval_seconds):

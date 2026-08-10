@@ -14,6 +14,8 @@ from atlas.application.exceptions import (
 from atlas.application.ports import ResearchJobIdempotencyRecord
 from atlas.application.research_jobs import ResearchJobService
 from atlas.domain import ResearchJob
+from atlas.outbox.errors import OutboxEnqueueError
+from atlas.outbox.fakes import RecordingOutbox
 from atlas.persistence.exceptions import IdempotencyKeyConflictError
 
 T0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
@@ -111,9 +113,11 @@ class _FakeRepository:
 
 def test_submit_creates_pending_job() -> None:
     repo = _FakeRepository()
+    outbox = RecordingOutbox()
     service = ResearchJobService(
         session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
         repository=repo,
+        outbox=outbox,
         id_factory=lambda: "job-fixed",
     )
 
@@ -123,19 +127,24 @@ def test_submit_creates_pending_job() -> None:
     assert job.question == "What is Atlas?"
     assert job.status.value == "PENDING"
     assert repo.add_calls == 1
+    assert len(outbox.events) == 1
+    assert outbox.events[0].event_type == "research_job.created"
 
 
 def test_submit_replays_matching_idempotency_key() -> None:
     repo = _FakeRepository()
+    outbox = RecordingOutbox()
     service = ResearchJobService(
         session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
         repository=repo,
+        outbox=outbox,
         id_factory=lambda: "job-1",
     )
     original = service.submit("same question", idempotency_key="key-1")
     service_again = ResearchJobService(
         session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
         repository=repo,
+        outbox=outbox,
         id_factory=lambda: "job-2",
     )
 
@@ -143,19 +152,41 @@ def test_submit_replays_matching_idempotency_key() -> None:
 
     assert replayed.id == original.id
     assert repo.add_calls == 2
+    assert len(outbox.events) == 1
 
 
 def test_submit_conflicts_when_payload_differs() -> None:
     repo = _FakeRepository()
+    outbox = RecordingOutbox()
     service = ResearchJobService(
         session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
         repository=repo,
+        outbox=outbox,
         id_factory=lambda: "job-1",
     )
     service.submit("question a", idempotency_key="key-1")
 
     with pytest.raises(IdempotencyConflictError):
         service.submit("question b", idempotency_key="key-1")
+    assert len(outbox.events) == 1
+
+
+def test_submit_outbox_failure_does_not_keep_job() -> None:
+    repo = _FakeRepository()
+    outbox = RecordingOutbox(fail_enqueue=True)
+    service = ResearchJobService(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        outbox=outbox,
+        id_factory=lambda: "job-1",
+    )
+
+    with pytest.raises(OutboxEnqueueError):
+        service.submit("question", idempotency_key="key-1")
+
+    # Fake session has no real rollback; repository still recorded the add call,
+    # but production session_scope rolls back. Assert no successful event.
+    assert outbox.events == []
 
 
 def test_get_returns_job() -> None:
@@ -165,6 +196,7 @@ def test_get_returns_job() -> None:
     service = ResearchJobService(
         session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
         repository=repo,
+        outbox=RecordingOutbox(),
     )
 
     loaded = service.get("job-1")
@@ -175,6 +207,7 @@ def test_get_missing_raises() -> None:
     service = ResearchJobService(
         session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
         repository=_FakeRepository(),
+        outbox=RecordingOutbox(),
     )
 
     with pytest.raises(ResearchJobLookupError) as exc_info:

@@ -29,13 +29,19 @@ from atlas.evaluation.contracts import EvaluationCandidateInput, ToolSummaryRow
 from atlas.evaluation.errors import EvaluationError, EvaluationTerminalError
 from atlas.evaluation.runner import EvaluationRunner
 from atlas.evaluation.service import EvaluationService
+from atlas.eventing.builders import (
+    build_research_job_awaiting_review,
+    build_research_job_retry_scheduled,
+)
 from atlas.evidence.contracts import ClaimStructured
 from atlas.evidence.service import EvidenceIngestService, ReportArtifactService
 from atlas.models.composition import build_planner_and_drafter
+from atlas.outbox.ports import OutboxEnqueuer
 from atlas.persistence.db import session_scope
 from atlas.persistence.models.evidence import EvidenceJobLinkModel
 from atlas.persistence.models.tool_invocation import ToolInvocationModel
 from atlas.persistence.models.workflow import WorkflowExecutionModel
+from atlas.persistence.repositories.outbox import SqlAlchemyOutboxRepository
 from atlas.persistence.repositories.recovery import SqlAlchemyRecoveryRepository
 from atlas.persistence.repositories.research_job import (
     SqlAlchemyResearchJobRepository,
@@ -259,12 +265,14 @@ class LangGraphResearchProcessor:
         planner: ResearchPlanner | None = None,
         drafter: ResearchDrafter | None = None,
         research_executor: ResearchPlanExecutor | None = None,
+        outbox: OutboxEnqueuer | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings or get_settings()
         self._repository = repository or SqlAlchemyWorkflowRepository()
         self._job_repo = SqlAlchemyResearchJobRepository()
         self._recovery_repo = SqlAlchemyRecoveryRepository()
+        self._outbox = outbox or SqlAlchemyOutboxRepository()
         self._node_counters = node_counters
         self._planner_override = planner
         self._drafter_override = drafter
@@ -621,6 +629,14 @@ class LangGraphResearchProcessor:
                             )
                             if not ok:
                                 raise ClaimOwnershipError("transition_awaiting_review")
+                            self._outbox.enqueue(
+                                session,
+                                build_research_job_awaiting_review(
+                                    research_job_id=job_id,
+                                    workflow_execution_id=execution_id,
+                                    entered_review_at=at,
+                                ),
+                            )
                     return PausedForReview(
                         workflow_execution_id=execution_id,
                     )
@@ -753,6 +769,16 @@ class LangGraphResearchProcessor:
                     )
                     if not ok:
                         raise ClaimOwnershipError("schedule_retry")
+                    self._outbox.enqueue(
+                        session,
+                        build_research_job_retry_scheduled(
+                            research_job_id=job_id,
+                            abandoned_workflow_execution_id=execution_id,
+                            job_retry_count=attempt_number,
+                            next_attempt_at=next_at,
+                            occurred_at=at,
+                        ),
+                    )
                 else:
                     existing_attempt = (
                         self._recovery_repo.get_recovery_attempt_by_policy(
