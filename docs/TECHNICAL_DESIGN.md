@@ -165,7 +165,7 @@ Local foundation decisions are recorded as they are validated. The comprehensive
 - Worker orchestration timeout (`FuturesTimeoutError`) remains terminal for this milestone (no auto-retry while the processor thread may still run).
 - Alembic head `20260809_0010` (0009 unchanged).
 
-These decisions cover the verified foundation through Milestone 11 Complete on `main` (`c5d4749`) and Milestone 12 Slices 12A and 12B locally. They do not imply production semantic retrieval quality, messaging, or cloud topology choices.
+These decisions cover the verified foundation through Milestone 11 Complete on `main` (`c5d4749`), Milestone 12 Slices 12A and 12B merged to `main` through Pull Request #17 (`e3412c3`), and the local, not-yet-merged Milestone 12 human calibration closeout. They do not imply production semantic retrieval quality, messaging, or cloud topology choices.
 
 ### Specialist agents (Milestone 11)
 
@@ -194,7 +194,9 @@ These decisions cover the verified foundation through Milestone 11 Complete on `
 - Job/execution consistency: service validates `workflow_executions.research_job_id` matches the evaluation job; Alembic `20260809_0009` also adds composite FK `(workflow_execution_id, research_job_id)` via unique `(id, research_job_id)` on `workflow_executions`.
 - Uniqueness: `(workflow_execution_id, evaluation_profile, evaluation_attempt)`. Model ledger node_name CHECK allows `evaluate` for future LLM attribution.
 - Read API: `GET /v1/research-jobs/{id}/evaluation` (run id, profile, attempt, status, passed, aggregate score, disposition, dimensions, safe grader versions); job GET may include sanitized `evaluation_summary`.
-- Slice 12A is locally approved. Slice 12B remains under local review after the correction pass. Milestone 12 remains Current. Do not freeze `evaluation.v1`.
+- Slice 12A and Slice 12B (including the correction pass) merged into `main` through Pull Request #17 (`e3412c3`; PR CI and resulting `main` CI passed).
+- Human calibration closeout (2026-08-10): the project owner reviewed `candidate_goldens.v1` and approved the judgment that a well-supported report fulfilling the plan via semantically equivalent paraphrase is acceptable, even though the provisional lexical `completeness` heuristic scores it as a failure. The fixture and test harness now separate `grader_expected` (deterministic-grader regression expectation) from `human_expected` (separate human quality judgment) for every graded case; `tests/evaluation/test_golden_candidates.py` runs a grader-regression check and a separate human-calibration check that reports TP/FP/FN/TN/precision/recall/F1 against `human_expected` (F1 is intentionally not forced to `1.0`). Three requirement-driven fixtures were added to close observed coverage gaps: `fail_incomplete_provenance` (`provenance_ok=false`), `fail_empty_plan` (`STRUCTURE_EMPTY_PLAN`), and `fail_missing_required_section` (`STRUCTURE_MISSING_SECTION` via a narrowly-scoped test-only `preview_report_override`; production formatting always emits all required labels). The `golden_facets_hit` override case is explicitly labeled fixture-only scaffolding because `atlas.workflow.graph` never populates that field in production. This closeout changed no production grader thresholds, policy behavior, database schema, or Alembic migration.
+- Milestone 12 remains Current: the evaluation/recovery implementation is merged to `main`, but the calibration-closeout change is local-only pending its own PR CI and resulting `main` CI. Do not freeze `evaluation.v1`; freezing remains deferred pending an independent held-out human-labeled set and/or a live semantic grader.
 
 ## Why the full diagram comes later
 
