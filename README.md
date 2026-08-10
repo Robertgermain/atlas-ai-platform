@@ -16,7 +16,7 @@ The repository already has a working local backend and workflow foundation: Pyth
 
 ## Current milestone
 
-Milestone 11 is Complete through Pull Request #16 (`c5d4749`). Milestone 12 is **Current**: Slice 12A (evaluate-before-complete) is locally approved. Slice 12B adds repair (re-draft), job-level retry with exponential backoff, AWAITING_REVIEW with operator approve/reject API, policy engine, and claim-fenced report persistence, and remains under review. Do not mark Milestone 12 Complete yet. The comprehensive Visio and AWS design remains deferred.
+Milestone 11 is Complete through Pull Request #16 (`c5d4749`). Milestone 12 is **Current**: evaluation, repair (re-draft), job-level retry with exponential backoff, `AWAITING_REVIEW` with operator approve/reject API, policy engine, and claim-fenced report persistence merged into `main` through Pull Request #17 (`e3412c3`). The project owner completed human calibration review of the evaluation goldens on 2026-08-10; the resulting calibration closeout is implemented locally and pending its own PR CI and resulting `main` CI. Do not mark Milestone 12 Complete yet. The comprehensive Visio and AWS design remains deferred.
 
 ### Run locally
 

@@ -155,6 +155,50 @@ def test_grade_report_structure_empty_draft_hard_fail() -> None:
     assert "STRUCTURE_EMPTY_DRAFT" in result.failure_codes
 
 
+def test_grade_report_structure_empty_plan_hard_fail() -> None:
+    candidate = _candidate(plan=[], draft="A well-formed draft without a plan.")
+    preview = format_research_report(
+        question=candidate.question,
+        plan=list(candidate.plan),
+        findings=list(candidate.findings),
+        draft=candidate.draft,
+    )
+    result = grade_report_structure(
+        preview,
+        draft=candidate.draft,
+        plan=list(candidate.plan),
+    )
+    assert result.passed is False
+    assert result.is_hard is True
+    assert "STRUCTURE_EMPTY_PLAN" in result.failure_codes
+    assert "STRUCTURE_EMPTY_DRAFT" not in result.failure_codes
+
+
+def test_grade_report_structure_missing_section_hard_fail() -> None:
+    """A preview report missing a required label fails closed.
+
+    Production formatting (``format_research_report``) always emits all four
+    required labels; this test constructs a malformed preview directly to
+    exercise the structure gate's defensive label-search branch.
+    """
+    candidate = _candidate()
+    malformed_preview = (
+        f"Question:\n{candidate.question}\n\n"
+        f"Plan:\n1. {candidate.plan[0]}\n\n"
+        f"Draft:\n{candidate.draft}"
+    )
+    result = grade_report_structure(
+        malformed_preview,
+        draft=candidate.draft,
+        plan=list(candidate.plan),
+    )
+    assert result.passed is False
+    assert result.is_hard is True
+    assert "STRUCTURE_MISSING_SECTION" in result.failure_codes
+    assert "STRUCTURE_EMPTY_DRAFT" not in result.failure_codes
+    assert "STRUCTURE_EMPTY_PLAN" not in result.failure_codes
+
+
 def test_grade_coverage_thin_linked_count() -> None:
     thin = grade_coverage(linked_count=0, has_claims=True)
     assert thin.passed is False
@@ -174,6 +218,37 @@ def test_grade_completeness_missing_plan_tokens() -> None:
     assert result.passed is False
     assert result.score < PROVISIONAL_SOFT_PASS_THRESHOLD
     assert "COMPLETENESS_FACET_MISSING" in result.failure_codes
+
+
+def test_grade_completeness_golden_ratio_override_below_threshold() -> None:
+    """golden_completeness_ratio overrides the lexical heuristic entirely.
+
+    This override is fixture/test-only scaffolding: production workflow
+    composition (``atlas.workflow.graph``) never sets this field, so this
+    only proves the override branch itself behaves correctly, not that any
+    real golden-facet dataset exists.
+    """
+    result = grade_completeness(
+        plan=["Investigate xyzzywordalpha thoroughly"],
+        findings=["unrelated note"],
+        draft="still missing the unique token",
+        golden_ratio=0.5,
+    )
+    assert result.score == 0.5
+    assert result.passed is False
+    assert "COMPLETENESS_FACET_MISSING" in result.failure_codes
+
+
+def test_grade_completeness_golden_ratio_override_at_threshold_passes() -> None:
+    result = grade_completeness(
+        plan=["Investigate xyzzywordalpha thoroughly"],
+        findings=["unrelated note"],
+        draft="still missing the unique token",
+        golden_ratio=PROVISIONAL_SOFT_PASS_THRESHOLD,
+    )
+    assert result.score == PROVISIONAL_SOFT_PASS_THRESHOLD
+    assert result.passed is True
+    assert result.failure_codes == []
 
 
 def test_grade_lexical_id_groundedness() -> None:

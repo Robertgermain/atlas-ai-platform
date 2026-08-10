@@ -1,11 +1,18 @@
 {
   "_meta": {
     "label": "candidate_goldens.v1",
-    "human_reviewed": false,
+    "human_reviewed": true,
+    "human_reviewer": "project_owner",
+    "reviewed_at": "2026-08-10",
     "frozen_profile": false,
-    "note": "Candidate labels for calibration development \u2014 not an independent validation set and not frozen evaluation.v1. Confusion metrics are reported against these same fixtures.",
+    "review_scope": "Intended-behavior regression baseline plus a small human calibration comparison over the same development fixtures. Grader-behavior expectations (grader_expected) are distinguished from separate human quality judgments (human_expected) for every graded case.",
+    "not_held_out_validation": "These fixtures are not a held-out validation set; the same cases are used both for grader regression and for the human calibration comparison below.",
+    "not_independent_statistical_validation": "Precision/recall/F1 computed against human_expected describe agreement on this small, hand-authored, non-random case set only. They are not independent statistical validation of grader accuracy in general.",
+    "not_production_semantic_quality_proof": "Passing this suite does not prove production semantic quality. Coverage and completeness remain provisional lexical/id heuristics; semantic groundedness uses an offline Fake grader; live semantic evaluation is deferred.",
+    "evaluation_profile_status": "evaluation.candidate.v1 remains provisional. Frozen production evaluation.v1 remains deferred and unfrozen pending an independent held-out human-labeled set and/or a live semantic grader.",
+    "note": "Candidate labels for calibration development \u2014 not an independent validation set and not frozen evaluation.v1. Grader regression and human calibration are computed and reported separately against these same fixtures.",
     "starter_case_count": 6,
-    "class_distribution_note": "Counts below include starter + expanded fixtures used both for regression and calibration development (not held-out validation)."
+    "class_distribution_note": "Counts below include starter + expanded + human-calibration-closeout fixtures used for grader regression and human calibration development (not held-out validation)."
   },
   "cases": [
     {
@@ -49,7 +56,8 @@
           }
         ]
       },
-      "expected": {
+      "isolates": "happy_cited_pass",
+      "grader_expected": {
         "overall_passed": true,
         "dimension_passed": {
           "citation_integrity": true,
@@ -63,7 +71,10 @@
         "rationale": "All hard gates and provisional soft dimensions pass for a linked, research-attributed candidate.",
         "known_heuristic_limitation": "Starter fixture; soft dimensions are provisional heuristics."
       },
-      "isolates": "happy_cited_pass"
+      "human_expected": {
+        "overall_passed": true,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
+      }
     },
     {
       "id": "empty_draft_fail",
@@ -96,7 +107,8 @@
           }
         ]
       },
-      "expected": {
+      "isolates": "empty_draft_fail",
+      "grader_expected": {
         "overall_passed": false,
         "dimension_passed": {
           "citation_integrity": true,
@@ -110,7 +122,10 @@
         "rationale": "Empty draft is a hard report_structure failure (STRUCTURE_EMPTY_DRAFT).",
         "known_heuristic_limitation": "Starter fixture; soft dimensions are provisional heuristics."
       },
-      "isolates": "empty_draft_fail"
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
+      }
     },
     {
       "id": "unlinked_citation_fail",
@@ -150,7 +165,8 @@
           }
         ]
       },
-      "expected": {
+      "isolates": "unlinked_citation_fail",
+      "grader_expected": {
         "overall_passed": false,
         "dimension_passed": {
           "citation_integrity": false,
@@ -164,7 +180,10 @@
         "rationale": "Claim evidence id is absent from the linked set, failing citation_integrity and related groundedness checks.",
         "known_heuristic_limitation": "Starter fixture; soft dimensions are provisional heuristics."
       },
-      "isolates": "unlinked_citation_fail"
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
+      }
     },
     {
       "id": "tool_policy_fail",
@@ -204,7 +223,8 @@
           }
         ]
       },
-      "expected": {
+      "isolates": "tool_policy_fail",
+      "grader_expected": {
         "overall_passed": false,
         "dimension_passed": {
           "citation_integrity": true,
@@ -218,7 +238,10 @@
         "rationale": "WORKFLOW tool with node_name=draft is a hard tool_use failure (TOOL_NODE_VIOLATION).",
         "known_heuristic_limitation": "Starter fixture; soft dimensions are provisional heuristics."
       },
-      "isolates": "tool_policy_fail"
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
+      }
     },
     {
       "id": "thin_coverage_fail",
@@ -257,7 +280,8 @@
           }
         ]
       },
-      "expected": {
+      "isolates": "thin_coverage_fail",
+      "grader_expected": {
         "overall_passed": false,
         "dimension_passed": {
           "citation_integrity": false,
@@ -271,7 +295,10 @@
         "rationale": "Claims with linked_count 0 fail coverage; unlinked claim ids also fail citation and groundedness.",
         "known_heuristic_limitation": "Starter fixture; soft dimensions are provisional heuristics."
       },
-      "isolates": "thin_coverage_fail"
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
+      }
     },
     {
       "id": "incomplete_plan_fail",
@@ -309,7 +336,8 @@
           }
         ]
       },
-      "expected": {
+      "isolates": "incomplete_plan_fail",
+      "grader_expected": {
         "overall_passed": false,
         "dimension_passed": {
           "citation_integrity": true,
@@ -323,7 +351,10 @@
         "rationale": "Unique plan tokens are missing from findings+draft, failing provisional completeness.",
         "known_heuristic_limitation": "Starter fixture; soft dimensions are provisional heuristics."
       },
-      "isolates": "incomplete_plan_fail"
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
+      }
     },
     {
       "id": "pass_battery_storage_cited",
@@ -373,7 +404,7 @@
           }
         ]
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": true,
         "dimension_passed": {
           "citation_integrity": true,
@@ -386,6 +417,10 @@
         },
         "rationale": "Linked claim, research-attributed tools, and plan tokens reflected in draft.",
         "known_heuristic_limitation": "Lexical completeness can still miss paraphrased plan coverage."
+      },
+      "human_expected": {
+        "overall_passed": true,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
       }
     },
     {
@@ -429,7 +464,7 @@
           }
         ]
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": true,
         "dimension_passed": {
           "citation_integrity": true,
@@ -442,6 +477,10 @@
         },
         "rationale": "Second independent domain pass with linked evidence and research tools.",
         "known_heuristic_limitation": "Coverage only checks linked_count >= 1, not source diversity."
+      },
+      "human_expected": {
+        "overall_passed": true,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
       }
     },
     {
@@ -497,7 +536,7 @@
           }
         ]
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": true,
         "dimension_passed": {
           "citation_integrity": true,
@@ -510,6 +549,10 @@
         },
         "rationale": "Third independent pass case with three logical research tools.",
         "known_heuristic_limitation": "Soft dimensions remain provisional heuristics."
+      },
+      "human_expected": {
+        "overall_passed": true,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
       }
     },
     {
@@ -545,7 +588,7 @@
           }
         ]
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": true,
         "dimension_passed": {
           "citation_integrity": true,
@@ -558,6 +601,10 @@
         },
         "rationale": "Empty claims with intact provenance_ok allows citation/coverage soft passes.",
         "known_heuristic_limitation": "Does not prove real-world research adequacy without claims."
+      },
+      "human_expected": {
+        "overall_passed": true,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
       }
     },
     {
@@ -585,7 +632,7 @@
         "evidence_item_ids": [],
         "tool_summary": []
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": true,
         "dimension_passed": {
           "citation_integrity": true,
@@ -598,6 +645,10 @@
         },
         "rationale": "Legitimate zero-tool path passes tool_use when allow_zero_tools is true.",
         "known_heuristic_limitation": "Does not detect when tools were actually required."
+      },
+      "human_expected": {
+        "overall_passed": true,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
       }
     },
     {
@@ -662,7 +713,7 @@
           }
         ]
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": true,
         "dimension_passed": {
           "citation_integrity": true,
@@ -675,6 +726,10 @@
         },
         "rationale": "Six logical WORKFLOW/research rows are within max_logical_calls=6.",
         "known_heuristic_limitation": "Counts logical rows only; physical retries are out of band."
+      },
+      "human_expected": {
+        "overall_passed": true,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
       }
     },
     {
@@ -745,7 +800,7 @@
           }
         ]
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": false,
         "dimension_passed": {
           "citation_integrity": true,
@@ -758,6 +813,10 @@
         },
         "rationale": "Seven logical calls fail tool_use with TOOL_BUDGET_EXCEEDED.",
         "known_heuristic_limitation": "Budget is a fixed policy constant, not adaptive."
+      },
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
       }
     },
     {
@@ -802,7 +861,7 @@
         ],
         "golden_facets_hit": 0.5
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": false,
         "dimension_passed": {
           "citation_integrity": true,
@@ -815,7 +874,12 @@
         },
         "rationale": "Citation integrity passes on linked ids; coverage fails via facet score 0.5 < 0.70.",
         "known_heuristic_limitation": "Facet override is calibration scaffolding, not live retrieval diversity."
-      }
+      },
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
+      },
+      "fixture_mechanism_note": "golden_facets_hit is fixture-only scaffolding for a hypothetical future golden facet dataset. Production workflow composition (atlas.workflow.graph) never populates this field, so this case does not validate live production coverage quality."
     },
     {
       "id": "fail_completeness_below_threshold",
@@ -841,7 +905,7 @@
         "evidence_item_ids": [],
         "tool_summary": []
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": false,
         "dimension_passed": {
           "citation_integrity": true,
@@ -854,6 +918,10 @@
         },
         "rationale": "2/3 plan-token coverage yields ~0.666 < 0.70 soft threshold.",
         "known_heuristic_limitation": "Token subset matching is lexical, not semantic."
+      },
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
       }
     },
     {
@@ -892,7 +960,7 @@
         "evidence_item_ids": [],
         "tool_summary": []
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": true,
         "dimension_passed": {
           "citation_integrity": true,
@@ -905,6 +973,10 @@
         },
         "rationale": "7/10 plan-token coverage equals the 0.70 soft threshold and passes.",
         "known_heuristic_limitation": "Boundary depends on significant-token extraction rules."
+      },
+      "human_expected": {
+        "overall_passed": true,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
       }
     },
     {
@@ -928,7 +1000,7 @@
         "evidence_item_ids": [],
         "tool_summary": []
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": false,
         "dimension_passed": {
           "citation_integrity": true,
@@ -941,6 +1013,10 @@
         },
         "rationale": "Semantically related paraphrase fails lexical plan-token completeness.",
         "known_heuristic_limitation": "Primary known limitation: lexical completeness false negatives on paraphrase."
+      },
+      "human_expected": {
+        "overall_passed": true,
+        "rationale": "A well-supported report that fulfills the plan using semantically equivalent paraphrases is acceptable to a human reviewer. Provisional lexical completeness produces a known semantic false negative here: the grader fails on lexical non-overlap even though the paraphrase covers the plan's intent."
       }
     },
     {
@@ -984,7 +1060,7 @@
           }
         ]
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": false,
         "dimension_passed": {
           "citation_integrity": false,
@@ -997,6 +1073,10 @@
         },
         "rationale": "Structure passes; claim cites an unlinked id and fails citation/groundedness.",
         "known_heuristic_limitation": "Does not inspect evidence body text for semantic support."
+      },
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
       }
     },
     {
@@ -1046,7 +1126,7 @@
           }
         ]
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": false,
         "dimension_passed": {
           "citation_integrity": false,
@@ -1059,6 +1139,10 @@
         },
         "rationale": "One linked and one unlinked claim fails citation integrity and soft groundedness.",
         "known_heuristic_limitation": "Scores are id-based ratios, not graded evidence quality."
+      },
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
       }
     },
     {
@@ -1093,7 +1177,7 @@
           }
         ]
       },
-      "expected": {
+      "grader_expected": {
         "overall_passed": false,
         "dimension_passed": {
           "citation_integrity": true,
@@ -1106,7 +1190,157 @@
         },
         "rationale": "Non-WORKFLOW origin fails tool_use with TOOL_UNKNOWN_ORIGIN.",
         "known_heuristic_limitation": "Does not attempt to interpret custom origin semantics."
+      },
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "Human calibration agrees with the grader outcome for this case; no known heuristic disagreement applies."
       }
+    },
+    {
+      "id": "fail_incomplete_provenance",
+      "scenario": "Otherwise-valid linked claim and report but upstream provenance is incomplete",
+      "isolates": "provenance_incomplete",
+      "characteristics": [
+        "linked_evidence",
+        "provenance_ok_false",
+        "citation_integrity_fail"
+      ],
+      "provenance_ok": false,
+      "candidate": {
+        "question": "Provenance incomplete despite a linked claim",
+        "plan": [
+          "Clarify research scope carefully",
+          "Summarize publicly known facts carefully",
+          "Note residual uncertainty clearly"
+        ],
+        "findings": [
+          "Clarify research scope carefully before drafting",
+          "Summarize publicly known facts carefully from linked sources",
+          "Note residual uncertainty clearly for operators"
+        ],
+        "draft": "Clarify research scope carefully. Summarize publicly known facts carefully. Note residual uncertainty clearly in the final draft.",
+        "claims": [
+          {
+            "text": "Linked evidence supports this claim.",
+            "evidence_item_ids": [
+              "ev-prov-01"
+            ]
+          }
+        ],
+        "evidence_item_ids": [
+          "ev-prov-01"
+        ],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_0",
+            "status": "SUCCEEDED"
+          }
+        ]
+      },
+      "grader_expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": false,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "provenance_ok=false forces CITATION_PROVENANCE_INCOMPLETE even though the claim's evidence id is linked; citation_integrity is a hard gate so the candidate fails overall.",
+        "known_heuristic_limitation": "Provenance is a single boolean upstream signal; the grader cannot distinguish partial from total provenance loss, and lexical/semantic groundedness still pass because they only check id linkage."
+      },
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "Evidence provenance is incomplete, so the report's citations cannot be trusted regardless of link membership."
+      }
+    },
+    {
+      "id": "fail_empty_plan",
+      "scenario": "Nonempty, otherwise-valid report candidate with an empty plan",
+      "isolates": "empty_plan",
+      "characteristics": [
+        "empty_plan",
+        "structure_hard_fail"
+      ],
+      "candidate": {
+        "question": "Report produced without a formal plan",
+        "plan": [],
+        "findings": [
+          "General notes without a formal plan."
+        ],
+        "draft": "This is a well-formed draft that stands without an explicit plan structure.",
+        "claims": [],
+        "evidence_item_ids": [],
+        "tool_summary": []
+      },
+      "grader_expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": false,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "Empty plan is a hard report_structure failure (STRUCTURE_EMPTY_PLAN) even though the draft itself is well-formed.",
+        "known_heuristic_limitation": "completeness vacuously passes on an empty plan (no tasks to satisfy); only report_structure enforces that a plan must exist."
+      },
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "Atlas requires a planned research workflow; a report produced without any plan is not an acceptable candidate regardless of draft quality."
+      }
+    },
+    {
+      "id": "fail_missing_required_section",
+      "scenario": "Otherwise-valid candidate whose test-only preview report omits one required section label",
+      "isolates": "missing_required_section",
+      "characteristics": [
+        "structure_hard_fail",
+        "formatter_regression"
+      ],
+      "preview_report_override": "Question:\nWhat happens when a required section is missing?\n\nPlan:\n1. Clarify research scope carefully\n2. Summarize publicly known facts carefully\n3. Note residual uncertainty clearly\n\nDraft:\nClarify research scope carefully. Summarize publicly known facts carefully. Note residual uncertainty clearly in the final draft.",
+      "candidate": {
+        "question": "What happens when a required section is missing?",
+        "plan": [
+          "Clarify research scope carefully",
+          "Summarize publicly known facts carefully",
+          "Note residual uncertainty clearly"
+        ],
+        "findings": [
+          "Clarify research scope carefully before drafting",
+          "Summarize publicly known facts carefully from linked sources",
+          "Note residual uncertainty clearly for operators"
+        ],
+        "draft": "Clarify research scope carefully. Summarize publicly known facts carefully. Note residual uncertainty clearly in the final draft.",
+        "claims": [],
+        "evidence_item_ids": [],
+        "tool_summary": []
+      },
+      "grader_expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": false,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "The test-only preview omits the 'Findings:' label, producing STRUCTURE_MISSING_SECTION even though the candidate's own draft and plan are otherwise valid.",
+        "known_heuristic_limitation": "This exercises the structure gate's label-search defensively; production formatting (format_research_report) always emits all four required labels, so this case does not represent an observed production defect."
+      },
+      "human_expected": {
+        "overall_passed": false,
+        "rationale": "The required report contract is incomplete without a Findings section, so the report cannot be accepted as-is."
+      },
+      "fixture_mechanism_note": "preview_report_override is a narrowly-scoped test-only mechanism to synthesize a malformed preview report for structure-gate regression coverage. Production formatting always creates these labels; this case is formatter/structure-gate regression coverage, not evidence of an observed production formatting defect."
     },
     {
       "id": "replay_conflict_evidence_mutation",
