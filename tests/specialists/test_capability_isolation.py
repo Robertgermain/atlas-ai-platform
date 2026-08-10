@@ -35,6 +35,7 @@ from atlas.specialists.synthesizer import BoundedReportSynthesizer
 from atlas.tools.runner import ResearchNodeOutcome
 from atlas.workflow.graph import (
     NODE_NAMES,
+    UNIT_TEST_JOB_CLAIM_TOKEN,
     WorkflowRuntimeContext,
     build_research_graph,
     complete_node,
@@ -248,6 +249,7 @@ def test_complete_node_formats_and_persists_without_models_or_tools() -> None:
         draft_prompt_version="draft.v2",
         workflow_execution_id="exec-1",
         report_service=report_service,  # type: ignore[arg-type]
+        job_claim_token=UNIT_TEST_JOB_CLAIM_TOKEN,
     )
     runtime = SimpleNamespace(context=context)
     state = {
@@ -259,6 +261,7 @@ def test_complete_node_formats_and_persists_without_models_or_tools() -> None:
         "draft": "Draft body",
         "claims": [],
         "result": "",
+        "evaluation_passed": True,
     }
     result = complete_node(state, runtime)  # type: ignore[arg-type]
     assert "Question:" in result["result"]
@@ -273,7 +276,12 @@ def test_linear_graph_has_no_autonomous_specialist_loop() -> None:
         "research",
         "draft",
         "verify_citations",
+        "evaluate",
+        "policy",
+        "repair",
+        "await_review",
         "complete",
+        "terminal",
     )
     graph = build_research_graph(checkpointer=InMemorySaver())
     spec = graph.get_graph()
@@ -282,9 +290,16 @@ def test_linear_graph_has_no_autonomous_specialist_loop() -> None:
     assert ("plan", "research") in edge_pairs
     assert ("research", "draft") in edge_pairs
     assert ("draft", "verify_citations") in edge_pairs
-    assert ("verify_citations", "complete") in edge_pairs
+    assert ("verify_citations", "evaluate") in edge_pairs
+    assert ("evaluate", "policy") in edge_pairs
+    assert ("policy", "complete") in edge_pairs
+    assert ("policy", "terminal") in edge_pairs
+    assert ("policy", "repair") in edge_pairs
+    assert ("policy", "await_review") in edge_pairs
+    assert ("repair", "draft") in edge_pairs
+    assert ("await_review", "complete") in edge_pairs
+    assert ("verify_citations", "complete") not in edge_pairs
     assert any(src == "complete" and "end" in tgt.lower() for src, tgt in edge_pairs)
+    assert any(src == "terminal" and "end" in tgt.lower() for src, tgt in edge_pairs)
     assert ("research", "plan") not in edge_pairs
-    assert ("draft", "research") not in edge_pairs
-    assert ("verify_citations", "draft") not in edge_pairs
     assert ("complete", "validate") not in edge_pairs

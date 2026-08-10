@@ -9,12 +9,13 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from atlas.api.deps import provide_research_job_service
+from atlas.api.deps import provide_evaluation_service, provide_research_job_service
 from atlas.application.exceptions import (
     IdempotencyConflictError,
     ResearchJobLookupError,
 )
 from atlas.domain import ResearchJob
+from atlas.evaluation.contracts import EVALUATION_PROFILE, EvaluationRunResult
 from atlas.main import app
 
 T0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
@@ -55,12 +56,65 @@ class _FakeService:
         return job
 
 
+class _FakeEvaluationService:
+    """In-memory evaluation reads for isolated API unit tests (no Postgres)."""
+
+    def __init__(self) -> None:
+        self.by_job: dict[str, list[EvaluationRunResult]] = {}
+        self.get_by_job_error: Exception | None = None
+
+    def get_by_job(self, job_id: str) -> list[EvaluationRunResult]:
+        if self.get_by_job_error is not None:
+            raise self.get_by_job_error
+        return list(self.by_job.get(job_id, []))
+
+    def seed_succeeded(
+        self,
+        *,
+        job_id: str,
+        run_id: str = "eval-run-1",
+        aggregate_score: float = 0.91,
+    ) -> EvaluationRunResult:
+        result = EvaluationRunResult(
+            run_id=run_id,
+            research_job_id=job_id,
+            workflow_execution_id="exec-1",
+            evaluation_profile=EVALUATION_PROFILE,
+            evaluation_attempt=1,
+            status="SUCCEEDED",
+            input_fingerprint="a" * 64,
+            passed=True,
+            aggregate_score=aggregate_score,
+            disposition_hint="complete",
+            dimensions=[],
+            grader_versions={"citation_integrity": "deterministic.v1"},
+        )
+        self.by_job[job_id] = [result]
+        return result
+
+
 @pytest.fixture
-def fake_service() -> Iterator[_FakeService]:
+def api_fakes() -> Iterator[tuple[_FakeService, _FakeEvaluationService]]:
     service = _FakeService()
+    evaluation = _FakeEvaluationService()
     app.dependency_overrides[provide_research_job_service] = lambda: service
-    yield service
+    app.dependency_overrides[provide_evaluation_service] = lambda: evaluation
+    yield service, evaluation
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def fake_service(
+    api_fakes: tuple[_FakeService, _FakeEvaluationService],
+) -> _FakeService:
+    return api_fakes[0]
+
+
+@pytest.fixture
+def fake_evaluation(
+    api_fakes: tuple[_FakeService, _FakeEvaluationService],
+) -> _FakeEvaluationService:
+    return api_fakes[1]
 
 
 def test_create_research_job_returns_202(fake_service: _FakeService) -> None:
@@ -92,7 +146,80 @@ def test_get_research_job_returns_200(fake_service: _FakeService) -> None:
     response = client.get(f"/v1/research-jobs/{created['id']}")
 
     assert response.status_code == 200
-    assert response.json()["id"] == created["id"]
+    body = response.json()
+    assert body["id"] == created["id"]
+    assert body["evaluation_summary"] is None
+
+
+def test_get_research_job_includes_evaluation_summary(
+    fake_service: _FakeService,
+    fake_evaluation: _FakeEvaluationService,
+) -> None:
+    created = client.post(
+        "/v1/research-jobs",
+        json={"question": "What is Atlas?"},
+        headers={"Idempotency-Key": "key-eval-summary"},
+    ).json()
+    fake_evaluation.seed_succeeded(
+        job_id=created["id"],
+        aggregate_score=0.91,
+    )
+
+    response = client.get(f"/v1/research-jobs/{created['id']}")
+
+    assert response.status_code == 200
+    summary = response.json()["evaluation_summary"]
+    assert summary is not None
+    assert summary["passed"] is True
+    assert summary["aggregate_score"] == pytest.approx(0.91)
+    assert summary["profile"] == EVALUATION_PROFILE
+    assert summary["disposition_hint"] == "complete"
+    assert "input_fingerprint" not in summary
+    assert "job_claim_fingerprint" not in summary
+
+
+def test_get_evaluation_returns_404_when_missing(fake_service: _FakeService) -> None:
+    created = client.post(
+        "/v1/research-jobs",
+        json={"question": "What is Atlas?"},
+        headers={"Idempotency-Key": "key-eval-missing"},
+    ).json()
+
+    response = client.get(f"/v1/research-jobs/{created['id']}/evaluation")
+
+    assert response.status_code == 404
+    body = response.json()
+    assert body["error"]["code"] == "evaluation_not_found"
+
+
+def test_get_evaluation_returns_200_when_present(
+    fake_service: _FakeService,
+    fake_evaluation: _FakeEvaluationService,
+) -> None:
+    created = client.post(
+        "/v1/research-jobs",
+        json={"question": "What is Atlas?"},
+        headers={"Idempotency-Key": "key-eval-present"},
+    ).json()
+    seeded = fake_evaluation.seed_succeeded(
+        job_id=created["id"],
+        run_id="eval-detail-1",
+        aggregate_score=0.88,
+    )
+
+    response = client.get(f"/v1/research-jobs/{created['id']}/evaluation")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"] == seeded.run_id
+    assert body["research_job_id"] == created["id"]
+    assert body["status"] == "SUCCEEDED"
+    assert body["passed"] is True
+    assert body["aggregate_score"] == pytest.approx(0.88)
+    assert body["evaluation_profile"] == EVALUATION_PROFILE
+    assert "input_fingerprint" not in body
+    assert "job_claim_fingerprint" not in body
+    assert "ownership_token" not in body
 
 
 def test_get_unknown_job_returns_structured_404(fake_service: _FakeService) -> None:
@@ -102,6 +229,39 @@ def test_get_unknown_job_returns_structured_404(fake_service: _FakeService) -> N
     body = response.json()
     assert body["error"]["code"] == "research_job_not_found"
     assert body["error"]["details"]["job_id"] == "missing-id"
+
+
+def test_get_evaluation_unknown_job_returns_404(fake_service: _FakeService) -> None:
+    response = client.get("/v1/research-jobs/missing-id/evaluation")
+
+    assert response.status_code == 404
+    body = response.json()
+    assert body["error"]["code"] == "research_job_not_found"
+
+
+def test_evaluation_operational_error_returns_503(
+    fake_service: _FakeService,
+    fake_evaluation: _FakeEvaluationService,
+) -> None:
+    """Production mapping: evaluation DB failures remain controlled 503."""
+    created = client.post(
+        "/v1/research-jobs",
+        json={"question": "What is Atlas?"},
+        headers={"Idempotency-Key": "key-eval-503"},
+    ).json()
+    secret = "postgresql+psycopg://atlas:super-secret@127.0.0.1:5432/atlas"
+    fake_evaluation.get_by_job_error = OperationalError(
+        f"could not connect using {secret}",
+        params=None,
+        orig=Exception("connection refused"),
+    )
+
+    response = client.get(f"/v1/research-jobs/{created['id']}")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"]["code"] == "service_unavailable"
+    assert "super-secret" not in response.text
 
 
 def test_blank_question_returns_structured_422(fake_service: _FakeService) -> None:
@@ -280,6 +440,7 @@ def test_openapi_includes_research_job_paths(fake_service: _FakeService) -> None
     schema = client.get("/openapi.json").json()
     assert "/v1/research-jobs" in schema["paths"]
     assert "/v1/research-jobs/{job_id}" in schema["paths"]
+    assert "/v1/research-jobs/{job_id}/evaluation" in schema["paths"]
 
     request_schema = schema["components"]["schemas"]["CreateResearchJobRequest"]
     question = request_schema["properties"]["question"]

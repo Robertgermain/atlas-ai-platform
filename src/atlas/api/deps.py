@@ -8,8 +8,10 @@ from fastapi import Depends
 from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.application.research_jobs import ResearchJobService
-from atlas.config.settings import get_settings
+from atlas.application.review import ReviewService
+from atlas.config.settings import Settings, get_settings
 from atlas.embeddings.composition import build_text_embedder
+from atlas.evaluation.service import EvaluationService
 from atlas.evidence.retrieve import EvidenceEmbeddingService
 from atlas.evidence.service import EvidenceIngestService, ReportArtifactService
 from atlas.persistence.db import get_session_factory
@@ -69,3 +71,32 @@ def provide_report_artifact_service(
     ],
 ) -> ReportArtifactService:
     return ReportArtifactService(session_factory=session_factory)
+
+
+def provide_evaluation_service(
+    session_factory: Annotated[
+        sessionmaker[Session],
+        Depends(provide_session_factory),
+    ],
+) -> EvaluationService:
+    """Wire the durable evaluation service."""
+    return EvaluationService(session_factory=session_factory)
+
+
+def provide_settings() -> Settings:
+    """Return the current application settings."""
+    return get_settings()
+
+
+def provide_review_service(
+    session_factory: Annotated[
+        sessionmaker[Session],
+        Depends(provide_session_factory),
+    ],
+    settings: Annotated[Settings, Depends(provide_settings)],
+) -> ReviewService:
+    """Wire the operator review service."""
+    return ReviewService(
+        session_factory=session_factory,
+        database_url=settings.database_url,
+    )

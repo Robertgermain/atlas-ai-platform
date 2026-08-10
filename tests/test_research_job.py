@@ -386,3 +386,198 @@ def test_fail_normalizes_non_utc_timestamp_to_utc() -> None:
     assert job.updated_at == T2
     assert job.finished_at is not None
     assert job.finished_at.utcoffset() == timedelta(0)
+
+
+# --- Slice 12B: new transitions ---
+
+T3 = T0 + timedelta(minutes=3)
+T4 = T0 + timedelta(minutes=4)
+T5 = T0 + timedelta(minutes=5)
+
+
+def test_await_review_transitions_running_to_awaiting_review() -> None:
+    job = ResearchJob.create("job-1", "question", at=T0)
+    job.start(at=T1)
+
+    job.await_review(at=T2)
+
+    assert job.status is ResearchJobStatus.AWAITING_REVIEW
+    assert job.started_at == T1
+    assert job.finished_at is None
+    assert job.result is None
+    assert job.failure_reason is None
+    assert job.updated_at == T2
+
+
+def test_await_review_from_pending_is_invalid() -> None:
+    job = ResearchJob.create("job-1", "question", at=T0)
+
+    with pytest.raises(InvalidTransitionError) as exc_info:
+        job.await_review(at=T1)
+
+    assert exc_info.value.current == ResearchJobStatus.PENDING.value
+    assert exc_info.value.attempted == ResearchJobStatus.AWAITING_REVIEW.value
+
+
+def test_return_to_pending_transitions_running_to_pending() -> None:
+    job = ResearchJob.create("job-1", "question", at=T0)
+    job.start(at=T1)
+
+    job.return_to_pending(at=T2)
+
+    assert job.status is ResearchJobStatus.PENDING
+    assert job.started_at == T1
+    assert job.finished_at is None
+    assert job.result is None
+    assert job.failure_reason is None
+    assert job.updated_at == T2
+
+
+def test_return_to_pending_from_pending_is_invalid() -> None:
+    job = ResearchJob.create("job-1", "question", at=T0)
+
+    with pytest.raises(InvalidTransitionError) as exc_info:
+        job.return_to_pending(at=T1)
+
+    assert exc_info.value.current == ResearchJobStatus.PENDING.value
+    assert exc_info.value.attempted == ResearchJobStatus.PENDING.value
+
+
+def test_resume_from_pending_requires_started_at_set() -> None:
+    """resume_from_pending needs started_at to already be set (delayed PENDING)."""
+    job = ResearchJob.create("job-1", "question", at=T0)
+
+    with pytest.raises(InvalidResearchJobError, match="resume_from_pending"):
+        job.resume_from_pending(at=T1)
+
+
+def test_start_rejects_delayed_pending() -> None:
+    """start() must reject jobs that already have started_at set."""
+    job = ResearchJob.create("job-1", "question", at=T0)
+    job.start(at=T1)
+    job.return_to_pending(at=T2)
+
+    with pytest.raises(InvalidResearchJobError, match="start\\(\\)"):
+        job.start(at=T3)
+
+
+def test_resume_from_pending_transitions_delayed_pending_to_running() -> None:
+    """After return_to_pending, resume_from_pending goes back to RUNNING."""
+    job = ResearchJob.create("job-1", "question", at=T0)
+    job.start(at=T1)
+    job.return_to_pending(at=T2)
+
+    job.resume_from_pending(at=T3)
+
+    assert job.status is ResearchJobStatus.RUNNING
+    assert job.started_at == T1
+    assert job.updated_at == T3
+
+
+def test_approve_to_pending_transitions_awaiting_review_to_pending() -> None:
+    job = ResearchJob.create("job-1", "question", at=T0)
+    job.start(at=T1)
+    job.await_review(at=T2)
+
+    job.approve_to_pending(at=T3)
+
+    assert job.status is ResearchJobStatus.PENDING
+    assert job.started_at == T1
+    assert job.updated_at == T3
+
+
+def test_approve_to_pending_from_running_is_invalid() -> None:
+    job = ResearchJob.create("job-1", "question", at=T0)
+    job.start(at=T1)
+
+    with pytest.raises(InvalidTransitionError) as exc_info:
+        job.approve_to_pending(at=T2)
+
+    assert exc_info.value.current == ResearchJobStatus.RUNNING.value
+    assert exc_info.value.attempted == ResearchJobStatus.PENDING.value
+
+
+def test_fail_from_review_transitions_awaiting_review_to_failed() -> None:
+    job = ResearchJob.create("job-1", "question", at=T0)
+    job.start(at=T1)
+    job.await_review(at=T2)
+
+    job.fail_from_review("  operator rejected  ", at=T3)
+
+    assert job.status is ResearchJobStatus.FAILED
+    assert job.failure_reason == "operator rejected"
+    assert job.result is None
+    assert job.finished_at == T3
+    assert job.updated_at == T3
+
+
+def test_fail_from_review_from_running_is_invalid() -> None:
+    job = ResearchJob.create("job-1", "question", at=T0)
+    job.start(at=T1)
+
+    with pytest.raises(InvalidTransitionError) as exc_info:
+        job.fail_from_review("reason", at=T2)
+
+    assert exc_info.value.current == ResearchJobStatus.RUNNING.value
+    assert exc_info.value.attempted == ResearchJobStatus.FAILED.value
+
+
+def test_fail_from_review_rejects_empty_reason() -> None:
+    job = ResearchJob.create("job-1", "question", at=T0)
+    job.start(at=T1)
+    job.await_review(at=T2)
+
+    with pytest.raises(InvalidResearchJobError, match="failure_reason"):
+        job.fail_from_review("   ", at=T3)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "args"),
+    [
+        ("start", ()),
+        ("resume_from_pending", ()),
+        ("complete", ("result",)),
+        ("fail", ("reason",)),
+        ("await_review", ()),
+        ("return_to_pending", ()),
+    ],
+)
+def test_no_transitions_after_awaiting_review_except_approve_or_reject(
+    method_name: str,
+    args: tuple[str, ...],
+) -> None:
+    """Only approve_to_pending and fail_from_review are valid from AWAITING_REVIEW."""
+    job = ResearchJob.create("job-1", "question", at=T0)
+    job.start(at=T1)
+    job.await_review(at=T2)
+    method = getattr(job, method_name)
+
+    with pytest.raises((InvalidTransitionError, InvalidResearchJobError)):
+        method(*args, at=T3)
+
+    assert job.status is ResearchJobStatus.AWAITING_REVIEW
+
+
+def test_full_retry_cycle() -> None:
+    """Verify PENDING→RUNNING→PENDING (retry)→RUNNING→COMPLETED lifecycle."""
+    job = ResearchJob.create("job-1", "question", at=T0)
+    job.start(at=T1)
+    job.return_to_pending(at=T2)
+    job.resume_from_pending(at=T3)
+    job.complete("final report", at=T4)
+
+    assert job.status is ResearchJobStatus.COMPLETED
+    assert job.result == "final report"
+
+
+def test_full_review_approve_cycle() -> None:
+    """PENDING→RUNNING→AWAITING_REVIEW→PENDING→RUNNING→COMPLETED."""
+    job = ResearchJob.create("job-1", "question", at=T0)
+    job.start(at=T1)
+    job.await_review(at=T2)
+    job.approve_to_pending(at=T3)
+    job.resume_from_pending(at=T4)
+    job.complete("approved report", at=T5)
+
+    assert job.status is ResearchJobStatus.COMPLETED
+    assert job.result == "approved report"

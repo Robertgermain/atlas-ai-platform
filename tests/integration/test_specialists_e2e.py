@@ -142,36 +142,18 @@ class _LedgerAttributedProcessor(LangGraphResearchProcessor):
         *,
         workflow_execution_id: str,
         hooks: object,
+        job_claim_token: str,
+        job_id: str = "",
     ) -> WorkflowRuntimeContext:
-        from atlas.embeddings.composition import build_text_embedder
-        from atlas.evidence.retrieve import EvidenceEmbeddingService, EvidenceRetriever
-        from atlas.evidence.service import ReportArtifactService
-        from atlas.tools.composition import build_research_executor
+        from dataclasses import replace
 
+        base = super()._build_context(
+            workflow_execution_id=workflow_execution_id,
+            hooks=hooks,  # type: ignore[arg-type]
+            job_claim_token=job_claim_token,
+            job_id=job_id,
+        )
         settings = self._settings
-        embedder = build_text_embedder(settings)
-        embedding_service = EvidenceEmbeddingService(
-            session_factory=self._session_factory,
-            embedder=embedder,
-            embedding_profile=settings.embedding_profile,
-        )
-        evidence_ingest = EvidenceIngestService(
-            session_factory=self._session_factory,
-            embedding_service=embedding_service,
-        )
-        report_service = ReportArtifactService(session_factory=self._session_factory)
-        evidence_retriever = EvidenceRetriever(
-            session_factory=self._session_factory,
-            embedder=embedder,
-            embedding_profile=settings.embedding_profile,
-            use_hnsw=settings.retrieval_use_hnsw,
-        )
-        research_executor = self._research_executor_override or build_research_executor(
-            settings,
-            session_factory=self._session_factory,
-            use_ledger=True,
-            evidence_ingest=evidence_ingest,
-        )
         service = ModelInvocationService(
             session_factory=self._session_factory,
             chat_model=_mock_plan_and_draft_chat_model(),
@@ -185,30 +167,15 @@ class _LedgerAttributedProcessor(LangGraphResearchProcessor):
         drafter = LedgerBackedDrafter(
             service, workflow_execution_id=workflow_execution_id
         )
-        return WorkflowRuntimeContext(
+        synthesizer = base.synthesizer
+        assert isinstance(synthesizer, BoundedReportSynthesizer)
+        return replace(
+            base,
             planner_specialist=BoundedPlannerSpecialist(planner),
-            research_specialist=GovernedResearchRetrievalSpecialist(
-                research_executor=research_executor,
-                evidence_ingest=evidence_ingest,
-                evidence_retriever=evidence_retriever,
-            ),
             synthesizer=BoundedReportSynthesizer(
                 drafter=drafter,
-                evidence_ingest=evidence_ingest,
+                evidence_ingest=synthesizer._evidence_ingest,
             ),
-            citation_verifier=DurableCitationVerifier(
-                citation_validator=CitationValidator(
-                    session_factory=self._session_factory
-                ),
-                evidence_ingest=evidence_ingest,
-            ),
-            plan_prompt_version=settings.plan_prompt_version,
-            draft_prompt_version=settings.draft_prompt_version,
-            workflow_execution_id=workflow_execution_id,
-            hooks=hooks,  # type: ignore[arg-type]
-            node_counters=self._node_counters,
-            report_service=report_service,
-            retrieval_k=settings.retrieval_default_k,
         )
 
 
@@ -305,7 +272,11 @@ def test_specialists_e2e_cited_report_ledger_and_idempotent_replay(
                     WorkflowNodeExecutionModel.workflow_execution_id == execution_id
                 )
             ).all()
-            assert {node.node_name for node in nodes} == set(NODE_NAMES)
+            assert {node.node_name for node in nodes} == set(NODE_NAMES) - {
+                "terminal",
+                "repair",
+                "await_review",
+            }
             assert all(node.status == "COMPLETED" for node in nodes)
             assert all(node.attempt == 1 for node in nodes)
 
@@ -385,13 +356,18 @@ def test_specialists_e2e_cited_report_ledger_and_idempotent_replay(
         assert first_counts["links"] >= 1
 
         # Replay / resume short-circuit: no duplicate artifacts or side effects.
-        second = processor(question, job_id=job_id)
-        assert "Question:" in second
+        second = processor(question, job_id=job_id, claim_token="d" * 64)
+        from atlas.application.job_processing import CompletedProcessing
+
+        assert isinstance(second, CompletedProcessing)
+        assert "Question:" in second.result
         assert counters["complete"] == 1
         assert counters["plan"] == 1
         assert counters["research"] == 1
         assert counters["draft"] == 1
         assert counters["verify_citations"] == 1
+        assert counters["evaluate"] == 1
+        assert counters["policy"] == 1
         second_counts = _artifact_counts(session_factory, job_id=job_id)
         assert second_counts == first_counts
 
@@ -430,6 +406,7 @@ def test_processor_wires_isolated_specialist_capabilities(
         context = processor._build_context(
             workflow_execution_id="cap-wire-1",
             hooks=None,
+            job_claim_token="e" * 64,
         )
     finally:
         runtime.close()
@@ -554,7 +531,12 @@ def test_bounded_execution_settings_and_specialist_contracts() -> None:
         "research",
         "draft",
         "verify_citations",
+        "evaluate",
+        "policy",
+        "repair",
+        "await_review",
         "complete",
+        "terminal",
     )
     from atlas.evidence.bounds import (
         MAX_CLAIMS_PER_DRAFT,

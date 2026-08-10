@@ -23,6 +23,11 @@ from atlas.embeddings.errors import (
     EmbeddingRateLimitedError,
     EmbeddingTimeoutError,
 )
+from atlas.evaluation.errors import (
+    EvaluationConflictError,
+    EvaluationInProgressError,
+    EvaluationNotFoundError,
+)
 from atlas.evidence.errors import (
     CitationIntegrityError,
     ClaimEvidenceRequiredError,
@@ -263,4 +268,37 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=503,
             code="embedding_provider_failed",
             message="Embedding provider failed.",
+        )
+
+    @app.exception_handler(EvaluationNotFoundError)
+    async def evaluation_not_found_handler(
+        _request: Request,
+        _exc: EvaluationNotFoundError,
+    ) -> JSONResponse:
+        return error_response(
+            status_code=404,
+            code="evaluation_not_found",
+            message="Evaluation run not found.",
+        )
+
+    @app.exception_handler(EvaluationConflictError)
+    async def evaluation_conflict_handler(
+        _request: Request,
+        _exc: EvaluationConflictError,
+    ) -> JSONResponse:
+        return error_response(
+            status_code=409,
+            code="evaluation_conflict",
+            message="Evaluation fingerprint conflict.",
+        )
+
+    @app.exception_handler(EvaluationInProgressError)
+    async def evaluation_in_progress_handler(
+        _request: Request,
+        _exc: EvaluationInProgressError,
+    ) -> JSONResponse:
+        return error_response(
+            status_code=409,
+            code="evaluation_in_progress",
+            message="Evaluation is already in progress.",
         )

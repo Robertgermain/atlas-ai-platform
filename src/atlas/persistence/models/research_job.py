@@ -2,7 +2,15 @@
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, String, Text, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from atlas.persistence.models.base import Base
@@ -18,7 +26,9 @@ class ResearchJobModel(Base):
             name="uq_research_jobs_idempotency_key",
         ),
         CheckConstraint(
-            "status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED')",
+            "status IN ("
+            "'PENDING', 'RUNNING', 'AWAITING_REVIEW', 'COMPLETED', 'FAILED'"
+            ")",
             name="ck_research_jobs_status",
         ),
         CheckConstraint(
@@ -37,10 +47,38 @@ class ResearchJobModel(Base):
             """
             (
               status = 'PENDING'
-              AND started_at IS NULL
               AND finished_at IS NULL
               AND result IS NULL
               AND failure_reason IS NULL
+              AND claim_token IS NULL
+              AND lease_expires_at IS NULL
+              AND claimed_continuation_mode = 'NONE'
+              AND (
+                (
+                  started_at IS NULL
+                  AND next_attempt_at IS NULL
+                  AND continuation_mode = 'NONE'
+                  AND active_workflow_execution_id IS NULL
+                )
+                OR
+                (
+                  started_at IS NOT NULL
+                  AND next_attempt_at IS NOT NULL
+                  AND continuation_mode = 'JOB_RETRY'
+                  AND active_workflow_execution_id IS NULL
+                  AND started_at >= created_at
+                  AND updated_at >= started_at
+                )
+                OR
+                (
+                  started_at IS NOT NULL
+                  AND next_attempt_at IS NOT NULL
+                  AND continuation_mode = 'REVIEW_COMPLETE'
+                  AND active_workflow_execution_id IS NOT NULL
+                  AND started_at >= created_at
+                  AND updated_at >= started_at
+                )
+              )
             )
             OR
             (
@@ -49,6 +87,31 @@ class ResearchJobModel(Base):
               AND finished_at IS NULL
               AND result IS NULL
               AND failure_reason IS NULL
+              AND next_attempt_at IS NULL
+              AND continuation_mode = 'NONE'
+              AND claimed_continuation_mode IN ('NONE', 'JOB_RETRY', 'REVIEW_COMPLETE')
+              AND (
+                (claimed_continuation_mode = 'REVIEW_COMPLETE'
+                 AND active_workflow_execution_id IS NOT NULL)
+                OR
+                (claimed_continuation_mode IN ('NONE', 'JOB_RETRY'))
+              )
+              AND started_at >= created_at
+              AND updated_at >= started_at
+            )
+            OR
+            (
+              status = 'AWAITING_REVIEW'
+              AND started_at IS NOT NULL
+              AND finished_at IS NULL
+              AND result IS NULL
+              AND failure_reason IS NULL
+              AND claim_token IS NULL
+              AND lease_expires_at IS NULL
+              AND next_attempt_at IS NULL
+              AND continuation_mode = 'NONE'
+              AND claimed_continuation_mode = 'NONE'
+              AND active_workflow_execution_id IS NOT NULL
               AND started_at >= created_at
               AND updated_at >= started_at
             )
@@ -59,6 +122,12 @@ class ResearchJobModel(Base):
               AND finished_at IS NOT NULL
               AND result IS NOT NULL
               AND failure_reason IS NULL
+              AND claim_token IS NULL
+              AND lease_expires_at IS NULL
+              AND next_attempt_at IS NULL
+              AND continuation_mode = 'NONE'
+              AND claimed_continuation_mode = 'NONE'
+              AND active_workflow_execution_id IS NULL
               AND started_at >= created_at
               AND finished_at >= started_at
               AND updated_at >= finished_at
@@ -70,6 +139,12 @@ class ResearchJobModel(Base):
               AND finished_at IS NOT NULL
               AND failure_reason IS NOT NULL
               AND result IS NULL
+              AND claim_token IS NULL
+              AND lease_expires_at IS NULL
+              AND next_attempt_at IS NULL
+              AND continuation_mode = 'NONE'
+              AND claimed_continuation_mode = 'NONE'
+              AND active_workflow_execution_id IS NULL
               AND started_at >= created_at
               AND finished_at >= started_at
               AND updated_at >= finished_at
@@ -109,6 +184,32 @@ class ResearchJobModel(Base):
             """,
             name="ck_research_jobs_claim_lease_pair",
         ),
+        CheckConstraint(
+            "repair_count >= 0 AND repair_count <= 1",
+            name="ck_research_jobs_repair_count",
+        ),
+        CheckConstraint(
+            "job_retry_count >= 0 AND job_retry_count <= 2",
+            name="ck_research_jobs_job_retry_count",
+        ),
+        CheckConstraint(
+            "evaluation_attempt_count >= 0 AND evaluation_attempt_count <= 4",
+            name="ck_research_jobs_evaluation_attempt_count",
+        ),
+        CheckConstraint(
+            "continuation_mode IN ('NONE', 'JOB_RETRY', 'REVIEW_COMPLETE')",
+            name="ck_research_jobs_continuation_mode",
+        ),
+        CheckConstraint(
+            "claimed_continuation_mode IN ('NONE', 'JOB_RETRY', 'REVIEW_COMPLETE')",
+            name="ck_research_jobs_claimed_continuation_mode",
+        ),
+        ForeignKeyConstraint(
+            ["active_workflow_execution_id", "id"],
+            ["workflow_executions.id", "workflow_executions.research_job_id"],
+            name="fk_research_jobs_active_execution_job_pair",
+            ondelete="NO ACTION",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
@@ -137,3 +238,25 @@ class ResearchJobModel(Base):
         nullable=True,
     )
     claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    repair_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    job_retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    evaluation_attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    continuation_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="NONE"
+    )
+    claimed_continuation_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="NONE"
+    )
+    active_workflow_execution_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True
+    )

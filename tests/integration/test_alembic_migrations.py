@@ -62,7 +62,7 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
         version = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-    assert version == "20260809_0008"
+    assert version == "20260809_0010"
     assert inspector.has_table("workflow_executions")
     assert inspector.has_table("workflow_node_executions")
     assert inspector.has_table("model_invocations")
@@ -77,6 +77,52 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
     assert inspector.has_table("claims")
     assert inspector.has_table("citations")
     assert inspector.has_table("evidence_embeddings")
+    assert inspector.has_table("evaluation_runs")
+    assert inspector.has_table("evaluation_dimension_results")
+    assert inspector.has_table("policy_decisions")
+    assert inspector.has_table("job_recovery_attempts")
+    assert inspector.has_table("human_review_decisions")
+
+    job_columns = {column["name"] for column in inspector.get_columns("research_jobs")}
+    assert "repair_count" in job_columns
+    assert "job_retry_count" in job_columns
+    assert "evaluation_attempt_count" in job_columns
+    assert "next_attempt_at" in job_columns
+    assert "continuation_mode" in job_columns
+    assert "claimed_continuation_mode" in job_columns
+    assert "active_workflow_execution_id" in job_columns
+
+    evaluation_constraints = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("evaluation_runs")
+    }
+    assert "ck_evaluation_runs_status" in evaluation_constraints
+    assert "ck_evaluation_runs_profile" in evaluation_constraints
+    assert "ck_evaluation_runs_job_claim_fingerprint_len" in evaluation_constraints
+    evaluation_columns = {
+        column["name"] for column in inspector.get_columns("evaluation_runs")
+    }
+    assert "job_claim_fingerprint" in evaluation_columns
+    evaluation_uniques = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("evaluation_runs")
+    }
+    assert "uq_evaluation_runs_execution_profile_attempt" in evaluation_uniques
+    workflow_uniques = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("workflow_executions")
+    }
+    assert "uq_workflow_executions_id_research_job_id" in workflow_uniques
+    evaluation_fks = {
+        constraint["name"]
+        for constraint in inspector.get_foreign_keys("evaluation_runs")
+    }
+    assert "fk_evaluation_runs_execution_job_pair" in evaluation_fks
+    model_node_constraints = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("model_invocations")
+    }
+    assert "ck_model_invocations_node_name" in model_node_constraints
 
     document_uniques = {
         constraint["name"]
@@ -171,7 +217,7 @@ def test_legacy_row_survives_upgrade_from_0001(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
 
-        assert version == "20260809_0008"
+        assert version == "20260809_0010"
         assert row["id"] == "legacy-job"
         assert row["question"] == "legacy question"
         assert row["status"] == "PENDING"
@@ -200,6 +246,107 @@ def test_legacy_row_survives_upgrade_from_0001(
         assert loaded.finished_at is None
         assert loaded.result is None
         assert loaded.failure_reason is None
+    finally:
+        try:
+            _reset_public_schema(engine)
+            command.upgrade(config, "head")
+            initialize_langgraph_checkpoint_schema(test_database_url)
+        finally:
+            if previous is None:
+                os.environ.pop("ATLAS_DATABASE_URL", None)
+            else:
+                os.environ["ATLAS_DATABASE_URL"] = previous
+
+
+def test_upgrade_downgrade_0009_and_0008(
+    test_database_url: str,
+    engine: Engine,
+) -> None:
+    assert_safe_test_database(test_database_url)
+    previous = os.environ.get("ATLAS_DATABASE_URL")
+    os.environ["ATLAS_DATABASE_URL"] = test_database_url
+    config = _alembic_config(test_database_url)
+
+    try:
+        _reset_public_schema(engine)
+        command.upgrade(config, "20260809_0008")
+        inspector = inspect(engine)
+        assert not inspector.has_table("evaluation_runs")
+        assert not inspector.has_table("evaluation_dimension_results")
+
+        with engine.connect() as connection:
+            version = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert version == "20260809_0008"
+
+        command.upgrade(config, "20260809_0009")
+        inspector = inspect(engine)
+        assert inspector.has_table("evaluation_runs")
+        assert inspector.has_table("evaluation_dimension_results")
+        with engine.connect() as connection:
+            version = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert version == "20260809_0009"
+
+        command.downgrade(config, "20260809_0008")
+        inspector = inspect(engine)
+        assert not inspector.has_table("evaluation_runs")
+        assert not inspector.has_table("evaluation_dimension_results")
+        with engine.connect() as connection:
+            version = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert version == "20260809_0008"
+
+        command.upgrade(config, "20260809_0009")
+        inspector = inspect(engine)
+        assert inspector.has_table("evaluation_runs")
+        assert inspector.has_table("evaluation_dimension_results")
+    finally:
+        try:
+            _reset_public_schema(engine)
+            command.upgrade(config, "head")
+            initialize_langgraph_checkpoint_schema(test_database_url)
+        finally:
+            if previous is None:
+                os.environ.pop("ATLAS_DATABASE_URL", None)
+            else:
+                os.environ["ATLAS_DATABASE_URL"] = previous
+
+
+def test_upgrade_downgrade_0010_and_0009(
+    test_database_url: str,
+    engine: Engine,
+) -> None:
+    """Explicit 0010 ↔ 0009 round-trip required by Slice 12B."""
+    assert_safe_test_database(test_database_url)
+    previous = os.environ.get("ATLAS_DATABASE_URL")
+    os.environ["ATLAS_DATABASE_URL"] = test_database_url
+    config = _alembic_config(test_database_url)
+
+    try:
+        _reset_public_schema(engine)
+        command.upgrade(config, "20260809_0009")
+        inspector = inspect(engine)
+        assert inspector.has_table("evaluation_runs")
+        assert not inspector.has_table("policy_decisions")
+
+        command.upgrade(config, "20260809_0010")
+        inspector = inspect(engine)
+        assert inspector.has_table("policy_decisions")
+        assert inspector.has_table("job_recovery_attempts")
+        assert inspector.has_table("human_review_decisions")
+
+        command.downgrade(config, "20260809_0009")
+        inspector = inspect(engine)
+        assert not inspector.has_table("policy_decisions")
+        assert inspector.has_table("evaluation_runs")
+
+        command.upgrade(config, "20260809_0010")
+        inspector = inspect(engine)
+        assert inspector.has_table("policy_decisions")
     finally:
         try:
             _reset_public_schema(engine)

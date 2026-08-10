@@ -8,6 +8,7 @@ from typing import Protocol
 
 from sqlalchemy.orm import Session
 
+from atlas.application.job_processing import ContinuationMode
 from atlas.domain import ResearchJob
 
 
@@ -21,10 +22,12 @@ class ResearchJobIdempotencyRecord:
 
 @dataclass(frozen=True, slots=True)
 class ClaimedResearchJob:
-    """Domain job plus opaque claim token for fenced worker finalization."""
+    """Domain job plus opaque claim token and continuation context for fenced worker."""
 
     job: ResearchJob
     claim_token: str
+    continuation_mode: ContinuationMode
+    active_workflow_execution_id: str | None
 
 
 class ResearchJobRepository(Protocol):
@@ -84,3 +87,56 @@ class ResearchJobRepository(Protocol):
         at: datetime,
     ) -> bool:
         """Fail a RUNNING job when the claim token still owns it."""
+
+    def set_active_workflow_execution(
+        self,
+        session: Session,
+        *,
+        job_id: str,
+        claim_token: str,
+        execution_id: str,
+        at: datetime,
+    ) -> bool:
+        """Bind a workflow execution to a claimed RUNNING job."""
+
+    def schedule_retry(
+        self,
+        session: Session,
+        *,
+        job_id: str,
+        claim_token: str,
+        next_attempt_at: datetime,
+        at: datetime,
+    ) -> bool:
+        """Transition a claimed RUNNING job to delayed PENDING with JOB_RETRY mode."""
+
+    def transition_awaiting_review(
+        self,
+        session: Session,
+        *,
+        job_id: str,
+        claim_token: str,
+        at: datetime,
+    ) -> bool:
+        """Transition a claimed RUNNING job to AWAITING_REVIEW."""
+
+    def approve_review_to_pending(
+        self,
+        session: Session,
+        *,
+        job_id: str,
+        execution_id: str,
+        next_attempt_at: datetime,
+        at: datetime,
+    ) -> bool:
+        """Transition AWAITING_REVIEW → delayed PENDING with REVIEW_COMPLETE mode."""
+
+    def fail_from_review(
+        self,
+        session: Session,
+        *,
+        job_id: str,
+        reason: str,
+        at: datetime,
+    ) -> bool:
+        """Transition AWAITING_REVIEW → FAILED (operator reject)."""

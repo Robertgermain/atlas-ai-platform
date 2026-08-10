@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.api.deps import provide_session_factory
+from atlas.application.job_processing import CompletedProcessing, ProcessingOutcome
 from atlas.application.worker import PROCESSING_TIMEOUT_REASON, ResearchJobWorker
 from atlas.domain import ResearchJob, ResearchJobStatus
 from atlas.main import app
@@ -88,8 +89,16 @@ def test_api_observes_failed_processor(
     client = _api_client(session_factory)
     secret = "super-secret-db-password"
 
-    def boom(question: str, *, job_id: str) -> str:
-        del question, job_id
+    def boom(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del question, job_id, claim_token, continuation_mode
+        del active_workflow_execution_id
         raise ValueError(f"connection failed using {secret}")
 
     worker = ResearchJobWorker(
@@ -130,10 +139,21 @@ def test_api_observes_processing_timeout(
     client = _api_client(session_factory)
     release = Event()
 
-    def blocked(question: str, *, job_id: str) -> str:
-        del question, job_id
+    def blocked(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del question, job_id, claim_token, continuation_mode
+        del active_workflow_execution_id
         release.wait(timeout=30)
-        return "late-should-not-win"
+        return CompletedProcessing(
+            result="late-should-not-win",
+            workflow_execution_id="test-exec",
+        )
 
     worker = ResearchJobWorker(
         session_factory=session_factory,

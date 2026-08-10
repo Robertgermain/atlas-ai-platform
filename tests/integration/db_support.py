@@ -76,7 +76,12 @@ def truncate_integration_tables(*, database_url: str, engine: Engine) -> None:
             text(
                 """
                 TRUNCATE TABLE
+                    human_review_decisions,
+                    job_recovery_attempts,
+                    policy_decisions,
                     evidence_embeddings,
+                    evaluation_dimension_results,
+                    evaluation_runs,
                     citations,
                     claims,
                     report_artifacts,

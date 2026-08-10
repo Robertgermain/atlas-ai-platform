@@ -37,3 +37,7 @@ class ReportArtifactConflictError(EvidenceError):
 
 class UrlCanonicalizationError(EvidenceError):
     """Raised when a URL cannot be safely canonicalized for source identity."""
+
+
+class EvidenceOwnershipError(EvidenceError):
+    """Raised when claim-fenced report persistence fails ownership verification."""

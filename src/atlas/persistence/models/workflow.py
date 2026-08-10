@@ -52,6 +52,11 @@ class WorkflowExecutionModel(Base):
             """,
             name="ck_workflow_executions_status_fields",
         ),
+        UniqueConstraint(
+            "id",
+            "research_job_id",
+            name="uq_workflow_executions_id_research_job_id",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
