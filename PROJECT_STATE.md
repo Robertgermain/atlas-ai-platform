@@ -187,8 +187,8 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Package `atlas.eventing`: five frozen research-job envelopes, canonical JSON, reserved topic `atlas.research-job-events.v1`.
 - Package `atlas.outbox` + `SqlAlchemyOutboxRepository`: enqueue/claim/mark/release with claim-token + lease fencing; singleton `PostgresOutboxRelayLock`; `OutboxRelay` with `FakeEventProducer` only; injectable clock; strict batch stop-on-failure ordering; fresh post-producer fencing.
 - Atomic enqueue sites: job submit created; worker completion/failure; processor awaiting-review and retry-scheduled (newly authoritative policy only).
-- Migration `20260809_0011` (`outbox_events`); Alembic head `20260809_0011`; migrations `0001`–`0010` unchanged vs `main`.
-- Quality gates (2026-08-10 Slice 13B head-of-line ordering correction, with `ATLAS_COORDINATION_PROVIDER=redis`): `uv sync --frozen`; Ruff format/lint clean; mypy clean (233 source files); isolated Pytest `417 passed, 5 skipped`; full Pytest `564 passed, 5 skipped`; focused outbox HOL/crash/concurrency suites green; Alembic downgrade `0011 → 0010` and upgrade back to `0011` verified; `git diff --check` clean. Nothing committed or pushed.
+- Migration `20260809_0011` (`outbox_events`); Alembic head `20260809_0011`; migrations `0001`–`0010` unchanged vs `origin/main`.
+- Quality gates (2026-08-10 PR #20 CI fix for migration-history base ref, with `ATLAS_COORDINATION_PROVIDER=redis`): `uv sync --frozen`; Ruff format/lint clean; mypy clean (235 source files); isolated Pytest `424 passed, 5 skipped`; full Pytest `571 passed, 5 skipped`; Alembic downgrade `0011 → 0010` and upgrade back to `0011` verified; `git diff --check` clean. CI checkout now uses `fetch-depth: 0`; historical migration invariant resolves `origin/main` explicitly (fails controlled if unavailable). Nothing committed or pushed.
 - Slice 13B remains under review / pending its own PR CI and resulting `main` CI. Slice 13C (Kafka) is not started.
 
 ## Next steps

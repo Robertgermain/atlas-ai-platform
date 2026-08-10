@@ -425,43 +425,14 @@ def test_upgrade_downgrade_0011_and_0010(
 
 
 def test_migrations_0001_through_0010_unchanged_versus_main() -> None:
-    """Slice 13B must not modify migrations 0001–0010 relative to main."""
-    import subprocess
-    from pathlib import Path
+    """Slice 13B must not modify migrations 0001–0010 relative to origin/main.
 
-    repo_root = Path(__file__).resolve().parents[2]
-    files = sorted((repo_root / "alembic" / "versions").glob("2026080*_00*.py"))
-    prior = [
-        str(path.relative_to(repo_root))
-        for path in files
-        if path.name.split("_")[1] <= "0010" or path.name.startswith("20260808_")
-    ]
-    # Keep only 0001–0010 filenames.
-    prior = [
-        rel
-        for rel in prior
-        if any(
-            marker in rel
-            for marker in (
-                "0001_",
-                "0002_",
-                "0003_",
-                "0004_",
-                "0005_",
-                "0006_",
-                "0007_",
-                "0008_",
-                "0009_",
-                "0010_",
-            )
-        )
-    ]
-    assert len(prior) == 10
-    result = subprocess.run(
-        ["git", "diff", "--exit-code", "main", "--", *prior],
-        cwd=repo_root,
-        check=False,
-        capture_output=True,
-        text=True,
+    Compares against the remote-tracking ref ``origin/main`` (not a local
+    ``main`` branch) so GitHub Actions PR checkouts succeed when only remotes
+    exist. Fails with a controlled assertion if the base ref cannot be resolved.
+    """
+    from tests.migration_history import (
+        assert_prior_migrations_unchanged_versus_origin_main,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+
+    assert_prior_migrations_unchanged_versus_origin_main(REPO_ROOT)
