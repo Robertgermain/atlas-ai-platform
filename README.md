@@ -16,7 +16,7 @@ The repository already has a working local backend and workflow foundation: Pyth
 
 ## Current milestone
 
-Milestone 12 is **Complete** through Pull Request #17 (`e3412c3`) and calibration-closeout Pull Request #18 (`9d5abde`). Milestone 13 is **Current**: Slice 13A adds Redis-backed rate limiting for `POST /v1/research-jobs` and a dedicated worker heartbeat thread (`noop` remains the settings default; Compose/CI explicitly select Redis 8.8.1). Outbox, Kafka, consumers, and DLQ are deferred to Slices 13B/13C. `evaluation.candidate.v1` remains provisional. The comprehensive Visio and AWS design remains deferred.
+Milestone 12 is **Complete** through Pull Request #17 (`e3412c3`) and calibration-closeout Pull Request #18 (`9d5abde`). Milestone 13 is **Current**: Slice 13A is **Complete** through Pull Request #19 (`dc19714`). Slice 13B (PostgreSQL transactional outbox + typed research-job domain events; global head-of-line `outbox_position` ordering; fake producer only) is under review on `milestone-13-transactional-outbox`. Kafka is deferred to Slice 13C. `evaluation.candidate.v1` remains provisional. The comprehensive Visio and AWS design remains deferred.
 
 ### Run locally
 

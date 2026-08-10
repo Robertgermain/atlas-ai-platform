@@ -24,7 +24,13 @@ from atlas.application.ports import ClaimedResearchJob, ResearchJobRepository
 from atlas.coordination.contracts import HeartbeatRecorder
 from atlas.coordination.heartbeat_thread import HeartbeatThread
 from atlas.coordination.noop import NoopHeartbeatRecorder
+from atlas.eventing.builders import (
+    build_research_job_completed,
+    build_research_job_failed,
+)
+from atlas.outbox.ports import OutboxEnqueuer
 from atlas.persistence.db import session_scope
+from atlas.persistence.repositories.outbox import SqlAlchemyOutboxRepository
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
@@ -32,6 +38,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PROCESSING_TIMEOUT_REASON = "Processing timed out."
+PROCESSING_TIMEOUT_REASON_CLASS = "ProcessingTimeout"
+CLAIM_OWNERSHIP_LOST_REASON_CLASS = "ClaimOwnershipLost"
+UNRECOGNIZED_OUTCOME_REASON_CLASS = "UnrecognizedOutcome"
 
 
 class ResearchJobWorker:
@@ -72,10 +81,12 @@ class ResearchJobWorker:
         heartbeat_recorder: HeartbeatRecorder | None = None,
         heartbeat_interval_seconds: float = 5.0,
         worker_id: str | None = None,
+        outbox: OutboxEnqueuer | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = repository
         self._processor = processor
+        self._outbox = outbox or SqlAlchemyOutboxRepository()
         self._poll_interval_seconds = poll_interval_seconds
         self._processing_timeout_seconds = processing_timeout_seconds
         self._lease_seconds = lease_seconds
@@ -196,7 +207,11 @@ class ResearchJobWorker:
         try:
             outcome = future.result(timeout=self._processing_timeout_seconds)
         except FuturesTimeoutError:
-            self._finalize_failure(claimed, reason=PROCESSING_TIMEOUT_REASON)
+            self._finalize_failure(
+                claimed,
+                reason=PROCESSING_TIMEOUT_REASON,
+                reason_class=PROCESSING_TIMEOUT_REASON_CLASS,
+            )
             self._abandoned_future = future
             self._inflight_future = None
             return
@@ -207,7 +222,9 @@ class ResearchJobWorker:
                 claimed.job.id,
             )
             self._finalize_failure(
-                claimed, reason="Claim ownership lost during processing."
+                claimed,
+                reason="Claim ownership lost during processing.",
+                reason_class=CLAIM_OWNERSHIP_LOST_REASON_CLASS,
             )
             self._inflight_future = None
             self._ignore_late_result(future)
@@ -216,12 +233,16 @@ class ResearchJobWorker:
             self._finalize_failure(
                 claimed,
                 reason=f"Processing failed: {exc.__class__.__name__}",
+                reason_class=exc.__class__.__name__,
             )
             self._inflight_future = None
             self._ignore_late_result(future)
             return
 
         self._inflight_future = None
+        # Outcome finalization (including outbox insert) is outside the
+        # processor-exception handler so an outbox failure cannot recurse into
+        # finalize_failure.
         self._handle_outcome(claimed, outcome)
 
     def _handle_outcome(
@@ -230,7 +251,11 @@ class ResearchJobWorker:
         if isinstance(outcome, CompletedProcessing):
             self._finalize_completion(claimed, result=outcome.result)
         elif isinstance(outcome, TerminalFailed):
-            self._finalize_failure(claimed, reason=f"Terminal: {outcome.reason_code}")
+            self._finalize_failure(
+                claimed,
+                reason=f"Terminal: {outcome.reason_code}",
+                reason_class=outcome.reason_code,
+            )
         elif isinstance(outcome, (PausedForReview, RetryScheduled)):
             logger.info(
                 "Processor returned %s for job %s; no worker finalization.",
@@ -239,19 +264,39 @@ class ResearchJobWorker:
             )
         else:
             self._finalize_failure(
-                claimed, reason="Processing returned unrecognized outcome"
+                claimed,
+                reason="Processing returned unrecognized outcome",
+                reason_class=UNRECOGNIZED_OUTCOME_REASON_CLASS,
             )
 
     def _finalize_completion(self, claimed: ClaimedResearchJob, *, result: str) -> bool:
         at = datetime.now(UTC)
-        with session_scope(self._session_factory) as session:
-            owned = self._repository.finalize_completion(
-                session,
-                job_id=claimed.job.id,
-                claim_token=claimed.claim_token,
-                result=result,
-                at=at,
+        owned = False
+        try:
+            with session_scope(self._session_factory) as session:
+                owned = self._repository.finalize_completion(
+                    session,
+                    job_id=claimed.job.id,
+                    claim_token=claimed.claim_token,
+                    result=result,
+                    at=at,
+                )
+                if owned:
+                    self._outbox.enqueue(
+                        session,
+                        build_research_job_completed(
+                            research_job_id=claimed.job.id,
+                            completed_at=at,
+                        ),
+                    )
+        except Exception as exc:
+            logger.warning(
+                "Completion finalization failed for job %s (%s); "
+                "transaction rolled back; not marking terminal.",
+                claimed.job.id,
+                exc.__class__.__name__,
             )
+            raise
         if not owned:
             logger.warning(
                 "Lost claim ownership while completing research job %s",
@@ -259,16 +304,42 @@ class ResearchJobWorker:
             )
         return owned
 
-    def _finalize_failure(self, claimed: ClaimedResearchJob, *, reason: str) -> bool:
+    def _finalize_failure(
+        self,
+        claimed: ClaimedResearchJob,
+        *,
+        reason: str,
+        reason_class: str,
+    ) -> bool:
         at = datetime.now(UTC)
-        with session_scope(self._session_factory) as session:
-            owned = self._repository.finalize_failure(
-                session,
-                job_id=claimed.job.id,
-                claim_token=claimed.claim_token,
-                reason=reason,
-                at=at,
+        owned = False
+        try:
+            with session_scope(self._session_factory) as session:
+                owned = self._repository.finalize_failure(
+                    session,
+                    job_id=claimed.job.id,
+                    claim_token=claimed.claim_token,
+                    reason=reason,
+                    at=at,
+                )
+                if owned:
+                    self._outbox.enqueue(
+                        session,
+                        build_research_job_failed(
+                            research_job_id=claimed.job.id,
+                            failed_at=at,
+                            reason_class=reason_class,
+                        ),
+                    )
+        except Exception as exc:
+            # Never recurse into finalize_failure when this path itself failed.
+            logger.warning(
+                "Failure finalization failed for job %s (%s); "
+                "transaction rolled back; not marking terminal.",
+                claimed.job.id,
+                exc.__class__.__name__,
             )
+            raise
         if not owned:
             logger.warning(
                 "Lost claim ownership while failing research job %s",

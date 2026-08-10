@@ -15,8 +15,11 @@ from atlas.application.exceptions import (
 )
 from atlas.application.ports import ResearchJobRepository
 from atlas.domain import ResearchJob
+from atlas.eventing.builders import build_research_job_created
+from atlas.outbox.ports import OutboxEnqueuer
 from atlas.persistence.db import session_scope
 from atlas.persistence.exceptions import IdempotencyKeyConflictError
+from atlas.persistence.repositories.outbox import SqlAlchemyOutboxRepository
 
 
 def _fingerprint_create_request(question: str) -> str:
@@ -37,14 +40,21 @@ class ResearchJobService:
         *,
         session_factory: sessionmaker[Session],
         repository: ResearchJobRepository,
+        outbox: OutboxEnqueuer | None = None,
         id_factory: Callable[[], str] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = repository
+        self._outbox = outbox or SqlAlchemyOutboxRepository()
         self._id_factory = id_factory or (lambda: str(uuid.uuid4()))
 
     def submit(self, question: str, *, idempotency_key: str) -> ResearchJob:
-        """Persist a PENDING research job or replay a matching idempotent request."""
+        """Persist a PENDING research job or replay a matching idempotent request.
+
+        Enqueues ``research_job.created`` in the same transaction as the insert.
+        Idempotent replay does not enqueue another created event. Outbox failure
+        rolls back the job insert.
+        """
         job_id = self._id_factory()
         job = ResearchJob.create(job_id, question)
         fingerprint = _fingerprint_create_request(job.question)
@@ -56,6 +66,13 @@ class ResearchJobService:
                     job,
                     idempotency_key=idempotency_key,
                     request_fingerprint=fingerprint,
+                )
+                self._outbox.enqueue(
+                    session,
+                    build_research_job_created(
+                        research_job_id=job.id,
+                        created_at=job.created_at,
+                    ),
                 )
         except IdempotencyKeyConflictError:
             return self._replay_or_conflict(

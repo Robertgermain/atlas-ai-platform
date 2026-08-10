@@ -62,7 +62,7 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
         version = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-    assert version == "20260809_0010"
+    assert version == "20260809_0011"
     assert inspector.has_table("workflow_executions")
     assert inspector.has_table("workflow_node_executions")
     assert inspector.has_table("model_invocations")
@@ -82,6 +82,25 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
     assert inspector.has_table("policy_decisions")
     assert inspector.has_table("job_recovery_attempts")
     assert inspector.has_table("human_review_decisions")
+    assert inspector.has_table("outbox_events")
+
+    outbox_constraints = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("outbox_events")
+    }
+    assert "ck_outbox_events_event_version" in outbox_constraints
+    assert "ck_outbox_events_claim_pair" in outbox_constraints
+    assert "ck_outbox_events_published_clears_claim" in outbox_constraints
+    assert "ck_outbox_events_payload_size" in outbox_constraints
+    outbox_uniques = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("outbox_events")
+    }
+    assert "uq_outbox_events_outbox_position" in outbox_uniques
+    outbox_indexes = {index["name"] for index in inspector.get_indexes("outbox_events")}
+    assert "ix_outbox_events_claimable_position" in outbox_indexes
+    assert "ix_outbox_events_aggregate_history" in outbox_indexes
+    assert "ix_outbox_events_occurred_at" in outbox_indexes
 
     job_columns = {column["name"] for column in inspector.get_columns("research_jobs")}
     assert "repair_count" in job_columns
@@ -217,7 +236,7 @@ def test_legacy_row_survives_upgrade_from_0001(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
 
-        assert version == "20260809_0010"
+        assert version == "20260809_0011"
         assert row["id"] == "legacy-job"
         assert row["question"] == "legacy question"
         assert row["status"] == "PENDING"
@@ -357,3 +376,92 @@ def test_upgrade_downgrade_0010_and_0009(
                 os.environ.pop("ATLAS_DATABASE_URL", None)
             else:
                 os.environ["ATLAS_DATABASE_URL"] = previous
+
+
+def test_upgrade_downgrade_0011_and_0010(
+    test_database_url: str,
+    engine: Engine,
+) -> None:
+    """Explicit 0011 ↔ 0010 round-trip required by Slice 13B."""
+    assert_safe_test_database(test_database_url)
+    previous = os.environ.get("ATLAS_DATABASE_URL")
+    os.environ["ATLAS_DATABASE_URL"] = test_database_url
+    config = _alembic_config(test_database_url)
+
+    try:
+        _reset_public_schema(engine)
+        command.upgrade(config, "20260809_0010")
+        inspector = inspect(engine)
+        assert inspector.has_table("policy_decisions")
+        assert not inspector.has_table("outbox_events")
+
+        command.upgrade(config, "20260809_0011")
+        inspector = inspect(engine)
+        assert inspector.has_table("outbox_events")
+
+        command.downgrade(config, "20260809_0010")
+        inspector = inspect(engine)
+        assert not inspector.has_table("outbox_events")
+        assert inspector.has_table("policy_decisions")
+
+        command.upgrade(config, "20260809_0011")
+        inspector = inspect(engine)
+        assert inspector.has_table("outbox_events")
+        with engine.connect() as connection:
+            version = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert version == "20260809_0011"
+    finally:
+        try:
+            _reset_public_schema(engine)
+            command.upgrade(config, "head")
+            initialize_langgraph_checkpoint_schema(test_database_url)
+        finally:
+            if previous is None:
+                os.environ.pop("ATLAS_DATABASE_URL", None)
+            else:
+                os.environ["ATLAS_DATABASE_URL"] = previous
+
+
+def test_migrations_0001_through_0010_unchanged_versus_main() -> None:
+    """Slice 13B must not modify migrations 0001–0010 relative to main."""
+    import subprocess
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    files = sorted((repo_root / "alembic" / "versions").glob("2026080*_00*.py"))
+    prior = [
+        str(path.relative_to(repo_root))
+        for path in files
+        if path.name.split("_")[1] <= "0010" or path.name.startswith("20260808_")
+    ]
+    # Keep only 0001–0010 filenames.
+    prior = [
+        rel
+        for rel in prior
+        if any(
+            marker in rel
+            for marker in (
+                "0001_",
+                "0002_",
+                "0003_",
+                "0004_",
+                "0005_",
+                "0006_",
+                "0007_",
+                "0008_",
+                "0009_",
+                "0010_",
+            )
+        )
+    ]
+    assert len(prior) == 10
+    result = subprocess.run(
+        ["git", "diff", "--exit-code", "main", "--", *prior],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

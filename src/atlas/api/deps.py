@@ -17,7 +17,9 @@ from atlas.embeddings.composition import build_text_embedder
 from atlas.evaluation.service import EvaluationService
 from atlas.evidence.retrieve import EvidenceEmbeddingService
 from atlas.evidence.service import EvidenceIngestService, ReportArtifactService
+from atlas.outbox.ports import OutboxRepository
 from atlas.persistence.db import get_session_factory
+from atlas.persistence.repositories.outbox import SqlAlchemyOutboxRepository
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
 
 
@@ -31,6 +33,11 @@ def provide_research_job_repository() -> SqlAlchemyResearchJobRepository:
     return SqlAlchemyResearchJobRepository()
 
 
+def provide_outbox_repository() -> OutboxRepository:
+    """Return the concrete transactional outbox repository."""
+    return SqlAlchemyOutboxRepository()
+
+
 def provide_research_job_service(
     session_factory: Annotated[
         sessionmaker[Session],
@@ -40,11 +47,13 @@ def provide_research_job_service(
         SqlAlchemyResearchJobRepository,
         Depends(provide_research_job_repository),
     ],
+    outbox: Annotated[OutboxRepository, Depends(provide_outbox_repository)],
 ) -> ResearchJobService:
     """Wire the research-job application service."""
     return ResearchJobService(
         session_factory=session_factory,
         repository=repository,
+        outbox=outbox,
     )
 
 
