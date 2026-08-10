@@ -2,6 +2,10 @@
 
 from atlas.persistence.models.base import Base
 from atlas.persistence.models.embedding import EvidenceEmbeddingModel
+from atlas.persistence.models.evaluation import (
+    EvaluationDimensionResultModel,
+    EvaluationRunModel,
+)
 from atlas.persistence.models.evidence import (
     CitationModel,
     ClaimModel,
@@ -14,6 +18,11 @@ from atlas.persistence.models.evidence import (
 from atlas.persistence.models.model_invocation import (
     ModelInvocationAttemptModel,
     ModelInvocationModel,
+)
+from atlas.persistence.models.recovery import (
+    HumanReviewDecisionModel,
+    JobRecoveryAttemptModel,
+    PolicyDecisionModel,
 )
 from atlas.persistence.models.research_job import ResearchJobModel
 from atlas.persistence.models.tool_invocation import (
@@ -30,11 +39,16 @@ __all__ = [
     "CitationModel",
     "ClaimModel",
     "DocumentModel",
+    "EvaluationDimensionResultModel",
+    "EvaluationRunModel",
     "EvidenceEmbeddingModel",
     "EvidenceItemModel",
     "EvidenceJobLinkModel",
+    "HumanReviewDecisionModel",
+    "JobRecoveryAttemptModel",
     "ModelInvocationAttemptModel",
     "ModelInvocationModel",
+    "PolicyDecisionModel",
     "ReportArtifactModel",
     "ResearchJobModel",
     "SourceModel",

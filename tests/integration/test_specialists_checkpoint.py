@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 from langchain_core.runnables import RunnableConfig
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.domain import ResearchJob
@@ -97,6 +97,8 @@ def test_interrupt_after_draft_resumes_through_verify_and_complete(
     assert "Question:" in completed["result"]
     assert "Draft:" in completed["result"]
     assert counters["verify_citations"] == 1
+    assert counters["evaluate"] == 1
+    assert counters["policy"] == 1
     assert counters["complete"] == 1
     assert counters["draft"] == 1
 
@@ -115,6 +117,21 @@ def test_completed_workflow_is_not_unexpectedly_rerun(
             idempotency_key=f"key-{job_id}",
             request_fingerprint="c" * 64,
         )
+    with session_scope(session_factory) as session:
+        session.execute(
+            text(
+                """
+                UPDATE research_jobs
+                SET status = 'RUNNING',
+                    started_at = NOW(),
+                    updated_at = NOW(),
+                    claim_token = :token,
+                    lease_expires_at = NOW() + interval '5 minutes'
+                WHERE id = :job_id
+                """
+            ),
+            {"token": "c" * 64, "job_id": job_id},
+        )
     runtime = create_checkpoint_runtime(test_database_url)
     counters: dict[str, int] = {}
     try:
@@ -123,13 +140,16 @@ def test_completed_workflow_is_not_unexpectedly_rerun(
             session_factory=session_factory,
             node_counters=counters,
         )
-        first = processor(question, job_id=job_id)
-        second = processor(question, job_id=job_id)
+        first = processor(question, job_id=job_id, claim_token="c" * 64)
+        second = processor(question, job_id=job_id, claim_token="c" * 64)
     finally:
         runtime.close()
 
     assert first == second
-    assert first.strip()
+    from atlas.application.job_processing import CompletedProcessing
+
+    assert isinstance(first, CompletedProcessing)
+    assert first.result.strip()
     assert counters["complete"] == 1
 
 

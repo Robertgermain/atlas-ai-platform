@@ -96,7 +96,7 @@ def test_api_create_then_langgraph_worker_completes(
             ).all()
             assert len(executions) == 1
             assert executions[0].status == "COMPLETED"
-            assert executions[0].thread_id == job_id
+            assert executions[0].thread_id == executions[0].id
             nodes = session.scalars(
                 select(WorkflowNodeExecutionModel).where(
                     WorkflowNodeExecutionModel.workflow_execution_id == executions[0].id
@@ -108,6 +108,8 @@ def test_api_create_then_langgraph_worker_completes(
                 "research",
                 "draft",
                 "verify_citations",
+                "evaluate",
+                "policy",
                 "complete",
             }
             assert all(node.attempt == 1 for node in nodes)
@@ -149,6 +151,8 @@ def test_interrupt_then_worker_resume_creates_second_execution(
     repo = SqlAlchemyResearchJobRepository()
     job_id = "workflow-reclaim-1"
     question = "Resume after reclaim"
+    claim_token_a = "a" * 64
+    lease_a = datetime(2026, 8, 10, 13, 0, 0, tzinfo=UTC)
     with session_scope(session_factory) as session:
         repo.add(
             session,
@@ -156,6 +160,14 @@ def test_interrupt_then_worker_resume_creates_second_execution(
             idempotency_key="workflow-reclaim-key",
             request_fingerprint="c" * 64,
         )
+    with session_scope(session_factory) as session:
+        claimed = repo.claim_next(
+            session,
+            now=T0,
+            lease_expires_at=lease_a,
+            claim_token=claim_token_a,
+        )
+        assert claimed is not None
 
     runtime_a = create_checkpoint_runtime(test_database_url)
     counters: dict[str, int] = {}
@@ -167,7 +179,7 @@ def test_interrupt_then_worker_resume_creates_second_execution(
     )
     try:
         try:
-            processor_a(question, job_id=job_id)
+            processor_a(question, job_id=job_id, claim_token=claim_token_a)
             raise AssertionError("expected interrupt before completion")
         except RuntimeError as exc:
             assert "interrupted" in str(exc).lower()
@@ -185,6 +197,15 @@ def test_interrupt_then_worker_resume_creates_second_execution(
         ).one()
         assert first.status == "FAILED"
         first_id = first.id
+
+    # Expire the lease so worker can reclaim the RUNNING job.
+    with session_scope(session_factory) as session:
+        from atlas.persistence.models import ResearchJobModel
+
+        job_model = session.get(ResearchJobModel, job_id)
+        assert job_model is not None
+        job_model.lease_expires_at = datetime(2026, 8, 8, 0, 0, 0, tzinfo=UTC)
+        session.flush()
 
     runtime_b = create_checkpoint_runtime(test_database_url)
     processor_b = LangGraphResearchProcessor(
@@ -221,12 +242,14 @@ def test_interrupt_then_worker_resume_creates_second_execution(
     assert executions[0].id == first_id
     assert executions[0].status == "FAILED"
     assert executions[1].status == "COMPLETED"
-    assert executions[1].thread_id == job_id
-    assert counters["validate"] == 1
-    assert counters["plan"] == 1
+    assert executions[1].thread_id == executions[1].id
+    assert counters["validate"] == 2
+    assert counters["plan"] == 2
     assert counters["research"] == 1
     assert counters["draft"] == 1
     assert counters["verify_citations"] == 1
+    assert counters["evaluate"] == 1
+    assert counters["policy"] == 1
     assert counters["complete"] == 1
 
 

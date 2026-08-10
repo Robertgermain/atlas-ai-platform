@@ -289,6 +289,8 @@ class ReportArtifactService:
         workflow_execution_id: str,
         body_text: str,
         claims: list[ClaimStructured],
+        claim_token: str,
+        at: datetime | None = None,
     ) -> ReportArtifactView:
         cleaned_body = body_text.strip()
         if not cleaned_body:
@@ -297,17 +299,39 @@ class ReportArtifactService:
             research_job_id=research_job_id,
             claims=claims,
         )
-        # Touch mapping to keep the canonical helper imported/used at service layer.
         _ = canonical_citation_mapping(specs)
-        at = datetime.now(UTC)
+        now = at if at is not None else datetime.now(UTC)
         with session_scope(self._session_factory) as session:
+            if not claim_token.strip():
+                from atlas.evidence.errors import EvidenceOwnershipError
+
+                raise EvidenceOwnershipError(
+                    "Claim token is required for report persistence."
+                )
+            from atlas.evidence.errors import EvidenceOwnershipError
+            from atlas.persistence.models import ResearchJobModel
+
+            job_model = session.get(
+                ResearchJobModel, research_job_id, with_for_update=True
+            )
+            if (
+                job_model is None
+                or job_model.status != "RUNNING"
+                or job_model.claim_token != claim_token
+                or job_model.lease_expires_at is None
+                or job_model.lease_expires_at <= now
+            ):
+                raise EvidenceOwnershipError(
+                    "Claim-fenced report persistence failed ownership check."
+                )
+
             artifact, created = self._repository.persist_final_report(
                 session,
                 research_job_id=research_job_id,
                 workflow_execution_id=workflow_execution_id,
                 body_text=cleaned_body,
                 claims=specs,
-                at=at,
+                at=now,
             )
             return ReportArtifactView(
                 id=artifact.id,

@@ -15,6 +15,7 @@ class ResearchJobStatus(StrEnum):
 
     PENDING = "PENDING"
     RUNNING = "RUNNING"
+    AWAITING_REVIEW = "AWAITING_REVIEW"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
@@ -146,13 +147,24 @@ class ResearchJob:
         )
 
         if status is ResearchJobStatus.PENDING:
-            if started is not None or finished is not None:
-                raise InvalidResearchJobError(
-                    "PENDING jobs cannot have started_at or finished_at."
-                )
+            if finished is not None:
+                raise InvalidResearchJobError("PENDING jobs cannot have finished_at.")
             if cleaned_result is not None or cleaned_failure is not None:
                 raise InvalidResearchJobError(
                     "PENDING jobs cannot have result or failure_reason."
+                )
+            if started is not None:
+                _ensure_order(
+                    created,
+                    started,
+                    earlier_name="created_at",
+                    later_name="started_at",
+                )
+                _ensure_order(
+                    started,
+                    updated,
+                    earlier_name="started_at",
+                    later_name="updated_at",
                 )
         elif status is ResearchJobStatus.RUNNING:
             if started is None or finished is not None:
@@ -162,6 +174,27 @@ class ResearchJob:
             if cleaned_result is not None or cleaned_failure is not None:
                 raise InvalidResearchJobError(
                     "RUNNING jobs cannot have result or failure_reason."
+                )
+            _ensure_order(
+                created,
+                started,
+                earlier_name="created_at",
+                later_name="started_at",
+            )
+            _ensure_order(
+                started,
+                updated,
+                earlier_name="started_at",
+                later_name="updated_at",
+            )
+        elif status is ResearchJobStatus.AWAITING_REVIEW:
+            if started is None or finished is not None:
+                raise InvalidResearchJobError(
+                    "AWAITING_REVIEW jobs require started_at and no finished_at."
+                )
+            if cleaned_result is not None or cleaned_failure is not None:
+                raise InvalidResearchJobError(
+                    "AWAITING_REVIEW jobs cannot have result or failure_reason."
                 )
             _ensure_order(
                 created,
@@ -279,12 +312,30 @@ class ResearchJob:
         return self._failure_reason
 
     def start(self, *, at: datetime | None = None) -> None:
-        """Transition PENDING → RUNNING."""
+        """Transition fresh PENDING → RUNNING (started_at must be None)."""
         self._require_status(ResearchJobStatus.PENDING, ResearchJobStatus.RUNNING)
+        if self._started_at is not None:
+            raise InvalidResearchJobError(
+                "start() requires started_at to be None; "
+                "use resume_from_pending() for delayed PENDING jobs."
+            )
         timestamp = _resolve_timestamp(at)
         _ensure_not_before(timestamp, self._updated_at)
         self._status = ResearchJobStatus.RUNNING
         self._started_at = timestamp
+        self._updated_at = timestamp
+
+    def resume_from_pending(self, *, at: datetime | None = None) -> None:
+        """Transition delayed PENDING → RUNNING (started_at already set)."""
+        self._require_status(ResearchJobStatus.PENDING, ResearchJobStatus.RUNNING)
+        if self._started_at is None:
+            raise InvalidResearchJobError(
+                "resume_from_pending() requires started_at to be set; "
+                "use start() for fresh PENDING jobs."
+            )
+        timestamp = _resolve_timestamp(at)
+        _ensure_not_before(timestamp, self._updated_at)
+        self._status = ResearchJobStatus.RUNNING
         self._updated_at = timestamp
 
     def complete(self, result: str, *, at: datetime | None = None) -> None:
@@ -302,6 +353,54 @@ class ResearchJob:
     def fail(self, reason: str, *, at: datetime | None = None) -> None:
         """Transition RUNNING → FAILED."""
         self._require_status(ResearchJobStatus.RUNNING, ResearchJobStatus.FAILED)
+        cleaned_reason = _require_non_empty(reason, "failure_reason")
+        timestamp = _resolve_timestamp(at)
+        _ensure_not_before(timestamp, self._updated_at)
+        self._status = ResearchJobStatus.FAILED
+        self._failure_reason = cleaned_reason
+        self._result = None
+        self._finished_at = timestamp
+        self._updated_at = timestamp
+
+    def await_review(self, *, at: datetime | None = None) -> None:
+        """Transition RUNNING → AWAITING_REVIEW."""
+        self._require_status(
+            ResearchJobStatus.RUNNING, ResearchJobStatus.AWAITING_REVIEW
+        )
+        timestamp = _resolve_timestamp(at)
+        _ensure_not_before(timestamp, self._updated_at)
+        self._status = ResearchJobStatus.AWAITING_REVIEW
+        self._updated_at = timestamp
+
+    def return_to_pending(self, *, at: datetime | None = None) -> None:
+        """Transition RUNNING → PENDING for retry schedule.
+
+        Keeps started_at; clears finished_at, result, and failure_reason.
+        """
+        self._require_status(ResearchJobStatus.RUNNING, ResearchJobStatus.PENDING)
+        timestamp = _resolve_timestamp(at)
+        _ensure_not_before(timestamp, self._updated_at)
+        self._status = ResearchJobStatus.PENDING
+        self._finished_at = None
+        self._result = None
+        self._failure_reason = None
+        self._updated_at = timestamp
+
+    def approve_to_pending(self, *, at: datetime | None = None) -> None:
+        """Transition AWAITING_REVIEW → PENDING (keeps started_at)."""
+        self._require_status(
+            ResearchJobStatus.AWAITING_REVIEW, ResearchJobStatus.PENDING
+        )
+        timestamp = _resolve_timestamp(at)
+        _ensure_not_before(timestamp, self._updated_at)
+        self._status = ResearchJobStatus.PENDING
+        self._updated_at = timestamp
+
+    def fail_from_review(self, reason: str, *, at: datetime | None = None) -> None:
+        """Transition AWAITING_REVIEW → FAILED."""
+        self._require_status(
+            ResearchJobStatus.AWAITING_REVIEW, ResearchJobStatus.FAILED
+        )
         cleaned_reason = _require_non_empty(reason, "failure_reason")
         timestamp = _resolve_timestamp(at)
         _ensure_not_before(timestamp, self._updated_at)

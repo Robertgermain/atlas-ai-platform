@@ -1,0 +1,1217 @@
+{
+  "_meta": {
+    "label": "candidate_goldens.v1",
+    "human_reviewed": false,
+    "frozen_profile": false,
+    "note": "Candidate labels for calibration development \u2014 not an independent validation set and not frozen evaluation.v1. Confusion metrics are reported against these same fixtures.",
+    "starter_case_count": 6,
+    "class_distribution_note": "Counts below include starter + expanded fixtures used both for regression and calibration development (not held-out validation)."
+  },
+  "cases": [
+    {
+      "id": "happy_cited_pass",
+      "scenario": "Passing cited candidate with linked evidence and research-only tools",
+      "characteristics": [
+        "non_empty_draft",
+        "three_plan_tasks_reflected",
+        "linked_evidence",
+        "one_claim_cites_linked_id",
+        "tool_research_only"
+      ],
+      "candidate": {
+        "question": "What are the main risks of delayed evaluation gates?",
+        "plan": [
+          "Clarify evaluationgate scope",
+          "Gather citationevidence sources",
+          "Identify residualrisks issues"
+        ],
+        "findings": [
+          "Clarify evaluationgate scope is required before persistence",
+          "Gather citationevidence sources from the linked pack",
+          "Identify residualrisks issues for operators"
+        ],
+        "draft": "The report will clarify evaluationgate scope, gather citationevidence sources, and identify residualrisks issues with linked support.",
+        "claims": [
+          {
+            "text": "Linked evidence supports the evaluationgate claim.",
+            "evidence_item_ids": [
+              "ev-happy-001"
+            ]
+          }
+        ],
+        "evidence_item_ids": [
+          "ev-happy-001"
+        ],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": true,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "All hard gates and provisional soft dimensions pass for a linked, research-attributed candidate.",
+        "known_heuristic_limitation": "Starter fixture; soft dimensions are provisional heuristics."
+      },
+      "isolates": "happy_cited_pass"
+    },
+    {
+      "id": "empty_draft_fail",
+      "scenario": "Empty draft triggers report_structure hard fail",
+      "characteristics": [
+        "empty_draft",
+        "structure_hard_fail"
+      ],
+      "candidate": {
+        "question": "Empty draft case",
+        "plan": [
+          "Clarify evaluationgate scope",
+          "Gather citationevidence sources",
+          "Identify residualrisks issues"
+        ],
+        "findings": [
+          "Clarify evaluationgate scope is required before persistence",
+          "Gather citationevidence sources from the linked pack",
+          "Identify residualrisks issues for operators"
+        ],
+        "draft": "",
+        "claims": [],
+        "evidence_item_ids": [
+          "ev-happy-001"
+        ],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": false,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "Empty draft is a hard report_structure failure (STRUCTURE_EMPTY_DRAFT).",
+        "known_heuristic_limitation": "Starter fixture; soft dimensions are provisional heuristics."
+      },
+      "isolates": "empty_draft_fail"
+    },
+    {
+      "id": "unlinked_citation_fail",
+      "scenario": "Claim cites an evidence id outside the linked set",
+      "characteristics": [
+        "unlinked_citation",
+        "citation_integrity_fail"
+      ],
+      "candidate": {
+        "question": "Unlinked citation case",
+        "plan": [
+          "Clarify evaluationgate scope",
+          "Gather citationevidence sources",
+          "Identify residualrisks issues"
+        ],
+        "findings": [
+          "Clarify evaluationgate scope is required before persistence",
+          "Gather citationevidence sources from the linked pack",
+          "Identify residualrisks issues for operators"
+        ],
+        "draft": "The report will clarify evaluationgate scope, gather citationevidence sources, and identify residualrisks issues with linked support.",
+        "claims": [
+          {
+            "text": "Cites an id that is not linked.",
+            "evidence_item_ids": [
+              "ev-missing-999"
+            ]
+          }
+        ],
+        "evidence_item_ids": [
+          "ev-happy-001"
+        ],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": false,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": false,
+          "semantic_groundedness": false
+        },
+        "rationale": "Claim evidence id is absent from the linked set, failing citation_integrity and related groundedness checks.",
+        "known_heuristic_limitation": "Starter fixture; soft dimensions are provisional heuristics."
+      },
+      "isolates": "unlinked_citation_fail"
+    },
+    {
+      "id": "tool_policy_fail",
+      "scenario": "Workflow tool attributed to draft node violates tool policy",
+      "characteristics": [
+        "tool_node_draft",
+        "tool_use_fail"
+      ],
+      "candidate": {
+        "question": "Tool policy case",
+        "plan": [
+          "Clarify evaluationgate scope",
+          "Gather citationevidence sources",
+          "Identify residualrisks issues"
+        ],
+        "findings": [
+          "Clarify evaluationgate scope is required before persistence",
+          "Gather citationevidence sources from the linked pack",
+          "Identify residualrisks issues for operators"
+        ],
+        "draft": "The report will clarify evaluationgate scope, gather citationevidence sources, and identify residualrisks issues with linked support.",
+        "claims": [
+          {
+            "text": "Linked evidence supports the evaluationgate claim.",
+            "evidence_item_ids": [
+              "ev-happy-001"
+            ]
+          }
+        ],
+        "evidence_item_ids": [
+          "ev-happy-001"
+        ],
+        "tool_summary": [
+          {
+            "node_name": "draft",
+            "origin": "WORKFLOW"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": false,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "WORKFLOW tool with node_name=draft is a hard tool_use failure (TOOL_NODE_VIOLATION).",
+        "known_heuristic_limitation": "Starter fixture; soft dimensions are provisional heuristics."
+      },
+      "isolates": "tool_policy_fail"
+    },
+    {
+      "id": "thin_coverage_fail",
+      "scenario": "Claims present but linked_count is zero",
+      "characteristics": [
+        "has_claims",
+        "linked_count_zero",
+        "coverage_fail"
+      ],
+      "candidate": {
+        "question": "Thin coverage case",
+        "plan": [
+          "Clarify evaluationgate scope",
+          "Gather citationevidence sources",
+          "Identify residualrisks issues"
+        ],
+        "findings": [
+          "Clarify evaluationgate scope is required before persistence",
+          "Gather citationevidence sources from the linked pack",
+          "Identify residualrisks issues for operators"
+        ],
+        "draft": "The report will clarify evaluationgate scope, gather citationevidence sources, and identify residualrisks issues with linked support.",
+        "claims": [
+          {
+            "text": "Claim exists but nothing is linked.",
+            "evidence_item_ids": [
+              "ev-orphan-1"
+            ]
+          }
+        ],
+        "evidence_item_ids": [],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": false,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": false,
+          "completeness": true,
+          "lexical_id_groundedness": false,
+          "semantic_groundedness": false
+        },
+        "rationale": "Claims with linked_count 0 fail coverage; unlinked claim ids also fail citation and groundedness.",
+        "known_heuristic_limitation": "Starter fixture; soft dimensions are provisional heuristics."
+      },
+      "isolates": "thin_coverage_fail"
+    },
+    {
+      "id": "incomplete_plan_fail",
+      "scenario": "Plan task tokens are absent from findings and draft",
+      "characteristics": [
+        "unique_plan_tokens_absent",
+        "completeness_fail"
+      ],
+      "candidate": {
+        "question": "Incomplete plan case",
+        "plan": [
+          "Investigate xyzzywordalpha thoroughly",
+          "Document quuxwordbeta findings carefully",
+          "Validate plughwordgamma constraints fully"
+        ],
+        "findings": [
+          "general notes without the unique plan tokens"
+        ],
+        "draft": "A draft that also omits the unique plan tokens entirely.",
+        "claims": [
+          {
+            "text": "Linked evidence supports a bounded claim.",
+            "evidence_item_ids": [
+              "ev-happy-001"
+            ]
+          }
+        ],
+        "evidence_item_ids": [
+          "ev-happy-001"
+        ],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": false,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "Unique plan tokens are missing from findings+draft, failing provisional completeness.",
+        "known_heuristic_limitation": "Starter fixture; soft dimensions are provisional heuristics."
+      },
+      "isolates": "incomplete_plan_fail"
+    },
+    {
+      "id": "pass_battery_storage_cited",
+      "scenario": "Legitimate pass: cited battery-storage research with research tools",
+      "isolates": "overall_pass_cited_research",
+      "characteristics": [
+        "legitimate_pass",
+        "linked_evidence",
+        "research_tools"
+      ],
+      "candidate": {
+        "question": "What limits grid-scale battery storage deployment?",
+        "plan": [
+          "Review battery storage growth drivers",
+          "Assess interconnect queue bottlenecks",
+          "Summarize safety certification requirements"
+        ],
+        "findings": [
+          "Review battery storage growth drivers points to cost declines",
+          "Assess interconnect queue bottlenecks that delay projects",
+          "Summarize safety certification requirements for utilities"
+        ],
+        "draft": "Review battery storage growth drivers shows falling cell costs. Assess interconnect queue bottlenecks that delay interconnection. Summarize safety certification requirements before commissioning.",
+        "claims": [
+          {
+            "text": "Interconnect queues delay battery projects.",
+            "evidence_item_ids": [
+              "ev-battery-01"
+            ]
+          }
+        ],
+        "evidence_item_ids": [
+          "ev-battery-01"
+        ],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_0",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_1",
+            "status": "SUCCEEDED"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": true,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "Linked claim, research-attributed tools, and plan tokens reflected in draft.",
+        "known_heuristic_limitation": "Lexical completeness can still miss paraphrased plan coverage."
+      }
+    },
+    {
+      "id": "pass_offshore_wind_cited",
+      "scenario": "Legitimate pass: offshore wind permitting summary with citations",
+      "isolates": "overall_pass_second_domain",
+      "characteristics": [
+        "legitimate_pass",
+        "linked_evidence"
+      ],
+      "candidate": {
+        "question": "What slows offshore wind turbine permits?",
+        "plan": [
+          "Map offshore turbine permits timeline",
+          "Identify environmental review steps",
+          "Document port infrastructure gaps"
+        ],
+        "findings": [
+          "Map offshore turbine permits timeline spans multi-year reviews",
+          "Identify environmental review steps involving coastal agencies",
+          "Document port infrastructure gaps for staging vessels"
+        ],
+        "draft": "Map offshore turbine permits timeline shows multi-year reviews. Identify environmental review steps with coastal agencies. Document port infrastructure gaps that constrain staging.",
+        "claims": [
+          {
+            "text": "Environmental reviews lengthen offshore permits.",
+            "evidence_item_ids": [
+              "ev-wind-01"
+            ]
+          }
+        ],
+        "evidence_item_ids": [
+          "ev-wind-01"
+        ],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_0",
+            "status": "SUCCEEDED"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": true,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "Second independent domain pass with linked evidence and research tools.",
+        "known_heuristic_limitation": "Coverage only checks linked_count >= 1, not source diversity."
+      }
+    },
+    {
+      "id": "pass_hydro_reservoir_cited",
+      "scenario": "Legitimate pass: hydro reservoir reporting with linked claim",
+      "isolates": "overall_pass_third_domain",
+      "characteristics": [
+        "legitimate_pass",
+        "linked_evidence"
+      ],
+      "candidate": {
+        "question": "How do hydro reservoir levels affect summer generation?",
+        "plan": [
+          "Compare hydro reservoir levels seasonally",
+          "Relate reservoir levels to generation output",
+          "Note drought contingency planning"
+        ],
+        "findings": [
+          "Compare hydro reservoir levels seasonally across basins",
+          "Relate reservoir levels to generation output for peak months",
+          "Note drought contingency planning used by operators"
+        ],
+        "draft": "Compare hydro reservoir levels seasonally across major basins. Relate reservoir levels to generation output in summer peaks. Note drought contingency planning for low-water years.",
+        "claims": [
+          {
+            "text": "Low reservoir levels reduce summer generation.",
+            "evidence_item_ids": [
+              "ev-hydro-01"
+            ]
+          }
+        ],
+        "evidence_item_ids": [
+          "ev-hydro-01"
+        ],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_0",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_1",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_2",
+            "status": "SUCCEEDED"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": true,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "Third independent pass case with three logical research tools.",
+        "known_heuristic_limitation": "Soft dimensions remain provisional heuristics."
+      }
+    },
+    {
+      "id": "pass_no_claims_no_evidence",
+      "scenario": "No claims and no evidence links where that path is allowed",
+      "isolates": "no_claims_no_evidence_allowed",
+      "characteristics": [
+        "no_claims",
+        "no_evidence",
+        "legitimate_pass"
+      ],
+      "candidate": {
+        "question": "Outline a research plan for drought monitoring without citing claims yet",
+        "plan": [
+          "Clarify research scope carefully",
+          "Summarize publicly known facts carefully",
+          "Note residual uncertainty clearly"
+        ],
+        "findings": [
+          "Clarify research scope carefully before drafting",
+          "Summarize publicly known facts carefully from linked sources",
+          "Note residual uncertainty clearly for operators"
+        ],
+        "draft": "Clarify research scope carefully. Summarize publicly known facts carefully. Note residual uncertainty clearly in the final draft.",
+        "claims": [],
+        "evidence_item_ids": [],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_0",
+            "status": "SUCCEEDED"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": true,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "Empty claims with intact provenance_ok allows citation/coverage soft passes.",
+        "known_heuristic_limitation": "Does not prove real-world research adequacy without claims."
+      }
+    },
+    {
+      "id": "pass_zero_tools_unnecessary",
+      "scenario": "Zero tool calls when tools were unnecessary",
+      "isolates": "zero_tool_path",
+      "characteristics": [
+        "zero_tools",
+        "legitimate_pass"
+      ],
+      "candidate": {
+        "question": "Summarize well-known public drought definitions without tools",
+        "plan": [
+          "Clarify research scope carefully",
+          "Summarize publicly known facts carefully",
+          "Note residual uncertainty clearly"
+        ],
+        "findings": [
+          "Clarify research scope carefully before drafting",
+          "Summarize publicly known facts carefully from linked sources",
+          "Note residual uncertainty clearly for operators"
+        ],
+        "draft": "Clarify research scope carefully. Summarize publicly known facts carefully. Note residual uncertainty clearly in the final draft.",
+        "claims": [],
+        "evidence_item_ids": [],
+        "tool_summary": []
+      },
+      "expected": {
+        "overall_passed": true,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "Legitimate zero-tool path passes tool_use when allow_zero_tools is true.",
+        "known_heuristic_limitation": "Does not detect when tools were actually required."
+      }
+    },
+    {
+      "id": "pass_six_logical_calls",
+      "scenario": "Exactly six logical research tool calls pass the budget",
+      "isolates": "tool_budget_six_pass",
+      "characteristics": [
+        "six_logical_calls",
+        "legitimate_pass"
+      ],
+      "candidate": {
+        "question": "Budget boundary: six logical tool calls",
+        "plan": [
+          "Clarify research scope carefully",
+          "Summarize publicly known facts carefully",
+          "Note residual uncertainty clearly"
+        ],
+        "findings": [
+          "Clarify research scope carefully before drafting",
+          "Summarize publicly known facts carefully from linked sources",
+          "Note residual uncertainty clearly for operators"
+        ],
+        "draft": "Clarify research scope carefully. Summarize publicly known facts carefully. Note residual uncertainty clearly in the final draft.",
+        "claims": [],
+        "evidence_item_ids": [],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_0",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_1",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_2",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_3",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_4",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_5",
+            "status": "SUCCEEDED"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": true,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "Six logical WORKFLOW/research rows are within max_logical_calls=6.",
+        "known_heuristic_limitation": "Counts logical rows only; physical retries are out of band."
+      }
+    },
+    {
+      "id": "fail_seven_logical_calls",
+      "scenario": "Seven logical research tool calls exceed the budget",
+      "isolates": "tool_budget_seven_fail",
+      "characteristics": [
+        "seven_logical_calls",
+        "tool_use_fail"
+      ],
+      "candidate": {
+        "question": "Budget boundary: seven logical tool calls",
+        "plan": [
+          "Clarify research scope carefully",
+          "Summarize publicly known facts carefully",
+          "Note residual uncertainty clearly"
+        ],
+        "findings": [
+          "Clarify research scope carefully before drafting",
+          "Summarize publicly known facts carefully from linked sources",
+          "Note residual uncertainty clearly for operators"
+        ],
+        "draft": "Clarify research scope carefully. Summarize publicly known facts carefully. Note residual uncertainty clearly in the final draft.",
+        "claims": [],
+        "evidence_item_ids": [],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_0",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_1",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_2",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_3",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_4",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_5",
+            "status": "SUCCEEDED"
+          },
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_6",
+            "status": "SUCCEEDED"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": false,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "Seven logical calls fail tool_use with TOOL_BUDGET_EXCEEDED.",
+        "known_heuristic_limitation": "Budget is a fixed policy constant, not adaptive."
+      }
+    },
+    {
+      "id": "fail_valid_citation_thin_coverage_facet",
+      "scenario": "Valid linked citation but independent coverage facet below threshold",
+      "isolates": "coverage_facet_below_threshold",
+      "characteristics": [
+        "valid_citation",
+        "coverage_fail"
+      ],
+      "candidate": {
+        "question": "Coverage facet below soft threshold despite linked claim",
+        "plan": [
+          "Clarify research scope carefully",
+          "Summarize publicly known facts carefully",
+          "Note residual uncertainty clearly"
+        ],
+        "findings": [
+          "Clarify research scope carefully before drafting",
+          "Summarize publicly known facts carefully from linked sources",
+          "Note residual uncertainty clearly for operators"
+        ],
+        "draft": "Clarify research scope carefully. Summarize publicly known facts carefully. Note residual uncertainty clearly in the final draft.",
+        "claims": [
+          {
+            "text": "Linked evidence supports one narrow claim.",
+            "evidence_item_ids": [
+              "ev-cov-01"
+            ]
+          }
+        ],
+        "evidence_item_ids": [
+          "ev-cov-01"
+        ],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_0",
+            "status": "SUCCEEDED"
+          }
+        ],
+        "golden_facets_hit": 0.5
+      },
+      "expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": false,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "Citation integrity passes on linked ids; coverage fails via facet score 0.5 < 0.70.",
+        "known_heuristic_limitation": "Facet override is calibration scaffolding, not live retrieval diversity."
+      }
+    },
+    {
+      "id": "fail_completeness_below_threshold",
+      "scenario": "Completeness immediately below soft threshold (2 of 3 plan tasks)",
+      "isolates": "completeness_below_0_70",
+      "characteristics": [
+        "completeness_fail",
+        "below_threshold"
+      ],
+      "candidate": {
+        "question": "Partial plan coverage just below soft threshold",
+        "plan": [
+          "Review solar capacity forecasts",
+          "Assess wind generation trends",
+          "Compare hydro reservoir levels"
+        ],
+        "findings": [
+          "Review solar capacity forecasts for the region",
+          "Assess wind generation trends for the region"
+        ],
+        "draft": "Review solar capacity forecasts and assess wind generation trends but omit hydro analysis.",
+        "claims": [],
+        "evidence_item_ids": [],
+        "tool_summary": []
+      },
+      "expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": false,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "2/3 plan-token coverage yields ~0.666 < 0.70 soft threshold.",
+        "known_heuristic_limitation": "Token subset matching is lexical, not semantic."
+      }
+    },
+    {
+      "id": "pass_completeness_at_threshold",
+      "scenario": "Completeness exactly at soft threshold (7 of 10 plan tasks)",
+      "isolates": "completeness_exactly_0_70",
+      "characteristics": [
+        "completeness_boundary",
+        "legitimate_pass"
+      ],
+      "candidate": {
+        "question": "Completeness boundary at 0.70",
+        "plan": [
+          "Review solar capacity forecasts",
+          "Assess wind generation trends",
+          "Compare hydro reservoir levels",
+          "Evaluate geothermal project costs",
+          "Inspect nuclear plant licensing",
+          "Measure battery storage growth",
+          "Track hydrogen fuel pilots",
+          "Study biomass feedstock supply",
+          "Audit transmission line delays",
+          "Map offshore turbine permits"
+        ],
+        "findings": [
+          "Review solar capacity forecasts",
+          "Assess wind generation trends",
+          "Compare hydro reservoir levels",
+          "Evaluate geothermal project costs",
+          "Inspect nuclear plant licensing",
+          "Measure battery storage growth",
+          "Track hydrogen fuel pilots"
+        ],
+        "draft": "Review solar capacity forecasts and assess wind generation trends. Compare hydro reservoir levels and evaluate geothermal project costs. Inspect nuclear plant licensing, measure battery storage growth, and track hydrogen fuel pilots.",
+        "claims": [],
+        "evidence_item_ids": [],
+        "tool_summary": []
+      },
+      "expected": {
+        "overall_passed": true,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "7/10 plan-token coverage equals the 0.70 soft threshold and passes.",
+        "known_heuristic_limitation": "Boundary depends on significant-token extraction rules."
+      }
+    },
+    {
+      "id": "fail_paraphrased_plan_lexical_fn",
+      "scenario": "Paraphrased plan coverage exposes lexical false-negative risk",
+      "isolates": "completeness_lexical_false_negative",
+      "characteristics": [
+        "paraphrase",
+        "completeness_fail"
+      ],
+      "candidate": {
+        "question": "Paraphrase risk for completeness heuristic",
+        "plan": [
+          "Analyze renewable energy adoption rates across utilities"
+        ],
+        "findings": [
+          "Examine clean power uptake trends among electric providers."
+        ],
+        "draft": "Examine clean power uptake trends among electric providers.",
+        "claims": [],
+        "evidence_item_ids": [],
+        "tool_summary": []
+      },
+      "expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": false,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "Semantically related paraphrase fails lexical plan-token completeness.",
+        "known_heuristic_limitation": "Primary known limitation: lexical completeness false negatives on paraphrase."
+      }
+    },
+    {
+      "id": "fail_well_formatted_unsupported",
+      "scenario": "Well-formatted report with unsupported claim citations",
+      "isolates": "unsupported_claims_structure_ok",
+      "characteristics": [
+        "structure_ok",
+        "citation_fail"
+      ],
+      "candidate": {
+        "question": "Unsupported claims despite clean formatting",
+        "plan": [
+          "Clarify research scope carefully",
+          "Summarize publicly known facts carefully",
+          "Note residual uncertainty clearly"
+        ],
+        "findings": [
+          "Clarify research scope carefully before drafting",
+          "Summarize publicly known facts carefully from linked sources",
+          "Note residual uncertainty clearly for operators"
+        ],
+        "draft": "Clarify research scope carefully. Summarize publicly known facts carefully. Note residual uncertainty clearly in the final draft.",
+        "claims": [
+          {
+            "text": "Claims a fact without linked support.",
+            "evidence_item_ids": [
+              "ev-missing-404"
+            ]
+          }
+        ],
+        "evidence_item_ids": [
+          "ev-linked-only"
+        ],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_0",
+            "status": "SUCCEEDED"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": false,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": false,
+          "semantic_groundedness": false
+        },
+        "rationale": "Structure passes; claim cites an unlinked id and fails citation/groundedness.",
+        "known_heuristic_limitation": "Does not inspect evidence body text for semantic support."
+      }
+    },
+    {
+      "id": "fail_multiple_claims_partial_support",
+      "scenario": "Multiple claims with only partial linked support",
+      "isolates": "partial_claim_support",
+      "characteristics": [
+        "partial_support",
+        "groundedness_fail"
+      ],
+      "candidate": {
+        "question": "Two claims, only one linked",
+        "plan": [
+          "Clarify research scope carefully",
+          "Summarize publicly known facts carefully",
+          "Note residual uncertainty clearly"
+        ],
+        "findings": [
+          "Clarify research scope carefully before drafting",
+          "Summarize publicly known facts carefully from linked sources",
+          "Note residual uncertainty clearly for operators"
+        ],
+        "draft": "Clarify research scope carefully. Summarize publicly known facts carefully. Note residual uncertainty clearly in the final draft.",
+        "claims": [
+          {
+            "text": "Supported claim about drought monitoring.",
+            "evidence_item_ids": [
+              "ev-partial-1"
+            ]
+          },
+          {
+            "text": "Unsupported claim about rainfall totals.",
+            "evidence_item_ids": [
+              "ev-partial-missing"
+            ]
+          }
+        ],
+        "evidence_item_ids": [
+          "ev-partial-1"
+        ],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_0",
+            "status": "SUCCEEDED"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": false,
+          "tool_use": true,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": false,
+          "semantic_groundedness": false
+        },
+        "rationale": "One linked and one unlinked claim fails citation integrity and soft groundedness.",
+        "known_heuristic_limitation": "Scores are id-based ratios, not graded evidence quality."
+      }
+    },
+    {
+      "id": "fail_unknown_tool_origin",
+      "scenario": "Unknown tool origin fails closed",
+      "isolates": "tool_unknown_origin",
+      "characteristics": [
+        "unknown_origin",
+        "tool_use_fail"
+      ],
+      "candidate": {
+        "question": "Unknown origin tool row",
+        "plan": [
+          "Clarify research scope carefully",
+          "Summarize publicly known facts carefully",
+          "Note residual uncertainty clearly"
+        ],
+        "findings": [
+          "Clarify research scope carefully before drafting",
+          "Summarize publicly known facts carefully from linked sources",
+          "Note residual uncertainty clearly for operators"
+        ],
+        "draft": "Clarify research scope carefully. Summarize publicly known facts carefully. Note residual uncertainty clearly in the final draft.",
+        "claims": [],
+        "evidence_item_ids": [],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "CUSTOM_ORIGIN",
+            "tool_id": "x",
+            "status": "SUCCEEDED"
+          }
+        ]
+      },
+      "expected": {
+        "overall_passed": false,
+        "dimension_passed": {
+          "citation_integrity": true,
+          "tool_use": false,
+          "report_structure": true,
+          "coverage": true,
+          "completeness": true,
+          "lexical_id_groundedness": true,
+          "semantic_groundedness": true
+        },
+        "rationale": "Non-WORKFLOW origin fails tool_use with TOOL_UNKNOWN_ORIGIN.",
+        "known_heuristic_limitation": "Does not attempt to interpret custom origin semantics."
+      }
+    },
+    {
+      "id": "replay_conflict_evidence_mutation",
+      "kind": "fingerprint_delta",
+      "scenario": "Changed linked evidence ids must change grading fingerprint",
+      "isolates": "fingerprint_evidence_mutation",
+      "characteristics": [
+        "replay_conflict",
+        "evidence_mutation"
+      ],
+      "base_candidate": {
+        "question": "Fingerprint evidence mutation",
+        "plan": [
+          "Clarify research scope carefully",
+          "Summarize publicly known facts carefully",
+          "Note residual uncertainty clearly"
+        ],
+        "findings": [
+          "Clarify research scope carefully before drafting",
+          "Summarize publicly known facts carefully from linked sources",
+          "Note residual uncertainty clearly for operators"
+        ],
+        "draft": "Clarify research scope carefully. Summarize publicly known facts carefully. Note residual uncertainty clearly in the final draft.",
+        "claims": [
+          {
+            "text": "Linked claim",
+            "evidence_item_ids": [
+              "ev-fp-1"
+            ]
+          }
+        ],
+        "evidence_item_ids": [
+          "ev-fp-1"
+        ],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_0",
+            "status": "SUCCEEDED"
+          }
+        ]
+      },
+      "mutated_linked_ids": [
+        "ev-fp-1",
+        "ev-fp-2"
+      ],
+      "expected": {
+        "fingerprints_differ": true,
+        "rationale": "Adding a linked evidence id changes the complete grading fingerprint.",
+        "known_heuristic_limitation": "Fingerprint hashes ids only; bodies are intentionally excluded."
+      }
+    },
+    {
+      "id": "replay_conflict_tool_mutation",
+      "kind": "fingerprint_delta",
+      "scenario": "Changed tool audit rows must change grading fingerprint",
+      "isolates": "fingerprint_tool_mutation",
+      "characteristics": [
+        "replay_conflict",
+        "tool_mutation"
+      ],
+      "base_candidate": {
+        "question": "Fingerprint tool mutation",
+        "plan": [
+          "Clarify research scope carefully",
+          "Summarize publicly known facts carefully",
+          "Note residual uncertainty clearly"
+        ],
+        "findings": [
+          "Clarify research scope carefully before drafting",
+          "Summarize publicly known facts carefully from linked sources",
+          "Note residual uncertainty clearly for operators"
+        ],
+        "draft": "Clarify research scope carefully. Summarize publicly known facts carefully. Note residual uncertainty clearly in the final draft.",
+        "claims": [],
+        "evidence_item_ids": [],
+        "tool_summary": [
+          {
+            "node_name": "research",
+            "origin": "WORKFLOW",
+            "tool_id": "web_search_0",
+            "status": "SUCCEEDED"
+          }
+        ]
+      },
+      "mutated_tool_summary": [
+        {
+          "node_name": "research",
+          "origin": "WORKFLOW",
+          "tool_id": "web_search_0",
+          "status": "SUCCEEDED"
+        },
+        {
+          "node_name": "research",
+          "origin": "WORKFLOW",
+          "tool_id": "web_search_1",
+          "status": "SUCCEEDED"
+        }
+      ],
+      "expected": {
+        "fingerprints_differ": true,
+        "rationale": "Additional logical tool row changes the complete grading fingerprint.",
+        "known_heuristic_limitation": "Fingerprint uses sanitized tool identifiers, not attempt payloads."
+      }
+    }
+  ]
+}

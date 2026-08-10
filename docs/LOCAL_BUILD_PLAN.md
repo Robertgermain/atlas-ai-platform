@@ -203,7 +203,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 11 — Specialist agents and report synthesis
 
-**Status:** Current
+**Status:** Complete
 
 **Goal:** Expand the proven workflow into bounded specialists that improve measurable outcomes.
 
@@ -213,13 +213,13 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Completion gate:** A complete cited report is produced; agent loops are bounded; handoffs are typed; each specialist has test or evaluation evidence supporting its role.
 
-**Local implementation status:** Slices 11A and 11B were reviewed and merged via Pull Request #14 (`005ea58`); PR CI and resulting `main` CI passed. Pull Request #15 (`e675f43`) reverted #14 due to a workflow/process error, not an identified code defect. Branch `restore-milestone-11-specialists` restores the reviewed Milestone 11 implementation (cherry-pick of `9d4e2f4` onto reverted `main`). Topology `validate → plan → research → draft → verify_citations → complete`; capability isolation; ledger/audit attribution; boundary/ablation evidence; full cited-report E2E; no migration. Milestone 11 remains **Current** until the restoration PR and resulting `main` CI pass. Do not mark Milestone 11 Complete yet.
+**Local implementation status:** Complete through Pull Request #16 (`c5d4749`). PR #14 originally merged Milestone 11 (`005ea58`) with green CI; PR #15 reverted it (`e675f43`) for process reasons; PR #16 restored it with green PR CI and resulting `main` CI.
 
 ---
 
 ## Milestone 12 — Evaluation, grading, repair, and retry policy
 
-**Status:** Pending
+**Status:** Current
 
 **Goal:** Measure AI quality and make controlled recovery decisions.
 
@@ -227,7 +227,9 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Why evaluation precedes autonomous recovery:** Atlas needs trustworthy signals before deciding whether work deserves retry or repair. Deterministic policy—not an unconstrained agent—controls execution.
 
-**Completion gate:** Regressions are measurable; grader results are compared with human judgment; transient failures retry safely; permanent failures do not; all loops terminate.
+**Completion gate:** Regressions are measurable; grader results are compared with human judgment; transient failures retry safely; permanent failures do not; all loops terminate. Candidate reports are evaluated before accepted report persistence; failed candidates are never exposed as accepted finals. Do not mark Complete until pull-request CI and resulting `main` CI pass.
+
+**Local implementation status:** Slice 12A is **locally approved**. Slice 12B (repair, job-level retry, `AWAITING_REVIEW`, operator review API, policy engine, claim-fenced persist, continuation-mode processor) is implemented with a correction pass under review on `milestone-12-evaluation-grading`. Correction pass: lease-valid fencing; fail-closed claim-fenced mutations; typed exception registry; structure repair once then terminal; evaluation-attempt accounting in the evaluation create transaction; policy decision idempotent fingerprint; `ContinuationMode` StrEnum. Do not freeze `evaluation.v1` yet.
 
 ---
 

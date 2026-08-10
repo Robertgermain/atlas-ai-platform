@@ -89,7 +89,7 @@ def test_migration_has_pgvector_and_hnsw(engine: Engine) -> None:
                 """
             )
         ).scalar_one_or_none()
-    assert version == "20260809_0008"
+    assert version == "20260809_0010"
     assert ext == 1
     assert index == 1
 

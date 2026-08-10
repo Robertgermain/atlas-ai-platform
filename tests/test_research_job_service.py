@@ -88,6 +88,26 @@ class _FakeRepository:
         del session, kwargs
         raise NotImplementedError
 
+    def set_active_workflow_execution(self, session: Session, **kwargs: object) -> bool:
+        del session, kwargs
+        raise NotImplementedError
+
+    def schedule_retry(self, session: Session, **kwargs: object) -> bool:
+        del session, kwargs
+        raise NotImplementedError
+
+    def transition_awaiting_review(self, session: Session, **kwargs: object) -> bool:
+        del session, kwargs
+        raise NotImplementedError
+
+    def approve_review_to_pending(self, session: Session, **kwargs: object) -> bool:
+        del session, kwargs
+        raise NotImplementedError
+
+    def fail_from_review(self, session: Session, **kwargs: object) -> bool:
+        del session, kwargs
+        raise NotImplementedError
+
 
 def test_submit_creates_pending_job() -> None:
     repo = _FakeRepository()

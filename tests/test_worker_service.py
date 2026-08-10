@@ -8,6 +8,14 @@ from threading import Event
 
 from sqlalchemy.orm import Session
 
+from atlas.application.job_processing import (
+    CompletedProcessing,
+    ContinuationMode,
+    PausedForReview,
+    ProcessingOutcome,
+    RetryScheduled,
+    TerminalFailed,
+)
 from atlas.application.ports import ClaimedResearchJob
 from atlas.application.worker import PROCESSING_TIMEOUT_REASON, ResearchJobWorker
 from atlas.domain import ResearchJob, ResearchJobStatus
@@ -76,7 +84,12 @@ class _FakeRepository:
         job.start(at=now)
         self.jobs[job.id] = job
         self.tokens[job.id] = claim_token
-        return ClaimedResearchJob(job=job, claim_token=claim_token)
+        return ClaimedResearchJob(
+            job=job,
+            claim_token=claim_token,
+            continuation_mode=ContinuationMode.NONE,
+            active_workflow_execution_id=None,
+        )
 
     def finalize_completion(
         self,
@@ -114,9 +127,68 @@ class _FakeRepository:
         del self.tokens[job_id]
         return True
 
+    def set_active_workflow_execution(
+        self,
+        session: Session,
+        *,
+        job_id: str,
+        claim_token: str,
+        execution_id: str,
+        at: datetime,
+    ) -> bool:
+        del session, job_id, claim_token, execution_id, at
+        return True
 
-def _echo_processor(question: str, *, job_id: str) -> str:
-    return f"echo:{job_id}:{question}"
+    def schedule_retry(
+        self,
+        session: Session,
+        *,
+        job_id: str,
+        claim_token: str,
+        next_attempt_at: datetime,
+        at: datetime,
+    ) -> bool:
+        del session, job_id, claim_token, next_attempt_at, at
+        return True
+
+    def transition_awaiting_review(
+        self, session: Session, *, job_id: str, claim_token: str, at: datetime
+    ) -> bool:
+        del session, job_id, claim_token, at
+        return True
+
+    def approve_review_to_pending(
+        self,
+        session: Session,
+        *,
+        job_id: str,
+        execution_id: str,
+        next_attempt_at: datetime,
+        at: datetime,
+    ) -> bool:
+        del session, job_id, execution_id, next_attempt_at, at
+        return True
+
+    def fail_from_review(
+        self, session: Session, *, job_id: str, reason: str, at: datetime
+    ) -> bool:
+        del session, job_id, reason, at
+        return True
+
+
+def _echo_processor(
+    question: str,
+    *,
+    job_id: str,
+    claim_token: str,
+    continuation_mode: str = "NONE",
+    active_workflow_execution_id: str | None = None,
+) -> ProcessingOutcome:
+    del claim_token, continuation_mode, active_workflow_execution_id
+    return CompletedProcessing(
+        result=f"echo:{job_id}:{question}",
+        workflow_execution_id="test-exec",
+    )
 
 
 def test_run_once_completes_deterministically() -> None:
@@ -147,11 +219,19 @@ def test_timeout_finalizes_failure_and_ignores_late_result() -> None:
     repo.seed_pending(job)
     late_results: list[str] = []
 
-    def slow_processor(question: str, *, job_id: str) -> str:
+    def slow_processor(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del claim_token, continuation_mode, active_workflow_execution_id
         time.sleep(0.2)
         result = f"LATE:{job_id}:{question}"
         late_results.append(result)
-        return result
+        return CompletedProcessing(result=result, workflow_execution_id="test-exec")
 
     worker = ResearchJobWorker(
         session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
@@ -182,8 +262,16 @@ def test_processor_exception_fails_without_leaking_details() -> None:
     repo.seed_pending(ResearchJob.create("job-boom", "question", at=T0))
     secret = "super-secret-token"
 
-    def boom(question: str, *, job_id: str) -> str:
-        del question, job_id
+    def boom(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del question, job_id, claim_token, continuation_mode
+        del active_workflow_execution_id
         raise RuntimeError(f"db password={secret}")
 
     worker = ResearchJobWorker(
@@ -229,10 +317,21 @@ def test_close_is_bounded_while_processor_remains_blocked() -> None:
     repo.seed_pending(ResearchJob.create("job-block", "blocked", at=T0))
     release = Event()
 
-    def blocked_processor(question: str, *, job_id: str) -> str:
-        del question, job_id
+    def blocked_processor(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del question, job_id, claim_token, continuation_mode
+        del active_workflow_execution_id
         release.wait(timeout=30)
-        return "should-not-finalize"
+        return CompletedProcessing(
+            result="should-not-finalize",
+            workflow_execution_id="test-exec",
+        )
 
     worker = ResearchJobWorker(
         session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
@@ -268,10 +367,21 @@ def test_shutdown_with_processing_in_flight_completes_within_grace() -> None:
     repo.seed_pending(ResearchJob.create("job-inflight", "almost done", at=T0))
     started = Event()
 
-    def slow_ok(question: str, *, job_id: str) -> str:
+    def slow_ok(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del claim_token, continuation_mode, active_workflow_execution_id
         started.set()
         time.sleep(0.15)
-        return f"echo:{job_id}:{question}"
+        return CompletedProcessing(
+            result=f"echo:{job_id}:{question}",
+            workflow_execution_id="test-exec",
+        )
 
     worker = ResearchJobWorker(
         session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
@@ -296,3 +406,144 @@ def test_shutdown_with_processing_in_flight_completes_within_grace() -> None:
         assert worker.processor_wait_abandoned is False
     finally:
         pool.shutdown(wait=True, cancel_futures=False)
+
+
+def test_paused_for_review_no_finalization() -> None:
+    """PausedForReview outcome: worker does not finalize job."""
+    repo = _FakeRepository()
+    job = ResearchJob.create("job-review", "need review", at=T0)
+    repo.seed_pending(job)
+
+    def review_processor(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del question, claim_token, continuation_mode, active_workflow_execution_id
+        return PausedForReview(workflow_execution_id="exec-review")
+
+    worker = ResearchJobWorker(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        processor=review_processor,
+        poll_interval_seconds=0.01,
+        processing_timeout_seconds=1.0,
+        lease_seconds=1.0,
+    )
+    try:
+        assert worker.run_once() is True
+        assert repo.completions == []
+        assert repo.failures == []
+    finally:
+        worker.close()
+
+
+def test_retry_scheduled_no_finalization() -> None:
+    """RetryScheduled outcome: worker does not finalize job."""
+    repo = _FakeRepository()
+    job = ResearchJob.create("job-retry", "transient fail", at=T0)
+    repo.seed_pending(job)
+
+    def retry_processor(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del question, claim_token, continuation_mode, active_workflow_execution_id
+        return RetryScheduled(
+            workflow_execution_id="exec-retry",
+            next_attempt_at=datetime(2026, 8, 9, 12, 0, 10, tzinfo=UTC),
+            attempt_number=1,
+        )
+
+    worker = ResearchJobWorker(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        processor=retry_processor,
+        poll_interval_seconds=0.01,
+        processing_timeout_seconds=1.0,
+        lease_seconds=1.0,
+    )
+    try:
+        assert worker.run_once() is True
+        assert repo.completions == []
+        assert repo.failures == []
+    finally:
+        worker.close()
+
+
+def test_terminal_failed_finalizes_failure() -> None:
+    """TerminalFailed outcome: worker finalizes job as FAILED."""
+    repo = _FakeRepository()
+    job = ResearchJob.create("job-terminal", "fatal fail", at=T0)
+    repo.seed_pending(job)
+
+    def terminal_processor(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del question, claim_token, continuation_mode, active_workflow_execution_id
+        return TerminalFailed(
+            reason_code="HARD_QUALITY_FAIL",
+            workflow_execution_id="exec-terminal",
+        )
+
+    worker = ResearchJobWorker(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        processor=terminal_processor,
+        poll_interval_seconds=0.01,
+        processing_timeout_seconds=1.0,
+        lease_seconds=1.0,
+    )
+    try:
+        assert worker.run_once() is True
+        loaded = repo.jobs["job-terminal"]
+        assert loaded.status is ResearchJobStatus.FAILED
+        assert len(repo.failures) == 1
+    finally:
+        worker.close()
+
+
+def test_invalid_outcome_finalizes_failure() -> None:
+    """Unrecognized outcome type: worker finalizes job as FAILED."""
+    repo = _FakeRepository()
+    job = ResearchJob.create("job-invalid", "unknown outcome", at=T0)
+    repo.seed_pending(job)
+
+    def invalid_processor(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del question, claim_token, continuation_mode, active_workflow_execution_id
+        return "unexpected"  # type: ignore[return-value]
+
+    worker = ResearchJobWorker(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        processor=invalid_processor,
+        poll_interval_seconds=0.01,
+        processing_timeout_seconds=1.0,
+        lease_seconds=1.0,
+    )
+    try:
+        assert worker.run_once() is True
+        loaded = repo.jobs["job-invalid"]
+        assert loaded.status is ResearchJobStatus.FAILED
+        assert "unrecognized" in (loaded.failure_reason or "").lower()
+    finally:
+        worker.close()

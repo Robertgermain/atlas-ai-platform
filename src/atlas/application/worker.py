@@ -11,7 +11,15 @@ from functools import partial
 from threading import Event
 from typing import TYPE_CHECKING
 
-from atlas.application.job_processing import ResearchJobProcessor
+from atlas.application.exceptions import ClaimOwnershipError
+from atlas.application.job_processing import (
+    CompletedProcessing,
+    PausedForReview,
+    ProcessingOutcome,
+    ResearchJobProcessor,
+    RetryScheduled,
+    TerminalFailed,
+)
 from atlas.application.ports import ClaimedResearchJob, ResearchJobRepository
 from atlas.persistence.db import session_scope
 
@@ -71,8 +79,8 @@ class ResearchJobWorker:
             max_workers=1,
             thread_name_prefix="atlas-job-processor",
         )
-        self._inflight_future: Future[str] | None = None
-        self._abandoned_future: Future[str] | None = None
+        self._inflight_future: Future[ProcessingOutcome] | None = None
+        self._abandoned_future: Future[ProcessingOutcome] | None = None
         self._closed = False
         self._processor_wait_abandoned = False
 
@@ -150,21 +158,35 @@ class ResearchJobWorker:
             )
 
     def _process_claimed(self, claimed: ClaimedResearchJob) -> None:
-        future = self._executor.submit(
+        future: Future[ProcessingOutcome] = self._executor.submit(
             partial(
                 self._processor,
                 claimed.job.question,
                 job_id=claimed.job.id,
+                claim_token=claimed.claim_token,
+                continuation_mode=claimed.continuation_mode,
+                active_workflow_execution_id=claimed.active_workflow_execution_id,
             )
         )
         self._inflight_future = future
         try:
-            result = future.result(timeout=self._processing_timeout_seconds)
+            outcome = future.result(timeout=self._processing_timeout_seconds)
         except FuturesTimeoutError:
-            # Orchestration timeout only: the callable may still be running.
             self._finalize_failure(claimed, reason=PROCESSING_TIMEOUT_REASON)
             self._abandoned_future = future
             self._inflight_future = None
+            return
+        except ClaimOwnershipError:
+            logger.warning(
+                "Claim ownership lost during processing of job %s; "
+                "finalize_failure will no-op if claim is gone.",
+                claimed.job.id,
+            )
+            self._finalize_failure(
+                claimed, reason="Claim ownership lost during processing."
+            )
+            self._inflight_future = None
+            self._ignore_late_result(future)
             return
         except Exception as exc:
             self._finalize_failure(
@@ -176,7 +198,25 @@ class ResearchJobWorker:
             return
 
         self._inflight_future = None
-        self._finalize_completion(claimed, result=result)
+        self._handle_outcome(claimed, outcome)
+
+    def _handle_outcome(
+        self, claimed: ClaimedResearchJob, outcome: ProcessingOutcome
+    ) -> None:
+        if isinstance(outcome, CompletedProcessing):
+            self._finalize_completion(claimed, result=outcome.result)
+        elif isinstance(outcome, TerminalFailed):
+            self._finalize_failure(claimed, reason=f"Terminal: {outcome.reason_code}")
+        elif isinstance(outcome, (PausedForReview, RetryScheduled)):
+            logger.info(
+                "Processor returned %s for job %s; no worker finalization.",
+                type(outcome).__name__,
+                claimed.job.id,
+            )
+        else:
+            self._finalize_failure(
+                claimed, reason="Processing returned unrecognized outcome"
+            )
 
     def _finalize_completion(self, claimed: ClaimedResearchJob, *, result: str) -> bool:
         at = datetime.now(UTC)
@@ -239,7 +279,7 @@ class ResearchJobWorker:
         # Late processor success is ignored permanently.
 
     @staticmethod
-    def _ignore_late_result(future: Future[str]) -> None:
+    def _ignore_late_result(future: Future[ProcessingOutcome]) -> None:
         """Consume a finished future without using its value for finalization."""
         if not future.done():
             return

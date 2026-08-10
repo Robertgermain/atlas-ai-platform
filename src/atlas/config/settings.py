@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     tool_max_attempts_per_call: int = Field(default=2, ge=1, le=2)
     tavily_api_key: SecretStr | None = Field(default=None)
 
+    # Recovery / retry backoff (Slice 12B).
+    retry_base_seconds: float = Field(default=5.0, gt=0)
+    retry_max_backoff_seconds: float = Field(default=60.0, gt=0)
+    retry_jitter_max_seconds: float = Field(default=0.0, ge=0)
+
+    # Operator review API (Slice 12B). Off by default.
+    review_api_enabled: bool = Field(default=False)
+
     # Embeddings / retrieval (Milestone 10B). Default fake keeps CI offline.
     embedding_provider: Literal["fake", "openai"] = Field(default="fake")
     embedding_profile: Literal["embeddings.v1"] = Field(default="embeddings.v1")

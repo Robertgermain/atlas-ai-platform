@@ -225,3 +225,144 @@ def test_reconstitute_rejects_id_over_max_length() -> None:
             result=None,
             failure_reason=None,
         )
+
+
+# --- Slice 12B: delayed PENDING and AWAITING_REVIEW reconstitution ---
+
+
+def test_reconstitute_delayed_pending() -> None:
+    """PENDING with started_at set is a delayed/retry PENDING — valid."""
+    job = ResearchJob.reconstitute(
+        id="job-1",
+        question="question",
+        status=ResearchJobStatus.PENDING,
+        created_at=T0,
+        updated_at=T1,
+        started_at=T1,
+        finished_at=None,
+        result=None,
+        failure_reason=None,
+    )
+    assert job.status is ResearchJobStatus.PENDING
+    assert job.started_at == T1
+
+
+def test_reconstitute_delayed_pending_rejects_finished_at() -> None:
+    with pytest.raises(InvalidResearchJobError, match="finished_at"):
+        ResearchJob.reconstitute(
+            id="job-1",
+            question="question",
+            status=ResearchJobStatus.PENDING,
+            created_at=T0,
+            updated_at=T2,
+            started_at=T1,
+            finished_at=T2,
+            result=None,
+            failure_reason=None,
+        )
+
+
+def test_reconstitute_delayed_pending_rejects_result() -> None:
+    with pytest.raises(InvalidResearchJobError, match="result or failure_reason"):
+        ResearchJob.reconstitute(
+            id="job-1",
+            question="question",
+            status=ResearchJobStatus.PENDING,
+            created_at=T0,
+            updated_at=T1,
+            started_at=T1,
+            finished_at=None,
+            result="stale",
+            failure_reason=None,
+        )
+
+
+def test_reconstitute_delayed_pending_rejects_started_before_created() -> None:
+    with pytest.raises(InvalidResearchJobError, match="started_at"):
+        ResearchJob.reconstitute(
+            id="job-1",
+            question="question",
+            status=ResearchJobStatus.PENDING,
+            created_at=T1,
+            updated_at=T2,
+            started_at=T0,
+            finished_at=None,
+            result=None,
+            failure_reason=None,
+        )
+
+
+def test_reconstitute_delayed_pending_rejects_updated_before_started() -> None:
+    with pytest.raises(InvalidResearchJobError, match="updated_at"):
+        ResearchJob.reconstitute(
+            id="job-1",
+            question="question",
+            status=ResearchJobStatus.PENDING,
+            created_at=T0,
+            updated_at=T0,
+            started_at=T1,
+            finished_at=None,
+            result=None,
+            failure_reason=None,
+        )
+
+
+def test_reconstitute_awaiting_review() -> None:
+    job = ResearchJob.reconstitute(
+        id="job-1",
+        question="question",
+        status=ResearchJobStatus.AWAITING_REVIEW,
+        created_at=T0,
+        updated_at=T2,
+        started_at=T1,
+        finished_at=None,
+        result=None,
+        failure_reason=None,
+    )
+    assert job.status is ResearchJobStatus.AWAITING_REVIEW
+    assert job.started_at == T1
+
+
+def test_reconstitute_awaiting_review_rejects_missing_started() -> None:
+    with pytest.raises(InvalidResearchJobError, match="started_at"):
+        ResearchJob.reconstitute(
+            id="job-1",
+            question="question",
+            status=ResearchJobStatus.AWAITING_REVIEW,
+            created_at=T0,
+            updated_at=T1,
+            started_at=None,
+            finished_at=None,
+            result=None,
+            failure_reason=None,
+        )
+
+
+def test_reconstitute_awaiting_review_rejects_finished_at() -> None:
+    with pytest.raises(InvalidResearchJobError, match="started_at and no finished_at"):
+        ResearchJob.reconstitute(
+            id="job-1",
+            question="question",
+            status=ResearchJobStatus.AWAITING_REVIEW,
+            created_at=T0,
+            updated_at=T3,
+            started_at=T1,
+            finished_at=T2,
+            result=None,
+            failure_reason=None,
+        )
+
+
+def test_reconstitute_awaiting_review_rejects_result() -> None:
+    with pytest.raises(InvalidResearchJobError, match="result or failure_reason"):
+        ResearchJob.reconstitute(
+            id="job-1",
+            question="question",
+            status=ResearchJobStatus.AWAITING_REVIEW,
+            created_at=T0,
+            updated_at=T2,
+            started_at=T1,
+            finished_at=None,
+            result="stale",
+            failure_reason=None,
+        )

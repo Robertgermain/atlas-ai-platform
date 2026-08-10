@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,6 +24,7 @@ from atlas.evidence.service import (
 )
 from atlas.main import app
 from atlas.persistence.db import session_scope
+from atlas.persistence.models import ResearchJobModel
 from atlas.persistence.models.evidence import (
     CitationModel,
     ClaimModel,
@@ -31,6 +32,31 @@ from atlas.persistence.models.evidence import (
 )
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
 from atlas.persistence.repositories.workflow import SqlAlchemyWorkflowRepository
+
+CLAIM = "a" * 64
+
+
+def _claim_job(
+    session_factory: sessionmaker[Session],
+    job_id: str,
+    claim_token: str = CLAIM,
+) -> None:
+    at = datetime.now(UTC)
+    with session_scope(session_factory) as session:
+        model = session.get(ResearchJobModel, job_id)
+        assert model is not None
+        if model.status == "PENDING":
+            from atlas.persistence.mappers.research_job import (
+                apply_domain_to_orm,
+                to_domain,
+            )
+
+            job = to_domain(model)
+            job.start(at=at)
+            apply_domain_to_orm(job, model)
+        model.claim_token = claim_token
+        model.lease_expires_at = at + timedelta(hours=1)
+        session.flush()
 
 
 @pytest.fixture
@@ -131,12 +157,14 @@ def test_citation_integrity_application_layer(
         text="A grounded claim",
         evidence_item_ids=[evidence_id],
     )
+    _claim_job(session_factory, job_b)
     with pytest.raises(CitationIntegrityError):
         reports.persist_final(
             research_job_id=job_b,
             workflow_execution_id=execution_b,
             body_text="Report body",
             claims=[claim],
+            claim_token=CLAIM,
         )
 
 
@@ -226,11 +254,13 @@ def test_report_persist_idempotent_replay(
         )
     ]
     body = "Final rendered report body"
+    _claim_job(session_factory, job_id)
     first = reports.persist_final(
         research_job_id=job_id,
         workflow_execution_id=execution_id,
         body_text=body,
         claims=claims,
+        claim_token=CLAIM,
     )
     assert first.created is True
     second = reports.persist_final(
@@ -238,6 +268,7 @@ def test_report_persist_idempotent_replay(
         workflow_execution_id=execution_id,
         body_text=body,
         claims=claims,
+        claim_token=CLAIM,
     )
     assert second.created is False
     assert second.id == first.id
@@ -248,6 +279,7 @@ def test_report_persist_idempotent_replay(
             workflow_execution_id=execution_id,
             body_text="Different body",
             claims=claims,
+            claim_token=CLAIM,
         )
 
     with session_scope(session_factory) as session:

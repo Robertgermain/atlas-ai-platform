@@ -75,4 +75,7 @@ def test_graph_completes_deterministically_with_memory_checkpointer() -> None:
     assert counters["research"] == 2
     assert counters["draft"] == 2
     assert counters["verify_citations"] == 2
+    assert counters["evaluate"] == 2
+    assert counters["policy"] == 2
     assert counters["complete"] == 2
+    assert "terminal" not in counters

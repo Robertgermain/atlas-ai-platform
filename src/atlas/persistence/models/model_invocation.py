@@ -29,7 +29,7 @@ class ModelInvocationModel(Base):
             name="ck_model_invocations_status",
         ),
         CheckConstraint(
-            "node_name IN ('plan', 'draft')",
+            "node_name IN ('plan', 'draft', 'evaluate')",
             name="ck_model_invocations_node_name",
         ),
         CheckConstraint(

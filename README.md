@@ -16,7 +16,7 @@ The repository already has a working local backend and workflow foundation: Pyth
 
 ## Current milestone
 
-Milestone 10 is Complete through Pull Request #13 (`bfabd59`). Milestone 11 is **Current** on restoration branch `restore-milestone-11-specialists`: PR #14 originally merged Milestone 11 (`005ea58`) with green PR/`main` CI; PR #15 reverted it (`e675f43`) due to a workflow/process error, not an identified code defect. This branch restores the reviewed implementation (cherry-pick of `9d4e2f4`). Milestone 11 remains Current until the restoration PR and resulting `main` CI pass. Milestone 12 remains Pending. The comprehensive Visio and AWS design remains deferred.
+Milestone 11 is Complete through Pull Request #16 (`c5d4749`). Milestone 12 is **Current**: Slice 12A (evaluate-before-complete) is locally approved. Slice 12B adds repair (re-draft), job-level retry with exponential backoff, AWAITING_REVIEW with operator approve/reject API, policy engine, and claim-fenced report persistence, and remains under review. Do not mark Milestone 12 Complete yet. The comprehensive Visio and AWS design remains deferred.
 
 ### Run locally
 

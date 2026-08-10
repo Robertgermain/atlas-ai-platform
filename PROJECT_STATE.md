@@ -2,8 +2,8 @@
 
 - Last updated: 2026-08-09
 - Phase: Local implementation foundation
-- Milestone: Specialist agents and report synthesis (Milestone 11) — **Current** (restoring reviewed implementation after accidental revert)
-- Implementation status: Milestone 10 is **Complete** through Pull Request #13 (`bfabd59`; PR CI and resulting `main` CI green). Milestone 11 Slices 11A–11B were reviewed and merged via Pull Request #14 (`005ea58`; PR CI and resulting `main` CI green), then reverted by Pull Request #15 (`e675f43`) due to a workflow/process error, not an identified code defect. Branch `restore-milestone-11-specialists` restores the reviewed Milestone 11 implementation (cherry-pick of `9d4e2f4` onto reverted `main` at `e675f43`). Milestone 11 remains **Current** until the restoration PR and resulting `main` CI pass. Milestone 12 remains **Pending**. Do not mark Milestone 11 Complete yet.
+- Milestone: Evaluation, grading, repair, and retry policy (Milestone 12) — **Current** (Slice 12A locally approved; Slice 12B under review after correction pass)
+- Implementation status: Milestone 11 is **Complete** through Pull Request #16 (`c5d4749`; PR CI and resulting `main` CI green). Milestone 12 Slice 12A is **locally approved**. Slice 12B (repair, job-level retry, human review, operator review API) is implemented with a correction pass on `milestone-12-evaluation-grading` and remains under review. Do not freeze `evaluation.v1` yet. Do not mark Milestone 12 Complete yet.
 
 ## Objective
 
@@ -17,34 +17,38 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 
 - A minimal repository baseline and one flat `docs/` folder.
 - `docs/LOCAL_BUILD_PLAN.md` as the ordered local roadmap and milestone checklist.
-- Research, product requirements, testing strategy, and a technical-design document with validated local foundation through Milestone 10 plus restored Milestone 11 specialists on this branch.
+- Research, product requirements, testing strategy, and a technical-design document with validated local foundation through Milestone 11 on `main`.
 - Root instructions for AI assistants and this current-state handoff.
 - Local environment and ignore files; committed `.env.example` (no secrets).
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
 - `src/atlas` package with FastAPI `GET /health` (liveness) and `GET /ready` (Postgres readiness).
 - Pytest, Ruff (format + lint), and mypy configuration; domain, API, worker, workflow, model, tool, MCP, evidence, embedding, specialist, and PostgreSQL/pgvector integration tests.
-- GitHub Actions CI with Postgres 16 + pgvector (`pgvector/pgvector:pg16`) targeting `atlas_test`; `main` currently at the PR #15 revert (`e675f43`); Milestone 10 remains the last durable Complete milestone on `main` until restoration merges.
+- GitHub Actions CI with Postgres 16 + pgvector (`pgvector/pgvector:pg16`) targeting `atlas_test`; `main` is green through Pull Request #16 (Milestone 11 restored).
 - `atlas.domain` package with slotted `ResearchJob`, `reconstitute(...)`, and lifecycle transitions.
 - Docker Compose PostgreSQL 16 + pgvector published on `127.0.0.1:5433` only, with databases `atlas` and `atlas_test`. Development credentials are local-only.
-- SQLAlchemy 2.x + psycopg3 + Alembic persistence through head `20260809_0008` (pgvector embeddings). Prior: evidence foundation `20260809_0007`; jobs, claims/leases, workflow audit, model ledger, tool ledger.
-- Research-job HTTP APIs plus evidence APIs: `POST /v1/evidence/documents`, `GET /v1/evidence/items/{id}`, `GET /v1/research-jobs/{id}/citations`.
+- SQLAlchemy 2.x + psycopg3 + Alembic persistence through head `20260809_0010` (recovery/review continuation fields + policy/recovery/review tables; prior `20260809_0009` evaluation foundation).
+- Research-job HTTP APIs plus evidence APIs: `POST /v1/evidence/documents`, `GET /v1/evidence/items/{id}`, `GET /v1/research-jobs/{id}/citations`, `GET /v1/research-jobs/{id}/evaluation` (no public `input_fingerprint`). Local-only operator review: `POST /v1/research-jobs/{id}/review-decisions` (404 when `ATLAS_REVIEW_API_ENABLED=false`, the default).
 - Background worker (`python -m atlas.worker`) with PostgreSQL claiming, fencing, and LangGraph orchestration (Milestones 6–9).
-- LangGraph research workflow: validate → plan → research → draft → verify_citations → complete. Specialists in `atlas.specialists` own planner, research/retrieval, synthesizer (behind node name `draft`), and deterministic citation verification. Final `persist_final` retains defense-in-depth `CitationValidator`.
-- Bounded specialist package (`atlas.specialists`): typed handoffs, fail-closed citation verification against durable job links + provenance, synthesizer pack-scope validation (no silent ID stripping). Graph/model-ledger node names remain `plan`/`research`/`draft`; verifier node is `verify_citations` (no model-ledger row; no migration — `workflow_node_executions.node_name` accepts arbitrary non-empty strings). Capability isolation is composition/spy-proven (no separate permission framework). Slice 11B adds ledger/audit attribution proofs, boundary/ablation evidence, and full API→worker→citations E2E with resume idempotency.
+- LangGraph research workflow (Milestone 12): validate → plan → research → draft → verify_citations → evaluate → policy → complete|repair|await_review|terminal. Accepted reports persist only after a passing evaluation or fingerprint-bound human-review override. Checkpoint `thread_id = workflow_execution_id`.
+- Recovery package (`atlas.recovery`): deterministic failure categories, policy decisions, bounded repair (≤1), job-level transient retries (≤2), evaluation attempts (≤4), exponential backoff with injectable jitter.
+- Typed `ProcessingOutcome` contract: `CompletedProcessing`, `PausedForReview`, `RetryScheduled`, `TerminalFailed` with exhaustive worker handling.
+- Bounded specialist package (`atlas.specialists`): typed handoffs, fail-closed citation verification, synthesizer pack-scope validation, capability isolation, ledger/audit attribution, boundary/ablation evidence, full cited-report E2E.
 - Model-provider adapters (`atlas.models`): LangChain boundary; default `fake`; draft schema includes optional claims; prompt version `draft.v2`.
 - Embeddings (`atlas.embeddings`): profile `embeddings.v1`, 1536-d, default `fake` deterministic embedder, optional LangChain OpenAI `text-embedding-3-small`.
-- Governed research tools (`atlas.tools`): search results persist as sources/documents/evidence and job links (with nullable FK to `tool_invocations`); live fetch still unavailable.
+- Governed research tools (`atlas.tools`): search results persist as sources/documents/evidence and job links; live fetch still unavailable.
 - FastMCP stdio server unchanged in role (Milestone 9).
-- Evidence package (`atlas.evidence`): contracts, URL canonicalization, normalize/chunk (Unicode code points), ingest, embedding service, retriever, citation validator, report artifact service, offline retrieval metrics.
+- Evidence package (`atlas.evidence`): contracts, URL canonicalization, normalize/chunk, ingest, embedding service, retriever, citation validator, report artifact service, offline retrieval metrics.
 
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
-- Durable Milestone 11 presence on `main` after the PR #15 revert (restoration PR/`main` CI outstanding).
-- Grading, repair routing, autonomous retry policy, Redis, Kafka, application/worker Docker images, Kubernetes, Terraform, or AWS resources.
-- HTTP MCP listeners, remote MCP consumption, or MCP authentication.
-- Heartbeat lease renewal or hard cancellation of in-flight processor threads.
+- Frozen/calibrated `evaluation.v1` production thresholds (Slice 12A ships expanded `candidate_goldens.v1` calibration-development fixtures and provisional metrics; same fixtures are not an independent validation set).
+- Live LangChain semantic groundedness grader (typed deferred scaffold only; Fake offline grader for tests; dimension skipped in default composition).
+- Redis, Kafka, application/worker Docker images, Kubernetes, Terraform, or AWS resources.
+- Heartbeat lease renewal or hard cancellation of in-flight processor threads (orchestration timeout remains terminal for this milestone; no auto-retry while the thread may still run).
 - Exactly-once provider/tool billing guarantees after crash between provider success and ledger commit.
+- Review API authentication/RBAC (local flag-gated endpoint only).
+- Frozen `evaluation.v1` (profile remains provisional `evaluation.candidate.v1`).
 - Validated real-world semantic retrieval quality (offline fake-embedding metrics validate pipeline/fixture geometry only).
 - Live arbitrary-URL fetch, HTML extraction, PDF ingest, multipart upload, and object storage.
 
@@ -84,15 +88,28 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Processing timeout is an orchestration timeout via `Future.result(timeout=...)` on a single-thread executor; late results are ignored permanently and cannot finalize. Python cannot forcibly stop an already-running processor thread.
 - Shutdown stops new claims and waits at most `shutdown_grace_seconds` (default = processing timeout) before `ThreadPoolExecutor.shutdown(wait=False)`. A hung non-daemon thread may keep the process alive until the callable returns or the process is force-killed.
 - `ResearchJobProcessor` requires `question` and keyword-only `job_id`; the worker injects `LangGraphResearchProcessor` and must not import LangGraph.
-- LangGraph owns node progression and durable checkpoints (`PostgresSaver`, tables via one-time worker-startup `setup()`). Atlas Alembic owns `workflow_executions` / `workflow_node_executions` / model and tool invocation ledgers / evidence tables / embeddings. Checkpoint, audit, ledger, evidence, and embedding writes are not one atomic transaction and may briefly disagree after a crash.
-- One `workflow_executions` row per worker processing attempt; all attempts share `thread_id = research_job_id`. Reclaim creates a new execution and marks prior `RUNNING` rows `ABANDONED` when practical. Node history stores one row per `(workflow_execution_id, node_name, attempt)`.
+- LangGraph owns node progression and durable checkpoints (`PostgresSaver`, tables via one-time worker-startup `setup()`). Atlas Alembic owns `workflow_executions` / `workflow_node_executions` / model and tool invocation ledgers / evidence tables / embeddings / recovery tables. Checkpoint, audit, ledger, evidence, and embedding writes are not one atomic transaction and may briefly disagree after a crash.
+- One `workflow_executions` row per worker processing attempt; Slice 12B uses `thread_id = execution_id` (not `job_id`) for fresh executions and resumes active executions by their own execution_id. Lease reclaim resumes the same active RUNNING execution when safe. Policy job retry clears `active_workflow_execution_id` and creates a new execution/checkpoint thread after abandoning prior RUNNING rows. Node history stores one row per `(workflow_execution_id, node_name, attempt)`.
 - Workflow/node failure handling catches `Exception` only; process-control exceptions propagate. Persisted node errors are class-only (`<ExceptionClass>: node execution failed`) with no raw exception text.
 - Graph nodes never finalize `ResearchJob` rows.
+- LangGraph topology (Slice 12B): `validate → plan → research → draft → verify_citations → evaluate → policy → {complete | repair | await_review | terminal}`. `repair → draft` (re-enter draft only). `await_review → complete`. `interrupt_after=["await_review"]` by default. Passing policy → complete is NOT interrupted.
+- Processor bind logic: REVIEW_COMPLETE resumes active execution, verifies checkpoint next==("complete",), invokes complete only. Lease reclaim (`NONE` + active RUNNING) resumes that execution. Policy `JOB_RETRY` always creates a new execution after abandoning unfinished. Fresh NONE without resumable active creates new execution after abandoning unfinished.
+- Recovery policy: `decide_for_evaluation` routes to complete/repair/await_review/terminal based on hard/soft dimension failures and attempt caps. `decide_for_exception` routes to retry (transient within cap) or terminal. Backoff: `retry_base_seconds * 2^(attempt-1)` capped at `retry_max_backoff_seconds` plus bounded jitter.
+- Exception categorization uses `isinstance` registry (transient/permanent/terminal-ownership) with string-name fallback for third-party exceptions only. `ClaimOwnershipError` and evaluation ownership/conflict exceptions are always terminal — never retried. Worker `Future.result` orchestration timeout is terminal in the worker (not via policy `isinstance` on `TimeoutError`, which is aliased to `concurrent.futures.TimeoutError` on modern Python).
+- Structure repair: `QUALITY_STRUCTURE` with `repair_count==0` triggers repair; `repair_count>=1` is terminal. `QUALITY_CITATION_INTEGRITY` and `QUALITY_TOOL_POLICY` are immediate terminal.
+- Policy decision idempotency: `decision_fingerprint CHAR(64)` with `UNIQUE(research_job_id, decision_fingerprint)` on `policy_decisions`. Inserts use `ON CONFLICT DO NOTHING RETURNING id` (no inner `session.rollback()`). Callers capture the returned authoritative id for recovery-attempt FKs. Same fingerprint with inconsistent fields fails closed via `PolicyDecisionConflictError`.
+- `ContinuationMode` is a `StrEnum` (not a plain class with string constants). `ClaimedResearchJob` carries typed `continuation_mode: ContinuationMode`.
+- Claim-fenced mutations are fail-closed: all return `bool`; processor raises `ClaimOwnershipError` on `False` (never ignores). Worker catches `ClaimOwnershipError` and calls `finalize_failure` which becomes a safe no-op when the claim is already lost.
+- `_owns_running_claim` validates status==RUNNING, exact claim_token, `lease_expires_at IS NOT NULL`, and `lease_expires_at > at`. All claim-fenced repo methods accept explicit `at: datetime`. Processor-owned execution terminalization is claim-fenced (`complete_execution_for_claim` / `fail_execution_for_claim` / `abandon_execution_for_claim`). `schedule_retry` verifies claim then optionally abandons the active execution before the job transition in one TX.
+- Evaluation attempt accounting: job-global `evaluation_attempt_count` is incremented in the same Postgres transaction as a **new** `evaluation_runs` insert only (inside `EvaluationService.begin_or_resume`). Reclaim/replay of an existing attempt does not increment. Cap of 4 is claim-fenced; exceeding raises `EvaluationAttemptCapError`. Crash before commit rolls back both the counter and the run.
+- Lease reclaim resumes the same active RUNNING workflow execution/checkpoint when safe. Policy job retry creates a **new** workflow execution and checkpoint thread after abandoning the prior attempt — do not conflate these as “reclaim.”
+- Processor bind: REVIEW_COMPLETE resumes the interrupted execution; JOB_RETRY/fresh NONE create new executions after abandoning unfinished; mid-run lease reclaim with active RUNNING execution resumes that execution.
+- Operator review API: `POST /v1/research-jobs/{job_id}/review-decisions` with Idempotency-Key. Returns 404 when `ATLAS_REVIEW_API_ENABLED=false` (default). Approve → AWAITING_REVIEW → delayed PENDING with REVIEW_COMPLETE. Reject → FAILED.
 - Report sections: `Question`, `Plan`, `Findings`, `Draft`, and `Citations` when claims exist.
 - LangChain `BaseChatModel` is the model boundary; provider SDKs and `ChatOpenAI`/`ChatAnthropic` stay in composition only.
 - Model/tool wiring uses LangGraph `WorkflowRuntimeContext` + `context_schema` + `invoke(..., context=...)` + `Runtime[...]`; not a module-level `ContextVar`.
 - Default model and tool providers are `fake`; real providers require explicit selection and credentials. Plan/draft are model-backed; research uses governed tools; findings remain `list[str]` (max 4 KiB each, `[untrusted_source]` labeled) plus durable `evidence_item_ids`.
-- Model invocation ledger is two tables (`model_invocations`, `model_invocation_attempts`) with fencing as in Milestone 8. Model ledger `node_name` CHECK currently allows only `plan` and `draft`.
+- Model invocation ledger is two tables (`model_invocations`, `model_invocation_attempts`) with fencing as in Milestone 8. Model ledger `node_name` CHECK allows `plan`, `draft`, and (Slice 12A) `evaluate` when an LLM grader is attributed.
 - Tool invocation ledger is two tables (`tool_invocations`, `tool_invocation_attempts`) with origin `WORKFLOW|MCP`, replay, stale reclaim, and conditional finalization fencing. Logical keys include `tool_policy_version`. MCP rows keep workflow FKs NULL and stamp a per-process `actor_id` UUID (never from tool args). Tool allowlist is research-node only.
 - Tool budgets (orchestration only): 6 logical calls / research node, 2 attempts / call, 8s attempt timeout, 45s research-node deadline, remaining-budget checks. Budget exhaustion raises `ToolBudgetExhaustedError` (not silent partial success).
 - Live search uses Tavily via direct streaming `httpx` with `Content-Length` pre-checks, streamed byte caps before JSON deserialize, and required JSON content-type. Live arbitrary-URL fetch is not enabled. `ATLAS_TOOL_FETCH_ENABLED=true` fails closed at composition. Under `tool_provider=tavily`, `fetch_url` is omitted from the tool registry. HTML extraction and full SSRF-safe live fetch are deferred.
@@ -103,6 +120,8 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Embedding identity is `(evidence_item_id, embedding_profile)`; existing embeddings are never overwritten silently. Profile is settings-restricted to `Literal["embeddings.v1"]` at 1536 dimensions with a partial HNSW cosine index for that profile.
 - Retrieval: exact cosine for offline CI metric gate; HNSW-eligible candidate path for production-oriented local default. Offline thresholds Recall@5 ≥ 0.80 and MRR@5 ≥ 0.70 validate fixture geometry, not real semantic quality. Opt-in live embedding tests require `ATLAS_ENABLE_LIVE_EMBEDDING_TESTS=1`.
 - Local Compose Postgres binds to `127.0.0.1:5433` only so the development database is not published on all interfaces.
+- Milestone 11 is Complete through Pull Request #16 (`c5d4749`) after an accidental PR #14 merge / PR #15 revert / restoration sequence; restoration was not due to a code defect.
+- Milestone 12 evaluates candidates before accepted report persistence; Slice 12A is pass/terminal only (no repair, job-level retry, or human review yet). Evaluation reclaim is job-claim-aware; fingerprints cover the complete durable grading snapshot; tool grading is execution-scoped with logical-call budgets; owned evaluation failures finalize `FAILED` with sanitized error classes.
 
 ## Verification (Milestone 9)
 
@@ -118,37 +137,32 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Pull Request #13, `feat: add evidence-grounded RAG with pgvector (#13)`, merged into `main` as commit `bfabd59`.
 - Pull-request CI and resulting `main` CI passed (user-verified). Milestone 10 is **Complete**.
 
-### Local (pre-merge branch verification)
-
-- `uv sync --frozen`, Ruff format/lint, mypy, full Pytest against `atlas_test` (221 passed, 4 skipped), Alembic head `20260809_0008`, offline Recall@5/MRR@5 = 1.00/1.00 (pipeline geometry), opt-in live OpenAI embedding dimensions 1536, and `git diff --check` were verified on the Milestone 10 branch before merge.
-
 ## Verification (Milestone 11)
 
-### Remote (original merge, then revert)
+### Remote
 
-- Pull Request #14, `feat: add bounded specialist agent workflow (#14)`, merged into `main` as commit `005ea58`. Pull-request CI and resulting `main` CI passed.
-- Pull Request #15, `Revert "feat: add bounded specialist agent workflow (#14)" (#15)`, merged into `main` as commit `e675f43` due to a workflow/process error, not an identified code defect. Revert CI and resulting `main` CI passed.
-- After the revert, `main` no longer contains Milestone 11.
+- Pull Request #14 originally merged Milestone 11 as `005ea58` (PR CI and resulting `main` CI passed), then Pull Request #15 reverted it as `e675f43` due to a workflow/process error (not an identified code defect).
+- Pull Request #16, `Restore milestone 11 specialists (#16)`, merged into `main` as commit `c5d4749`. Pull-request CI and resulting `main` CI passed (user-verified). Milestone 11 is **Complete**.
 
-### Restoration branch (local)
+## Verification (Milestone 12 — local Slice 12A + 12B)
 
-- Branch `restore-milestone-11-specialists` created from reverted `main` (`e675f43`); reviewed Milestone 11 commit `9d4e2f4` cherry-picked as `34565ec`.
-- Confirmed restored package `atlas.specialists`, graph topology with `verify_citations`, and specialist unit/integration/E2E suites; Milestone 11 implementation tree matches the reviewed commit.
-- Local corrections on this branch (uncommitted pending review): localhost-only Compose Postgres bind (`127.0.0.1:5433:5432`) and factual restoration documentation.
-- Quality gates: `uv sync --frozen`, Ruff format/lint, mypy, full Pytest against `atlas_test` → **258 passed, 4 skipped**; `git diff --check` clean; Alembic head `20260809_0008`.
-- Default suite makes no live provider calls (live model/tool/embedding tests remain opt-in skipped). `.env` is gitignored and not tracked.
+### Local
 
-### Outstanding before Milestone 11 Complete
-
-- Restoration pull-request CI and resulting `main` CI
+- Branch `milestone-12-evaluation-grading` based at `c5d4749`.
+- Slice 12A: evaluate-before-complete; fenced evaluation; claim-aware reclaim; complete grading fingerprints; execution-scoped tool grader; provisional `evaluation.candidate.v1`.
+- Slice 12B: typed `ProcessingOutcome`; per-execution checkpoint identity; durable continuation modes + `claimed_continuation_mode`; bounded repair/retry/review; claim-fenced persist; fingerprint-bound human override; review API 404 when disabled; LangGraph `await_review` interrupt spike proven on installed LangGraph 1.2.10; migration `20260809_0010`.
+- Slice 12B correction pass: `ClaimOwnershipError` + fail-closed mutations; `_owns_running_claim` validates lease_expires_at > at; all claim-fenced methods accept explicit `at`; `ContinuationMode` is `StrEnum`; typed isinstance exception registry (fallback string matching for third-party only); structure failures repair once then terminal; `increment_evaluation_attempt_count` wired into evaluation create path; policy decision idempotent fingerprint via `ON CONFLICT DO NOTHING RETURNING id` (no inner rollback); claim-fenced workflow execution complete/fail/abandon; worker catches `ClaimOwnershipError` as safe no-op finalization.
+- Quality gates: `uv sync --frozen`; Ruff format/lint clean; mypy clean (192 files); isolated non-integration Pytest → **361 passed, 5 skipped**; full Pytest against `atlas_test` → **468 passed, 5 skipped**; Alembic `0010`↔`0009` round-trip covered; `git diff --check` clean. Nothing committed or pushed.
+- Default suite makes no live provider calls. Live semantic evaluation remains deferred.
+- Milestone 12 remains **Current**. Do not freeze `evaluation.v1` yet.
 
 ## Next steps
 
-1. Stop for restoration review (docs + localhost Compose bind).
-2. Open the Milestone 11 restoration PR after approval.
-3. Do not mark Milestone 11 Complete until restoration PR/`main` CI pass.
-4. Do not begin Milestone 12 while Milestone 11 is Current.
+1. Review Slice 12A and 12B together.
+2. Open one Milestone 12 PR after both slices pass review; do not create a documentation-only PR.
+3. Do not mark Milestone 12 Complete until PR/`main` CI pass.
+4. Do not freeze `evaluation.v1` until human-reviewed calibration is approved.
 
 ## Active blockers
 
-None for restoration review.
+None for Slice 12A/12B review.

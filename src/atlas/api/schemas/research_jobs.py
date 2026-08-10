@@ -7,7 +7,20 @@ from typing import Annotated, Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from atlas.api.schemas.evaluation import (
+    EvaluationDetailResponse,
+    EvaluationSummaryResponse,
+)
 from atlas.domain import ResearchJob, ResearchJobStatus
+
+__all__ = [
+    "CreateResearchJobRequest",
+    "ErrorBody",
+    "ErrorResponse",
+    "EvaluationDetailResponse",
+    "EvaluationSummaryResponse",
+    "ResearchJobResponse",
+]
 
 MIN_RESEARCH_QUESTION_LENGTH = 1
 MAX_RESEARCH_QUESTION_LENGTH = 8000
@@ -66,10 +79,14 @@ class ResearchJobResponse(BaseModel):
     finished_at: datetime | None
     result: str | None
     failure_reason: str | None
+    evaluation_summary: EvaluationSummaryResponse | None = None
 
     @classmethod
     def from_domain(cls, job: ResearchJob) -> Self:
-        """Build an API response from a domain research job."""
+        """Build an API response from a domain research job.
+
+        Does not load evaluation data; callers may attach ``evaluation_summary``.
+        """
         return cls(
             id=job.id,
             question=job.question,
@@ -80,6 +97,7 @@ class ResearchJobResponse(BaseModel):
             finished_at=job.finished_at,
             result=job.result,
             failure_reason=job.failure_reason,
+            evaluation_summary=None,
         )
 
 

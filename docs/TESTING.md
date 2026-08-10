@@ -86,8 +86,35 @@ When the first vertical slice is chosen, define its acceptance criteria, fixture
 
 ## Specialist agents testing (Milestone 11)
 
-- Unit tests cover planner three-task enforcement (including rejection of non-three/empty tasks), research findings without padding, order-preserving tool+retrieval evidence ID deduplication, retriever/ingest composition fail-closed rules, synthesizer pack-scope rejection (including empty-pack + claims), empty-claim success without a pack, capability-isolation composition/spy proofs (planner/research/synthesizer/verifier/complete), and linear graph topology (no specialist back-edges).
+- Unit tests cover planner three-task enforcement (including rejection of non-three/empty tasks), research findings without padding, order-preserving tool+retrieval evidence ID deduplication, retriever/ingest composition fail-closed rules, synthesizer pack-scope rejection (including empty-pack + claims), empty-claim success without a pack, capability-isolation composition/spy proofs (planner/research/synthesizer/verifier/complete), and linear graph topology (no specialist back-edges to plan/research).
 - Deterministic boundary/ablation suite (architecture evidence, not semantic grading): planner boundary; research order/dedupe/no fabrication; synthesizer pack-scope; verifier unlinked catch; defense-in-depth `persist_final` when verifier is bypassed; empty pack → no claims/citations; valid linked evidence through synth→verify→persist→citations API.
-- Integration tests cover interrupt-after-`draft` resume through `verify_citations`→`complete`, completed-workflow short-circuit without unexpected rerun, durable citation verifier fail-closed on unlinked evidence, graph verify/draft failure blocking `complete`/report persistence, processor specialist wiring isolation, and full API→worker→citations E2E with provenance, six-stage audit, model ledger `plan`/`draft` attribution, tool ledger `research`-only attribution, `verify_citations` without model/tool ledger rows, and resume idempotency of report/claims/citations/links.
-- Bounded execution confirmations: linear `NODE_NAMES`, tool budgets (6 logical calls/research node), retrieval `k` ≤ 8, findings/claims/pack caps, completed workflows do not rerun.
-- Default suite remains offline (no live provider calls). Milestone 11 remains Current until the restoration PR and resulting `main` CI pass (PR #14 originally merged and passed; PR #15 reverted for process reasons).
+- Integration tests cover interrupt-after-`draft` resume through verify/evaluate/policy/complete, completed-workflow short-circuit, durable citation verifier fail-closed on unlinked evidence, graph verify/draft failure blocking complete/report persistence, processor specialist wiring isolation, and full API→worker→citations E2E with provenance, audit stages, model ledger `plan`/`draft` attribution, tool ledger `research`-only attribution, and resume idempotency.
+- Milestone 11 is Complete through Pull Request #16 (`c5d4749`; PR CI and resulting `main` CI green).
+
+## Candidate evaluation testing (Milestone 12 Slice 12A)
+
+- Unit tests cover deterministic graders (including tool-budget / unknown-origin / zero-tool), aggregation hard/soft gates, complete grading-snapshot fingerprints (evidence/tool mutation deltas), Fake semantic grader, deferred live scaffold fail-closed behavior, provenance fail-closed ports, and expanded `candidate_goldens.v1` (explicitly **not** human-reviewed, **not** frozen `evaluation.v1`) with class counts and provisional confusion metrics against the **same** fixtures (regression / calibration-development — not an independent validation set).
+- Integration tests cover parent job-claim fingerprint attribution (Worker A/B reclaim sequence; no anonymous create/reclaim; raw tokens absent from evaluation rows), job-aware stale reclaim, FAILED/reclaim fingerprint conflicts, job/execution mismatch validation, owned failure finalization, execution-scoped tool loading, Alembic head `20260809_0009` with upgrade/downgrade `0009`↔`0008`, evaluation API 200/404 without public `input_fingerprint` or `job_claim_fingerprint`, evaluate-node audit stages, pass→one accepted artifact, fail→no accepted artifact, completed replay without duplicate evaluation/artifact.
+- Live LangChain semantic evaluation is deferred; skipped placeholders are not live-verification evidence.
+- Default suite remains offline. Slice 12A is locally approved. Milestone 12 remains Current.
+
+## Recovery, repair, and retry policy testing (Milestone 12 Slice 12B)
+
+- Unit tests cover policy decision engine (backoff formula attempt=1 equals base, doubling, max cap, bounded jitter), `decide_for_evaluation` routing (pass→complete, hard→terminal, soft→repair/await_review with cap awareness, eval-attempt-cap→terminal), `decide_for_exception` routing (transient→retry/terminal cap, permanent→terminal, unknown→terminal), and exception categorization.
+- Worker outcome matrix tests cover `PausedForReview` (no finalization), `RetryScheduled` (no finalization), `TerminalFailed` (finalizes FAILED), unrecognized outcome (finalizes FAILED), and orchestration timeout remains terminal.
+- LangGraph spike proves `interrupt_after=["await_review"]` → `next==("complete",)`, resume-only-complete, idempotent completed re-invoke, new graph instance resume, pass path uninterrupted, no report before continuation.
+- Claim-fence report race: stale claim cannot persist after ownership loss.
+- Review API tests cover 404 when `ATLAS_REVIEW_API_ENABLED=false` (default).
+- Alembic covers `0010`↔`0009` upgrade/downgrade; integration truncate lists include recovery tables.
+
+### Slice 12B correction pass tests
+
+- `tests/recovery/test_claim_ownership.py`: `ClaimOwnershipError` message/inheritance, `ContinuationMode` StrEnum identity/membership, and `_owns_running_claim` lease validation (expired/valid/null lease, wrong token, non-RUNNING status, None model).
+- `tests/recovery/test_exception_registry.py`: `isinstance`-based exception categorization matrix covering concrete Atlas model/tool/embedding/evaluation errors (including structured-output, refusal, SSRF/content rejection, ownership/in-progress, not-found/stale, embedding conflict); ownership/conflict always terminal; third-party name fallback only.
+- `tests/recovery/test_policy.py` (additions): structure repair first-time triggers repair, structure terminal after repair, citation integrity always terminal, tool policy always terminal.
+- `tests/recovery/test_fingerprint.py`: deterministic fingerprint, different decision/job produces different fingerprint, null execution_id handled, replay same fingerprint on increment.
+- `tests/integration/test_stale_claim_mutations.py`: stale worker A cannot bind, increment repair/eval counters, enter review, schedule retry, or finalize after B owns the claim; matching token with expired lease fails all protected mutations.
+- `tests/integration/test_evaluation_attempt_accounting.py`: new evaluation increments; repair-style second attempt increments; reclaim/replay does not double-increment; crash before create commit rolls back counter; attempt four allowed; attempt five blocked with `EvaluationAttemptCapError`.
+- `tests/integration/test_policy_decision_replay.py`: transaction-safe policy insert/replay, outer-TX survival, retry recovery-attempt FK to authoritative id, no duplicate recovery on replay, forced exception after replay rolls back caller mutations while preserving committed policy, inconsistent fields fail closed.
+- `tests/integration/test_claim_fenced_execution_transitions.py`: after B reclaims, A cannot complete/fail/abandon; B can finalize; A exception path leaves B’s execution/job intact; operator reject fails without worker claim; retry abandon only when scheduling claim is valid.
+- Default suite results recorded in `PROJECT_STATE.md` after the correction-pass verification gate. Milestone 12 remains Current.

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,6 +21,7 @@ from atlas.evidence.service import (
 from atlas.main import app
 from atlas.models.fakes import DeterministicResearchDrafter
 from atlas.persistence.db import reset_engine_cache, session_scope
+from atlas.persistence.models import ResearchJobModel
 from atlas.persistence.models.evidence import (
     CitationModel,
     ClaimModel,
@@ -33,6 +34,31 @@ from atlas.specialists.citation_verifier import DurableCitationVerifier
 from atlas.specialists.contracts import CitationVerifierInput, SynthesizerInput
 from atlas.specialists.errors import SpecialistCitationError
 from atlas.specialists.synthesizer import BoundedReportSynthesizer
+
+CLAIM = "a" * 64
+
+
+def _claim_job(
+    session_factory: sessionmaker[Session],
+    job_id: str,
+    claim_token: str = CLAIM,
+) -> None:
+    at = datetime.now(UTC)
+    with session_scope(session_factory) as session:
+        model = session.get(ResearchJobModel, job_id)
+        assert model is not None
+        if model.status == "PENDING":
+            from atlas.persistence.mappers.research_job import (
+                apply_domain_to_orm,
+                to_domain,
+            )
+
+            job = to_domain(model)
+            job.start(at=at)
+            apply_domain_to_orm(job, model)
+        model.claim_token = claim_token
+        model.lease_expires_at = at + timedelta(hours=1)
+        session.flush()
 
 
 def test_ablation_verifier_catches_unlinked_citation(
@@ -120,6 +146,7 @@ def test_ablation_persist_rejects_when_verifier_bypassed(
         evidence_item_ids=[evidence_id],
         workflow_execution_id=execution_a,
     )
+    _claim_job(session_factory, job_b)
     with pytest.raises(CitationIntegrityError):
         reports.persist_final(
             research_job_id=job_b,
@@ -131,6 +158,7 @@ def test_ablation_persist_rejects_when_verifier_bypassed(
                     evidence_item_ids=[evidence_id],
                 )
             ],
+            claim_token=CLAIM,
         )
 
 
@@ -180,11 +208,13 @@ def test_ablation_empty_pack_yields_no_claims_or_citations(
     assert verified.claims == []
 
     reports = ReportArtifactService(session_factory=session_factory)
+    _claim_job(session_factory, job_id)
     reports.persist_final(
         research_job_id=job_id,
         workflow_execution_id=execution_id,
         body_text="Report with no citations",
         claims=[],
+        claim_token=CLAIM,
     )
     with session_factory() as session:
         claim_count = session.execute(
@@ -257,11 +287,13 @@ def test_ablation_valid_linked_evidence_persists_and_citations_api(
         CitationVerifierInput(research_job_id=job_id, claims=list(synth.claims))
     )
     reports = ReportArtifactService(session_factory=session_factory)
+    _claim_job(session_factory, job_id)
     reports.persist_final(
         research_job_id=job_id,
         workflow_execution_id=execution_id,
         body_text="Cited report",
         claims=list(verified.claims),
+        claim_token=CLAIM,
     )
 
     reset_engine_cache()
