@@ -21,6 +21,9 @@ from atlas.application.job_processing import (
     TerminalFailed,
 )
 from atlas.application.ports import ClaimedResearchJob, ResearchJobRepository
+from atlas.coordination.contracts import HeartbeatRecorder
+from atlas.coordination.heartbeat_thread import HeartbeatThread
+from atlas.coordination.noop import NoopHeartbeatRecorder
 from atlas.persistence.db import session_scope
 
 if TYPE_CHECKING:
@@ -40,6 +43,10 @@ class ResearchJobWorker:
       abandoned processor future, then returns without blocking forever.
     - Claim-token fencing still prevents abandoned/stale work from finalizing.
     - At most one processor thread is used (``max_workers=1``).
+    - A dedicated daemon heartbeat thread (Slice 13A) refreshes a liveness
+      key independently of the poll/process loop and is stopped in
+      ``close()``. It never affects claim/lease ownership or job outcomes;
+      by default it is a no-op (``coordination_provider=noop``).
 
     Non-guarantee:
     - Python cannot kill a blocked processor thread.
@@ -62,6 +69,9 @@ class ResearchJobWorker:
         lease_seconds: float = 90.0,
         shutdown_grace_seconds: float | None = None,
         shutdown_event: Event | None = None,
+        heartbeat_recorder: HeartbeatRecorder | None = None,
+        heartbeat_interval_seconds: float = 5.0,
+        worker_id: str | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = repository
@@ -84,10 +94,23 @@ class ResearchJobWorker:
         self._closed = False
         self._processor_wait_abandoned = False
 
+        self._worker_id = worker_id or secrets.token_hex(8)
+        self._heartbeat_thread = HeartbeatThread(
+            recorder=heartbeat_recorder or NoopHeartbeatRecorder(),
+            worker_id=self._worker_id,
+            interval_seconds=heartbeat_interval_seconds,
+        )
+        self._heartbeat_thread.start()
+
     @property
     def processor_wait_abandoned(self) -> bool:
         """True when close() stopped waiting on a still-running processor."""
         return self._processor_wait_abandoned
+
+    @property
+    def worker_id(self) -> str:
+        """Identity stamped on this worker's heartbeat keys."""
+        return self._worker_id
 
     def request_shutdown(self) -> None:
         """Signal the worker loop to stop claiming new work."""
@@ -104,6 +127,7 @@ class ResearchJobWorker:
             return
         self._closed = True
         self._shutdown_event.set()
+        self._heartbeat_thread.stop()
         self._join_processor_bounded(self._shutdown_grace_seconds)
         # wait=False: do not block forever on a hung callable.
         self._executor.shutdown(wait=False, cancel_futures=True)

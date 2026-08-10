@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.application.research_jobs import ResearchJobService
 from atlas.application.review import ReviewService
 from atlas.config.settings import Settings, get_settings
+from atlas.coordination.composition import build_rate_limiter
+from atlas.coordination.contracts import RateLimiter
+from atlas.coordination.errors import RateLimitExceededError
 from atlas.embeddings.composition import build_text_embedder
 from atlas.evaluation.service import EvaluationService
 from atlas.evidence.retrieve import EvidenceEmbeddingService
@@ -100,3 +103,25 @@ def provide_review_service(
         session_factory=session_factory,
         database_url=settings.database_url,
     )
+
+
+def provide_rate_limiter(
+    settings: Annotated[Settings, Depends(provide_settings)],
+) -> RateLimiter:
+    """Wire the configured rate limiter (no-op unless Redis is enabled)."""
+    return build_rate_limiter(settings)
+
+
+def enforce_create_job_rate_limit(
+    request: Request,
+    rate_limiter: Annotated[RateLimiter, Depends(provide_rate_limiter)],
+) -> None:
+    """Rate-limit ``POST /v1/research-jobs`` by direct peer IP.
+
+    Idempotent replays count toward the limit: this check runs before
+    idempotency-key resolution.
+    """
+    identity = request.client.host if request.client is not None else "unknown"
+    decision = rate_limiter.check(identity=identity)
+    if not decision.allowed:
+        raise RateLimitExceededError(decision.retry_after_seconds)

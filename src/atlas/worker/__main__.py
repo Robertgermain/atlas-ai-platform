@@ -8,6 +8,7 @@ import sys
 
 from atlas.application.worker import ResearchJobWorker
 from atlas.config import get_settings
+from atlas.coordination.composition import build_heartbeat_recorder
 from atlas.persistence.db import get_session_factory
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
 from atlas.workflow import (
@@ -33,6 +34,7 @@ def main() -> int:
         checkpointer=checkpoint_runtime.checkpointer,
         session_factory=session_factory,
     )
+    heartbeat_recorder = build_heartbeat_recorder(settings)
     worker = ResearchJobWorker(
         session_factory=session_factory,
         repository=SqlAlchemyResearchJobRepository(),
@@ -40,6 +42,8 @@ def main() -> int:
         poll_interval_seconds=settings.worker_poll_interval_seconds,
         processing_timeout_seconds=settings.worker_processing_timeout_seconds,
         lease_seconds=settings.worker_lease_seconds,
+        heartbeat_recorder=heartbeat_recorder,
+        heartbeat_interval_seconds=settings.heartbeat_interval_seconds,
     )
 
     def _handle_signal(signum: int, _frame: object) -> None:
@@ -50,10 +54,14 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _handle_signal)
 
     logger.info(
-        "Starting research-job worker (poll=%ss timeout=%ss lease=%ss)",
+        "Starting research-job worker %s (poll=%ss timeout=%ss lease=%ss "
+        "coordination_provider=%s heartbeat_interval=%ss)",
+        worker.worker_id,
         settings.worker_poll_interval_seconds,
         settings.worker_processing_timeout_seconds,
         settings.worker_lease_seconds,
+        settings.coordination_provider,
+        settings.heartbeat_interval_seconds,
     )
     try:
         worker.run_forever()

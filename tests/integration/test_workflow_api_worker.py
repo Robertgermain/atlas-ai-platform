@@ -152,7 +152,10 @@ def test_interrupt_then_worker_resume_creates_second_execution(
     job_id = "workflow-reclaim-1"
     question = "Resume after reclaim"
     claim_token_a = "a" * 64
-    lease_a = datetime(2026, 8, 10, 13, 0, 0, tzinfo=UTC)
+    # Must remain strictly later than wall-clock ``datetime.now(UTC)`` used by
+    # claim-fenced processor mutations; a fixed near-term lease becomes a
+    # time bomb once that calendar instant passes.
+    lease_a = datetime(2099, 1, 1, 0, 0, 0, tzinfo=UTC)
     with session_scope(session_factory) as session:
         repo.add(
             session,

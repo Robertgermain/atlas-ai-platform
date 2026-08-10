@@ -1,8 +1,8 @@
 """Application configuration loaded from the environment."""
 
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -57,6 +57,37 @@ class Settings(BaseSettings):
     embedding_call_timeout_seconds: float = Field(default=25.0, gt=0)
     retrieval_default_k: int = Field(default=5, ge=1, le=8)
     retrieval_use_hnsw: bool = Field(default=True)
+
+    # Ephemeral coordination (Milestone 13 Slice 13A). Redis is never
+    # authoritative: it backs rate limiting and worker heartbeats only.
+    # Default `noop` keeps CI/local dev offline unless explicitly enabled.
+    coordination_provider: Literal["noop", "redis"] = Field(default="noop")
+    redis_url: str = Field(default="redis://127.0.0.1:6380/0")
+    # Bounded connect/socket timeouts so a slow/unavailable Redis fails open
+    # quickly instead of adding meaningful latency to requests or the worker.
+    redis_connect_timeout_seconds: float = Field(default=0.2, gt=0)
+    redis_socket_timeout_seconds: float = Field(default=0.2, gt=0)
+
+    # POST /v1/research-jobs rate limit, keyed by direct peer IP. Idempotent
+    # replays count toward the limit (the limiter runs before idempotency
+    # resolution).
+    rate_limit_max_requests: int = Field(default=10, ge=1)
+    rate_limit_window_seconds: int = Field(default=60, ge=1)
+
+    # Worker heartbeat (dedicated thread; independent of the poll/process loop).
+    # TTL must be at least twice the interval so a single missed refresh cannot
+    # expire the key before the next scheduled beat.
+    heartbeat_interval_seconds: float = Field(default=5.0, gt=0)
+    heartbeat_ttl_seconds: int = Field(default=15, ge=1)
+
+    @model_validator(mode="after")
+    def _validate_heartbeat_timing(self) -> Self:
+        if self.heartbeat_ttl_seconds < (2 * self.heartbeat_interval_seconds):
+            raise ValueError(
+                "heartbeat_ttl_seconds must be at least twice "
+                "heartbeat_interval_seconds"
+            )
+        return self
 
 
 def get_settings() -> Settings:

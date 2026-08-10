@@ -16,17 +16,17 @@ The repository already has a working local backend and workflow foundation: Pyth
 
 ## Current milestone
 
-Milestone 11 is Complete through Pull Request #16 (`c5d4749`). Milestone 12 is **Current**: evaluation, repair (re-draft), job-level retry with exponential backoff, `AWAITING_REVIEW` with operator approve/reject API, policy engine, and claim-fenced report persistence merged into `main` through Pull Request #17 (`e3412c3`). The project owner completed human calibration review of the evaluation goldens on 2026-08-10; the resulting calibration closeout is implemented locally and pending its own PR CI and resulting `main` CI. Do not mark Milestone 12 Complete yet. The comprehensive Visio and AWS design remains deferred.
+Milestone 12 is **Complete** through Pull Request #17 (`e3412c3`) and calibration-closeout Pull Request #18 (`9d5abde`). Milestone 13 is **Current**: Slice 13A adds Redis-backed rate limiting for `POST /v1/research-jobs` and a dedicated worker heartbeat thread (`noop` remains the settings default; Compose/CI explicitly select Redis 8.8.1). Outbox, Kafka, consumers, and DLQ are deferred to Slices 13B/13C. `evaluation.candidate.v1` remains provisional. The comprehensive Visio and AWS design remains deferred.
 
 ### Run locally
 
-Development-only Compose credentials are `atlas` / `atlas`. Postgres is published on `127.0.0.1:5433` only (see `.env.example` and `docker-compose.yml`). Do not use these values outside local development.
+Development-only Compose credentials are `atlas` / `atlas`. Postgres is published on `127.0.0.1:5433` only; Redis 8.8.1 on `127.0.0.1:6380` only (see `.env.example` and `docker-compose.yml`). Do not use these values outside local development.
 
 ```bash
 # 1. Install locked dependencies
 uv sync --frozen
 
-# 2. Start PostgreSQL (creates databases atlas and atlas_test)
+# 2. Start PostgreSQL + Redis (creates databases atlas and atlas_test)
 docker compose up -d
 
 # 3. Apply migrations to the local application database
@@ -34,6 +34,7 @@ export ATLAS_DATABASE_URL=postgresql+psycopg://atlas:atlas@127.0.0.1:5433/atlas
 uv run alembic upgrade head
 
 # 4. Start the API (terminal 1)
+# Copy .env.example → .env for ATLAS_COORDINATION_PROVIDER=redis (Compose Redis).
 uv run uvicorn atlas.main:app --reload
 
 # 5. Start the worker (terminal 2)
