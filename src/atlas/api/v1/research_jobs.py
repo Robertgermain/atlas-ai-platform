@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Header, status
 from fastapi.exceptions import RequestValidationError
 
 from atlas.api.deps import (
+    enforce_create_job_rate_limit,
     provide_evaluation_service,
     provide_report_artifact_service,
     provide_research_job_service,
@@ -87,9 +88,11 @@ def _prefer_succeeded_or_latest(
     "",
     response_model=ResearchJobResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(enforce_create_job_rate_limit)],
     responses={
         409: {"model": ErrorResponse},
         422: {"model": ErrorResponse},
+        429: {"model": ErrorResponse},
         503: {"model": ErrorResponse},
     },
 )

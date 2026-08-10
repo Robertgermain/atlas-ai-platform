@@ -2,8 +2,8 @@
 
 - Last updated: 2026-08-10
 - Phase: Local implementation foundation
-- Milestone: Evaluation, grading, repair, and retry policy (Milestone 12) — **Current** (implementation merged to `main` via Pull Request #17; human calibration review approved 2026-08-10; calibration-closeout implemented locally on `milestone-12-calibration-closeout` and pending its own PR CI / resulting `main` CI)
-- Implementation status: Milestone 11 is **Complete** through Pull Request #16 (`c5d4749`; PR CI and resulting `main` CI green). Milestone 12 Slice 12A + Slice 12B (evaluation, repair, job-level retry, human review, operator review API) merged to `main` through Pull Request #17 (`e3412c3`; PR CI and resulting `main` CI passed). The project owner completed the human calibration review on 2026-08-10 and approved the paraphrase-completeness judgment (see Decisions). The calibration closeout implementing that judgment (grader/human label separation, three new requirement-driven fixtures, documentation) is implemented locally and verified; it remains **pending its own PR CI and resulting `main` CI** before Milestone 12 is marked Complete. Do not freeze `evaluation.v1` yet. Do not mark Milestone 12 Complete yet. Do not mark Milestone 13 Current yet.
+- Milestone: Redis and Kafka (Milestone 13) — **Current** (Milestone 12 is **Complete**: Pull Request #17 and calibration-closeout Pull Request #18 both merged to `main` as `9d5abde`. Milestone 13 Slice 13A — Redis-backed rate limiting and worker heartbeats — is implemented locally on branch `milestone-13-redis-kafka` and verified; it remains pending its own PR CI and resulting `main` CI)
+- Implementation status: Milestone 11 is **Complete** through Pull Request #16 (`c5d4749`). Milestone 12 is **Complete**: Slice 12A + Slice 12B merged through Pull Request #17 (`e3412c3`), and the human-calibration closeout merged through Pull Request #18 (`test: add human calibration baseline`, `9d5abde`); both PR CI and resulting `main` CI passed. `evaluation.candidate.v1` remains provisional (frozen `evaluation.v1` stays deferred). Milestone 13 Slice 13A (ephemeral Redis-backed rate limiting for `POST /v1/research-jobs` and a dedicated worker heartbeat thread; `noop` remains the default coordination provider) is implemented locally on `milestone-13-redis-kafka` (based at `9d5abde`) and verified; it remains **pending its own PR CI and resulting `main` CI**. Outbox, Kafka, consumers, and DLQ are deferred to Slices 13B/13C and are not implemented.
 
 ## Objective
 
@@ -23,9 +23,9 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Python 3.12 project managed with `uv` (`pyproject.toml`, committed `uv.lock`, `.python-version`).
 - `src/atlas` package with FastAPI `GET /health` (liveness) and `GET /ready` (Postgres readiness).
 - Pytest, Ruff (format + lint), and mypy configuration; domain, API, worker, workflow, model, tool, MCP, evidence, embedding, specialist, and PostgreSQL/pgvector integration tests.
-- GitHub Actions CI with Postgres 16 + pgvector (`pgvector/pgvector:pg16`) targeting `atlas_test`; `main` is green through Pull Request #17 (Milestone 12 evaluation/recovery implementation merged as `e3412c3`).
+- GitHub Actions CI with Postgres 16 + pgvector (`pgvector/pgvector:pg16`) targeting `atlas_test`, plus pinned Redis 8.8.1 for Slice 13A; `main` is green through Pull Request #18 (`9d5abde`).
 - `atlas.domain` package with slotted `ResearchJob`, `reconstitute(...)`, and lifecycle transitions.
-- Docker Compose PostgreSQL 16 + pgvector published on `127.0.0.1:5433` only, with databases `atlas` and `atlas_test`. Development credentials are local-only.
+- Docker Compose PostgreSQL 16 + pgvector published on `127.0.0.1:5433` only, with databases `atlas` and `atlas_test`, plus Redis 8.8.1 on `127.0.0.1:6380` only. Development credentials are local-only.
 - SQLAlchemy 2.x + psycopg3 + Alembic persistence through head `20260809_0010` (recovery/review continuation fields + policy/recovery/review tables; prior `20260809_0009` evaluation foundation).
 - Research-job HTTP APIs plus evidence APIs: `POST /v1/evidence/documents`, `GET /v1/evidence/items/{id}`, `GET /v1/research-jobs/{id}/citations`, `GET /v1/research-jobs/{id}/evaluation` (no public `input_fingerprint`). Local-only operator review: `POST /v1/research-jobs/{id}/review-decisions` (404 when `ATLAS_REVIEW_API_ENABLED=false`, the default).
 - Background worker (`python -m atlas.worker`) with PostgreSQL claiming, fencing, and LangGraph orchestration (Milestones 6–9).
@@ -38,14 +38,15 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Governed research tools (`atlas.tools`): search results persist as sources/documents/evidence and job links; live fetch still unavailable.
 - FastMCP stdio server unchanged in role (Milestone 9).
 - Evidence package (`atlas.evidence`): contracts, URL canonicalization, normalize/chunk, ingest, embedding service, retriever, citation validator, report artifact service, offline retrieval metrics.
+- Ephemeral coordination package (`atlas.coordination`, Milestone 13 Slice 13A): typed `RateLimiter`/`HeartbeatRecorder` ports, `noop` implementations (default), Redis-backed fixed-window rate limiter and TTL-bound heartbeat recorder, a dedicated worker heartbeat thread, and `build_rate_limiter`/`build_heartbeat_recorder` composition. `POST /v1/research-jobs` is rate-limited by direct peer IP (10 requests / 60s, idempotent replays count) with a structured `429` + `Retry-After`. Redis is never authoritative; PostgreSQL remains the source of truth. Docker Compose publishes Redis 8.8.1 on `127.0.0.1:6380` only; CI runs a pinned Redis 8.8.1 service for dedicated real-Redis integration tests.
 
 ## What does not exist
 
 - A comprehensive Visio system-design diagram or approved AWS deployment architecture.
 - Frozen/calibrated `evaluation.v1` production thresholds. `candidate_goldens.v1` is human-reviewed (project owner, 2026-08-10) as a small regression + calibration baseline, but it is explicitly **not** a held-out validation set, **not** independent statistical validation, and **not** proof of production semantic quality (see fixture `_meta` and `docs/TESTING.md`).
 - Live LangChain semantic groundedness grader (typed deferred scaffold only; Fake offline grader for tests; dimension skipped in default composition).
-- Redis, Kafka, application/worker Docker images, Kubernetes, Terraform, or AWS resources.
-- Heartbeat lease renewal or hard cancellation of in-flight processor threads (orchestration timeout remains terminal for this milestone; no auto-retry while the thread may still run).
+- Kafka, a transactional outbox, event consumers, DLQ handling, Redis caching, application/worker Docker images, Kubernetes, Terraform, or AWS resources. These are deferred to Milestone 13 Slices 13B/13C or later milestones.
+- Heartbeat lease renewal (PostgreSQL claim/lease fencing is unaffected by the new Slice 13A liveness heartbeat) or hard cancellation of in-flight processor threads (orchestration timeout remains terminal for this milestone; no auto-retry while the thread may still run).
 - Exactly-once provider/tool billing guarantees after crash between provider success and ledger commit.
 - Review API authentication/RBAC (local flag-gated endpoint only).
 - Frozen `evaluation.v1` (profile remains provisional `evaluation.candidate.v1`).
@@ -84,9 +85,9 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Raw idempotency key values are not echoed in API responses, structured error details, or logs.
 - Worker claims use `secrets.token_hex(32)` on every claim/reclaim; fenced finalize requires matching job id, `RUNNING`, and claim token; zero-row updates mean ownership loss.
 - Processing is at-least-once: the claim token fences stale DB finalization but cannot undo duplicate in-process work or future external side effects.
-- Worker defaults (Milestone 8): poll 1s, processing timeout 60s (orchestration-only `Future.result`; does not kill threads), lease 90s; provider request timeout / attempt deadline 25s (not a hard whole-invoke wall clock); no heartbeat renewal.
+- Worker defaults (Milestone 8): poll 1s, processing timeout 60s (orchestration-only `Future.result`; does not kill threads), lease 90s; provider request timeout / attempt deadline 25s (not a hard whole-invoke wall clock). Slice 13A adds a separate Redis liveness heartbeat thread (not PostgreSQL lease renewal).
 - Processing timeout is an orchestration timeout via `Future.result(timeout=...)` on a single-thread executor; late results are ignored permanently and cannot finalize. Python cannot forcibly stop an already-running processor thread.
-- Shutdown stops new claims and waits at most `shutdown_grace_seconds` (default = processing timeout) before `ThreadPoolExecutor.shutdown(wait=False)`. A hung non-daemon thread may keep the process alive until the callable returns or the process is force-killed.
+- Shutdown stops new claims, stops the heartbeat thread (bounded join), and waits at most `shutdown_grace_seconds` (default = processing timeout) before `ThreadPoolExecutor.shutdown(wait=False)`. A hung non-daemon processor thread may keep the process alive until the callable returns or the process is force-killed; the heartbeat thread is daemon and cannot.
 - `ResearchJobProcessor` requires `question` and keyword-only `job_id`; the worker injects `LangGraphResearchProcessor` and must not import LangGraph.
 - LangGraph owns node progression and durable checkpoints (`PostgresSaver`, tables via one-time worker-startup `setup()`). Atlas Alembic owns `workflow_executions` / `workflow_node_executions` / model and tool invocation ledgers / evidence tables / embeddings / recovery tables. Checkpoint, audit, ledger, evidence, and embedding writes are not one atomic transaction and may briefly disagree after a crash.
 - One `workflow_executions` row per worker processing attempt; Slice 12B uses `thread_id = execution_id` (not `job_id`) for fresh executions and resumes active executions by their own execution_id. Lease reclaim resumes the same active RUNNING execution when safe. Policy job retry clears `active_workflow_execution_id` and creates a new execution/checkpoint thread after abandoning prior RUNNING rows. Node history stores one row per `(workflow_execution_id, node_name, attempt)`.
@@ -129,6 +130,7 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - The `golden_facets_hit` coverage-override fixture is explicitly labeled fixture-only scaffolding: `atlas.workflow.graph` never populates `golden_facets_hit`/`golden_completeness_ratio` in production, so that branch and its human-calibration case do not validate live production coverage quality. Focused unit tests for the `golden_completeness_ratio` override branch and the `STRUCTURE_EMPTY_PLAN`/`STRUCTURE_MISSING_SECTION` codes were added to `tests/evaluation/test_graders.py`.
 - Calibration-closeout final counts: 25 total fixture cases — 23 graded, 2 fingerprint-only. Human-calibration confusion matrix (actual grader output vs. `human_expected`): TP=8, FP=0, FN=1, TN=14; human-positive=9, human-negative=14; precision=1.0, recall=8/9, F1=16/17. The single FN is the approved paraphrase case; the test fails if any other disagreement appears.
 - `evaluation.candidate.v1` remains provisional. Frozen `evaluation.v1` remains deferred and unfrozen pending an independent held-out human-labeled set and/or a live semantic grader.
+- Milestone 13 Slice 13A: `coordination_provider` defaults to `noop`; Compose `.env.example` and CI explicitly set `redis`. Rate limit is 10 POST `/v1/research-jobs` per direct peer IP per 60s (idempotent replays count; no `X-Forwarded-For`). Heartbeat interval 5s / TTL 15s via a dedicated daemon thread. Redis controls fail open with 0.2s connect/socket timeouts. Redis image pinned to `redis:8.8.1`; client `redis>=8.0.1,<9`. Caching deferred. Outbox/Kafka deferred to 13B/13C.
 
 ## Verification (Milestone 9)
 
@@ -163,24 +165,29 @@ A user submits a complex research request. Atlas creates a durable job, plans bo
 - Slice 12B: typed `ProcessingOutcome`; per-execution checkpoint identity; durable continuation modes + `claimed_continuation_mode`; bounded repair/retry/review; claim-fenced persist; fingerprint-bound human override; review API 404 when disabled; LangGraph `await_review` interrupt spike proven on installed LangGraph 1.2.10; migration `20260809_0010`.
 - Slice 12B correction pass: `ClaimOwnershipError` + fail-closed mutations; `_owns_running_claim` validates lease_expires_at > at; all claim-fenced methods accept explicit `at`; `ContinuationMode` is `StrEnum`; typed isinstance exception registry (fallback string matching for third-party only); structure failures repair once then terminal; `increment_evaluation_attempt_count` wired into evaluation create path; policy decision idempotent fingerprint via `ON CONFLICT DO NOTHING RETURNING id` (no inner rollback); claim-fenced workflow execution complete/fail/abandon; worker catches `ClaimOwnershipError` as safe no-op finalization.
 
-### Local — human calibration closeout (2026-08-10, branch `milestone-12-calibration-closeout`, based at `e3412c3`)
+### Remote — human calibration closeout
 
-- Project-owner human calibration review completed and approved 2026-08-10, including the paraphrase-completeness judgment (see Decisions).
-- `candidate_goldens.v1.json` and `tests/evaluation/test_golden_candidates.py` updated: `grader_expected`/`human_expected` separation for every graded case; three new requirement-driven fixtures (`fail_incomplete_provenance`, `fail_empty_plan`, `fail_missing_required_section`); `provenance_ok` and `preview_report_override` case-level fixture fields; fixture metadata records `human_reviewed: true`, `human_reviewer: "project_owner"`, `reviewed_at: "2026-08-10"`, `frozen_profile: false`, and explicit not-held-out / not-independent-statistical-validation / not-production-semantic-quality-proof statements.
-- Test harness split into `test_candidate_goldens_grader_regression` (deterministic grader vs. `grader_expected`) and `test_candidate_goldens_human_calibration` (actual grader output vs. `human_expected`, with TP/FP/FN/TN/precision/recall/F1 and an explicit assertion that the paraphrase case is the sole approved false negative).
-- Added unit coverage in `tests/evaluation/test_graders.py` for `STRUCTURE_EMPTY_PLAN`, `STRUCTURE_MISSING_SECTION`, and the `golden_completeness_ratio` override branch (both below- and at-threshold).
-- Final fixture counts: 25 total cases — 23 graded, 2 fingerprint-only. Human-calibration confusion matrix: TP=8, FP=0, FN=1, TN=14; human-positive=9, human-negative=14; precision=1.0, recall=8/9, F1=16/17.
-- No production grader thresholds, policy behavior, database schema, or Alembic migrations changed. No live semantic grader, Redis, Kafka, or Milestone 13+ work added.
-- Quality gates (2026-08-10): `uv sync --frozen`; Ruff format/lint clean; mypy clean; isolated non-integration Pytest and full Pytest against `atlas_test` both green (see exact counts recorded after the verification run below); Alembic head unchanged at `20260809_0010` with `0010`↔`0009` round-trip still covered; `git diff --check` clean. Nothing committed or pushed.
-- Milestone 12 remains **Current**: implementation is merged to `main` (Pull Request #17), but this calibration-closeout change is local-only and pending its own PR CI and resulting `main` CI. Do not freeze `evaluation.v1` yet. Do not mark Milestone 12 Complete until this closeout's PR/`main` CI pass.
+- Pull Request #18, `test: add human calibration baseline (#18)`, merged into `main` as commit `9d5abde`. PR CI and resulting `main` CI passed (user-verified). Milestone 12 is **Complete**.
+
+## Verification (Milestone 13 Slice 13A)
+
+### Local (branch `milestone-13-redis-kafka`, based at `9d5abde`)
+
+- Package `atlas.coordination`: Protocols, noop providers, Redis fixed-window rate limiter (Lua INCR+PEXPIRE), Redis heartbeat recorder, dedicated heartbeat thread, composition helpers.
+- API: `POST /v1/research-jobs` dependency enforces rate limit; 429 + `Retry-After` via shared `ErrorResponse`.
+- Worker: starts/stops heartbeat thread independently of poll/process loop.
+- Compose + CI: pinned `redis:8.8.1`; CI sets `ATLAS_COORDINATION_PROVIDER=redis`.
+- Unit + real-Redis integration tests; Alembic head unchanged at `20260809_0010`; no outbox/Kafka.
+- Slice 13A correction pass: Retry-After treats `ttl_ms == 0` as 1s and Redis sentinels/`<0` as the full window; Settings requires `heartbeat_ttl_seconds >= 2 * heartbeat_interval_seconds` (defaults 5s/15s); Redis outage warnings are once-per-episode via `OncePerOutageLogger` (rate limiter, heartbeat recorder, heartbeat thread unexpected exceptions); stale “Milestone 12 remains Current” present-status claims removed.
+- Quality gates (2026-08-10 correction pass, with `ATLAS_COORDINATION_PROVIDER=redis`): `uv sync --frozen`; Ruff format/lint clean; mypy clean (212 source files); isolated Pytest `403 passed, 5 skipped`; full Pytest `519 passed, 5 skipped`; `git diff --check` clean; Alembic head `20260809_0010`. Nothing committed or pushed.
+- Slice 13A remains pending its own PR CI and resulting `main` CI.
 
 ## Next steps
 
-1. Open a pull request for the `milestone-12-calibration-closeout` branch.
-2. Do not mark Milestone 12 Complete until this closeout's PR CI and resulting `main` CI pass.
-3. After Milestone 12 Complete, mark Milestone 13 Current — not before.
-4. Do not freeze `evaluation.v1`; freezing requires an independent held-out human-labeled set and/or a live semantic grader, both deferred beyond this closeout.
+1. Open a pull request for Slice 13A on `milestone-13-redis-kafka`.
+2. Do not begin Slice 13B (outbox/event contracts) until Slice 13A PR CI and resulting `main` CI pass.
+3. Do not freeze `evaluation.v1`; freezing remains deferred.
 
 ## Active blockers
 
-None. The calibration-closeout implementation is locally complete and verified; it is pending PR CI and resulting `main` CI before Milestone 12 can be marked Complete.
+None. Slice 13A is implemented locally and verified; it is pending PR CI and resulting `main` CI.

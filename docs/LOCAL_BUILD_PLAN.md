@@ -219,7 +219,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 ## Milestone 12 — Evaluation, grading, repair, and retry policy
 
-**Status:** Current
+**Status:** Complete
 
 **Goal:** Measure AI quality and make controlled recovery decisions.
 
@@ -229,13 +229,13 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Completion gate:** Regressions are measurable; grader results are compared with human judgment; transient failures retry safely; permanent failures do not; all loops terminate. Candidate reports are evaluated before accepted report persistence; failed candidates are never exposed as accepted finals. Do not mark Complete until pull-request CI and resulting `main` CI pass.
 
-**Local implementation status:** Slice 12A + Slice 12B (repair, job-level retry, `AWAITING_REVIEW`, operator review API, policy engine, claim-fenced persist, continuation-mode processor, and the Slice 12B correction pass) merged into `main` through Pull Request #17 (`e3412c3`; PR CI and resulting `main` CI passed). The project owner completed human calibration review of `candidate_goldens.v1` on 2026-08-10 and approved a paraphrase-completeness judgment: a well-supported report that fulfills the plan via semantically equivalent paraphrase is acceptable even though the provisional lexical `completeness` heuristic scores it as a failure (recorded as one approved known false negative). The resulting calibration closeout — separating grader-regression expectations (`grader_expected`) from separate human quality labels (`human_expected`), adding three requirement-driven fixtures (incomplete provenance, empty plan, missing required section), and reporting an honest grader-vs-human confusion matrix (TP=8, FP=0, FN=1, TN=14; F1=16/17, not 1.0) — is implemented locally on `milestone-12-calibration-closeout` and verified, but remains **pending its own PR CI and resulting `main` CI**. Do not freeze `evaluation.v1` yet; do not mark Milestone 12 Complete until the calibration-closeout PR/`main` CI pass.
+**Completed through:** Pull Request #17 (`e3412c3`; evaluation/recovery implementation) and Pull Request #18 (`9d5abde`; human calibration closeout). Both PR CI and resulting `main` CI passed. `evaluation.candidate.v1` remains provisional; frozen `evaluation.v1`, held-out validation, and live semantic grading remain deferred.
 
 ---
 
 ## Milestone 13 — Redis and Kafka
 
-**Status:** Pending
+**Status:** Current
 
 **Goal:** Add ephemeral coordination and durable event distribution only after their workloads exist.
 
@@ -247,8 +247,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Completion gate:** Redis loss does not lose jobs; rate limits work concurrently; database updates and outbox events stay consistent; duplicate Kafka delivery is safe; replay and poison-message handling are tested.
 
----
-
+**Local implementation status:** Slice 13A (Redis-backed fixed-window rate limiting for `POST /v1/research-jobs` by direct peer IP; dedicated worker heartbeat thread with TTL keys; `noop` default coordination provider; pinned Redis 8.8.1 in Compose/CI) is implemented locally on `milestone-13-redis-kafka` and verified. Redis caching, transactional outbox, Kafka, consumers, and DLQ are deferred to Slices 13B/13C. Do not mark Milestone 13 Complete until Slice 13C and its PR/`main` CI pass.
 ## Milestone 14 — Observability and security
 
 **Status:** Pending

@@ -27,9 +27,27 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      redis:
+        # Pinned exact version (no floating tags), matching docker-compose.yml.
+        image: redis:8.8.1
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     env:
       ATLAS_DATABASE_URL: postgresql+psycopg://atlas:atlas@127.0.0.1:5432/atlas_test
+      # Explicitly select Redis for CI (Settings still default to noop when
+      # unset). PostgreSQL/API integration tests override the rate-limiter
+      # dependency to NoopRateLimiter so the shared TestClient peer identity
+      # does not exhaust the fixed-window budget across unrelated POSTs;
+      # dedicated Redis integration tests construct Redis-backed ports
+      # directly. See docs/TESTING.md.
+      ATLAS_COORDINATION_PROVIDER: redis
+      ATLAS_REDIS_URL: redis://127.0.0.1:6379/0
 
     steps:
       - name: Check out repository

@@ -9,11 +9,17 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from atlas.api.deps import provide_evaluation_service, provide_research_job_service
+from atlas.api.deps import (
+    provide_evaluation_service,
+    provide_rate_limiter,
+    provide_research_job_service,
+)
 from atlas.application.exceptions import (
     IdempotencyConflictError,
     ResearchJobLookupError,
 )
+from atlas.coordination.contracts import RateLimitDecision
+from atlas.coordination.noop import NoopRateLimiter
 from atlas.domain import ResearchJob
 from atlas.evaluation.contracts import EVALUATION_PROFILE, EvaluationRunResult
 from atlas.main import app
@@ -99,6 +105,11 @@ def api_fakes() -> Iterator[tuple[_FakeService, _FakeEvaluationService]]:
     evaluation = _FakeEvaluationService()
     app.dependency_overrides[provide_research_job_service] = lambda: service
     app.dependency_overrides[provide_evaluation_service] = lambda: evaluation
+    # These contract tests exercise route/error-mapping behavior with many
+    # rapid POSTs from one shared TestClient identity; they are not about
+    # rate-limit enforcement (see test_rate_limit_exceeded_returns_429),
+    # so pin a deterministic no-op limiter regardless of ambient settings.
+    app.dependency_overrides[provide_rate_limiter] = lambda: NoopRateLimiter()
     yield service, evaluation
     app.dependency_overrides.clear()
 
@@ -433,6 +444,50 @@ def test_unexpected_programming_error_is_not_hidden(
             json={"question": "What is Atlas?"},
             headers={"Idempotency-Key": "boom"},
         )
+
+
+def test_rate_limit_exceeded_returns_429(fake_service: _FakeService) -> None:
+    """429 contract: structured error body + Retry-After header."""
+
+    class _DenyingLimiter:
+        def check(self, *, identity: str) -> RateLimitDecision:
+            del identity
+            return RateLimitDecision(allowed=False, retry_after_seconds=42)
+
+    app.dependency_overrides[provide_rate_limiter] = lambda: _DenyingLimiter()
+    try:
+        response = client.post(
+            "/v1/research-jobs",
+            json={"question": "What is Atlas?"},
+            headers={"Idempotency-Key": "rate-limited-key"},
+        )
+    finally:
+        app.dependency_overrides[provide_rate_limiter] = lambda: NoopRateLimiter()
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "42"
+    body = response.json()
+    assert body["error"]["code"] == "rate_limit_exceeded"
+    assert body["error"]["details"]["retry_after_seconds"] == 42
+
+
+def test_rate_limit_allowed_does_not_block_request(fake_service: _FakeService) -> None:
+    class _AllowingLimiter:
+        def check(self, *, identity: str) -> RateLimitDecision:
+            del identity
+            return RateLimitDecision(allowed=True, retry_after_seconds=0)
+
+    app.dependency_overrides[provide_rate_limiter] = lambda: _AllowingLimiter()
+    try:
+        response = client.post(
+            "/v1/research-jobs",
+            json={"question": "What is Atlas?"},
+            headers={"Idempotency-Key": "rate-allowed-key"},
+        )
+    finally:
+        app.dependency_overrides[provide_rate_limiter] = lambda: NoopRateLimiter()
+
+    assert response.status_code == 202
 
 
 def test_openapi_includes_research_job_paths(fake_service: _FakeService) -> None:

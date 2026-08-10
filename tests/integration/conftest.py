@@ -49,6 +49,32 @@ def session_factory(engine: Engine) -> sessionmaker[Session]:
 
 
 @pytest.fixture(autouse=True)
+def disable_create_job_rate_limit_for_postgres_integration() -> Iterator[None]:
+    """Keep Postgres/API integration POSTs free of the fixed-window budget.
+
+    CI sets ``ATLAS_COORDINATION_PROVIDER=redis``. Starlette TestClient uses one
+    shared peer identity (``testclient``) across many files, so a live
+    Redis-backed limiter would exhaust the 10/60s budget and flake unrelated
+    workflow/API tests. Rate-limit correctness is covered by
+    ``tests/integration/test_redis_rate_limit.py`` and the API unit 429
+    contract tests with injected limiters.
+    """
+    from atlas.api.deps import provide_rate_limiter
+    from atlas.coordination.noop import NoopRateLimiter
+    from atlas.main import app
+
+    previous = app.dependency_overrides.get(provide_rate_limiter)
+    app.dependency_overrides[provide_rate_limiter] = lambda: NoopRateLimiter()
+    try:
+        yield
+    finally:
+        if previous is not None:
+            app.dependency_overrides[provide_rate_limiter] = previous
+        else:
+            app.dependency_overrides.pop(provide_rate_limiter, None)
+
+
+@pytest.fixture(autouse=True)
 def cleanup_integration_tables(
     test_database_url: str,
     engine: Engine,

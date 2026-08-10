@@ -17,5 +17,24 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    # Pinned exact version (no floating tags). Ephemeral coordination only
+    # (rate limiting, worker heartbeats): never authoritative storage, so no
+    # volume is mounted and data loss on restart is expected/acceptable.
+    # Local API/worker processes must explicitly opt in:
+    #   ATLAS_COORDINATION_PROVIDER=redis
+    #   ATLAS_REDIS_URL=redis://127.0.0.1:6380/0
+    # (Settings still default to noop when those env vars are unset.)
+    image: redis:8.8.1
+    ports:
+      # Localhost-only, offset from the default 6379 so this container never
+      # conflicts with a developer's own local Redis instance.
+      - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   atlas_pg_data:

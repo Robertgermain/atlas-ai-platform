@@ -15,6 +15,7 @@ from atlas.application.exceptions import (
     IdempotencyConflictError,
     ResearchJobLookupError,
 )
+from atlas.coordination.errors import RateLimitExceededError
 from atlas.embeddings.errors import (
     EmbeddingAuthConfigError,
     EmbeddingConflictError,
@@ -106,6 +107,20 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "Idempotency key was already used with a different request payload."
             ),
         )
+
+    @app.exception_handler(RateLimitExceededError)
+    async def rate_limit_exceeded_handler(
+        _request: Request,
+        exc: RateLimitExceededError,
+    ) -> JSONResponse:
+        response = error_response(
+            status_code=429,
+            code="rate_limit_exceeded",
+            message="Too many requests. Please retry later.",
+            details={"retry_after_seconds": exc.retry_after_seconds},
+        )
+        response.headers["Retry-After"] = str(exc.retry_after_seconds)
+        return response
 
     @app.exception_handler(OperationalError)
     async def operational_error_handler(
