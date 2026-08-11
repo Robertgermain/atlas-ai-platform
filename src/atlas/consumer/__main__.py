@@ -41,10 +41,44 @@ Runtime behavior:
   after that record's PostgreSQL transaction (inbox record + business
   effect) has committed. A duplicate delivery is detected by the inbox and
   its effect is skipped, but the duplicate's offset is still committed.
-- Any error -- a decode/validation failure, an inconsistent lifecycle
-  transition, a PostgreSQL error, or a Kafka error -- terminates the
-  process nonzero. Slice 13C2A has no retry/backoff/DLQ policy; that is
-  Slice 13C2B's scope.
+- Permanent, record-specific poison (malformed envelope, invalid headers,
+  or a lifecycle-order violation -- see ``atlas.consumer.errors.
+  PoisonEventError``) is durably dead-lettered to PostgreSQL and its offset
+  is still committed (Slice 13C2B) -- it never blocks the partition.
+- A transient PostgreSQL failure (see ``atlas.consumer.db_classify``)
+  receives bounded, process-local retry with exponential backoff, bounded
+  by a runtime processing deadline safely under
+  ``consumer_max_poll_interval_seconds``; exhaustion terminates the process
+  nonzero with the offset uncommitted.
+- Every other error (a fatal/unrecognized database error, an unexpected
+  Kafka error, an internal inbox conflict, or any unexpected exception)
+  terminates the process nonzero immediately, with no retry and no offset
+  commit.
+
+Bounded per-record retry versus process-lifetime poll recovery (Slice
+13C2B correction pass) -- these are two deliberately different recovery
+horizons, not one:
+
+- Per-record processing retry (inside ``ConsumerRunner._apply_with_retry``/
+  ``_dead_letter_and_commit``) and the offset-commit retry (``_commit_
+  with_retry``) are bounded: a fixed number of attempts, exponential
+  backoff, and a runtime processing deadline safely under
+  ``consumer_max_poll_interval_seconds``. Exhaustion terminates the
+  process.
+- A ``TransientKafkaError`` raised by ``poll()`` itself -- i.e. *before* any
+  record is in hand -- is different: it is process-lifetime broker-
+  reconnect recovery, handled by ``_run_poll_loop`` below, and may continue
+  indefinitely across separate polling cycles for as long as the process
+  runs, until either the broker recovers or shutdown is requested. This is
+  intentional -- a prolonged broker outage should not by itself terminate
+  the consumer -- and is bounded only by wall-clock shutdown, never by an
+  attempt count.
+- No Kafka polling ever occurs while an in-hand record is backing off
+  between attempts: ``poll()`` is called exactly once at the top of
+  ``ConsumerRunner.run_once()``, before any retry loop begins.
+- Fatal or unrecognized Kafka errors (anything ``KafkaEventConsumer``
+  classifies as non-recoverable) still terminate the process immediately,
+  with no retry at either horizon.
 - Shutdown always attempts to close the consumer (triggering a clean
   consumer-group leave) and independently attempts to restore each
   previously-installed signal handler; a failure in any one of these steps
@@ -63,20 +97,32 @@ from __future__ import annotations
 import logging
 import signal
 import sys
+import threading
 from collections.abc import Callable
 from types import FrameType
 
 from atlas.config import get_settings
-from atlas.consumer.errors import ConsumerError
+from atlas.config.settings import Settings
+from atlas.consumer.db import build_consumer_engine
+from atlas.consumer.errors import (
+    ConsumerError,
+    ConsumerShutdownRequestedError,
+    TransientKafkaError,
+)
 from atlas.consumer.identity import RESEARCH_JOB_PROJECTION_CONSUMER_GROUP_V1
 from atlas.consumer.kafka_consumer import KafkaEventConsumer
 from atlas.consumer.runner import ConsumerRunner
+from atlas.consumer.timing import RetryTimingParameters
+from atlas.consumer.wait import Waiter, build_shutdown_aware_waiter
 from atlas.outbox.errors import KafkaTopicVerificationError
 from atlas.outbox.topic_admin import (
     verify_broker_connectivity,
     verify_topic_partitioning,
 )
-from atlas.persistence.db import get_engine, get_session_factory
+from atlas.persistence.db import get_session_factory
+from atlas.persistence.repositories.consumer_dead_letter import (
+    SqlAlchemyDeadLetterRepository,
+)
 from atlas.persistence.repositories.consumer_inbox import SqlAlchemyInboxRepository
 from atlas.persistence.repositories.research_job_projection import (
     SqlAlchemyResearchJobProjectionRepository,
@@ -91,19 +137,101 @@ SignalHandler = Callable[[int, FrameType | None], object] | int | None
 _SIGNALS: tuple[int, ...] = (signal.SIGINT, signal.SIGTERM)
 
 
+def _timing_params_from_settings(settings: Settings) -> RetryTimingParameters:
+    return RetryTimingParameters(
+        max_attempts=settings.consumer_retry_max_attempts,
+        base_seconds=settings.consumer_retry_base_seconds,
+        max_backoff_seconds=settings.consumer_retry_max_backoff_seconds,
+        jitter_max_seconds=settings.consumer_retry_jitter_max_seconds,
+        safety_margin_seconds=settings.consumer_retry_safety_margin_seconds,
+        db_connect_timeout_seconds=settings.consumer_db_connect_timeout_seconds,
+        db_pool_timeout_seconds=settings.consumer_db_pool_timeout_seconds,
+        db_statement_timeout_seconds=settings.consumer_db_statement_timeout_seconds,
+        processing_overhead_seconds=settings.consumer_retry_processing_overhead_seconds,
+        max_db_round_trips_per_attempt=settings.consumer_max_db_round_trips_per_attempt,
+    )
+
+
+class _OutageWarningTracker:
+    """Thread-safe once-per-outage transient-poll warning (Slice 13C2B correction).
+
+    A prolonged broker outage makes ``_run_poll_loop`` retry ``poll()``
+    indefinitely (see its docstring's process-lifetime recovery horizon),
+    potentially for a very long time. Logging a fresh warning on every one
+    of those iterations would spam logs at roughly the polling interval for
+    as long as the outage lasts. This tracks whether the *current* outage
+    episode has already produced its one warning, and ``reset()`` (called
+    after any successful poll/no-message result) clears that so a *later*,
+    separate outage still produces its own new warning. Logs remain
+    sanitized regardless: this only gates *whether* to log, never what.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._already_warned = False
+
+    def should_warn(self) -> bool:
+        """``True`` at most once per outage episode; call once per transient failure."""
+        with self._lock:
+            if self._already_warned:
+                return False
+            self._already_warned = True
+            return True
+
+    def reset(self) -> None:
+        """Clear the outage episode after any successful poll/no-message result."""
+        with self._lock:
+            self._already_warned = False
+
+
 def _run_poll_loop(
     runner: ConsumerRunner,
+    *,
     shutdown_requested: Callable[[], bool],
+    wait: Waiter,
+    kafka_retry_backoff_seconds: float,
 ) -> int:
     """Poll until shutdown or an error. Returns the exit code.
 
     ``ProcessOutcome.NO_MESSAGE`` loops immediately: ``poll()`` itself
     already blocked for up to ``consumer_poll_timeout_seconds``, so no
     extra sleep is needed to bound the loop's pace.
+
+    A ``TransientKafkaError`` raised directly from ``poll()`` (before any
+    record is in hand -- see ``KafkaEventConsumer.poll()``'s classification)
+    is evidence-backed recoverable: rather than terminating the whole
+    process, this backs off (shutdown-aware, never polling Kafka during the
+    wait) and polls again -- this is process-lifetime broker-reconnect
+    recovery and may continue until shutdown, a distinct and unbounded
+    horizon from the bounded per-record retry inside ``runner.run_once()``
+    (see module docstring). Only the first such failure in a given outage
+    episode is logged (``_OutageWarningTracker``); every other error is
+    fatal. A ``ConsumerShutdownRequestedError`` (shutdown observed
+    mid-backoff inside ``runner.run_once()``) is a clean stop, not a
+    failure.
     """
+    outage_warning = _OutageWarningTracker()
     while not shutdown_requested():
         try:
             runner.run_once()
+        except ConsumerShutdownRequestedError:
+            logger.info(
+                "Shutdown requested during a retry backoff; stopping cleanly "
+                "with the offset uncommitted."
+            )
+            return 0
+        except TransientKafkaError as exc:
+            if outage_warning.should_warn():
+                logger.warning(
+                    "Transient Kafka error before a record was in hand; "
+                    "backing off and retrying until the broker recovers or "
+                    "shutdown is requested. Further transient failures in "
+                    "this same outage are not individually logged. "
+                    "error_class=%s",
+                    exc.__class__.__name__,
+                )
+            if wait(kafka_retry_backoff_seconds):
+                return 0
         except ConsumerError as exc:
             logger.error(
                 "Unexpected consumer error; terminating. error_class=%s",
@@ -117,6 +245,8 @@ def _run_poll_loop(
                 exc.__class__.__name__,
             )
             return 1
+        else:
+            outage_warning.reset()
     return 0
 
 
@@ -198,7 +328,12 @@ def main() -> int:
 
     try:
         settings = get_settings()
-        engine = get_engine(settings.database_url)
+        engine = build_consumer_engine(
+            settings.database_url,
+            connect_timeout_seconds=settings.consumer_db_connect_timeout_seconds,
+            pool_timeout_seconds=settings.consumer_db_pool_timeout_seconds,
+            statement_timeout_seconds=settings.consumer_db_statement_timeout_seconds,
+        )
         session_factory = get_session_factory(engine)
     except Exception as exc:
         # No consumer exists yet -- nothing to clean up. A settings load
@@ -274,16 +409,26 @@ def main() -> int:
             )
             return 1
 
+        wait = build_shutdown_aware_waiter(lambda: shutdown_requested)
         runner = ConsumerRunner(
             consumer=consumer,
             session_factory=session_factory,
             inbox=SqlAlchemyInboxRepository(),
             projection=SqlAlchemyResearchJobProjectionRepository(),
+            dead_letters=SqlAlchemyDeadLetterRepository(),
             consumer_id=RESEARCH_JOB_PROJECTION_CONSUMER_GROUP_V1,
             poll_timeout_seconds=settings.consumer_poll_timeout_seconds,
+            max_poll_interval_seconds=settings.consumer_max_poll_interval_seconds,
+            timing_params=_timing_params_from_settings(settings),
+            wait=wait,
         )
         logger.info("Starting research-job projection consumer.")
-        exit_code = _run_poll_loop(runner, lambda: shutdown_requested)
+        exit_code = _run_poll_loop(
+            runner,
+            shutdown_requested=lambda: shutdown_requested,
+            wait=wait,
+            kafka_retry_backoff_seconds=settings.consumer_poll_timeout_seconds,
+        )
     finally:
         cleanup_ok = _cleanup(
             consumer=consumer,

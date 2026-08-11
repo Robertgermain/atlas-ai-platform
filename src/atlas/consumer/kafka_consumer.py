@@ -14,21 +14,46 @@ is looked up internally from
 Exceptions raised here never include broker addresses, environment values,
 configuration values, or raw librdkafka message/error text -- only fixed,
 sanitized class-name-style strings, matching ``KafkaEventProducer``.
+
+Kafka failure classification (Slice 13C2B correction pass): this is the only
+layer with access to the raw ``confluent_kafka.KafkaError`` metadata a
+classification decision requires, so it is the only place that decides
+transient-vs-fatal for a Kafka failure -- never the runner, and never by
+inspecting an exception's string message or class name. It reuses (never
+duplicates) the single centralized policy in
+``atlas.outbox.kafka_errors.classify_kafka_error``, applied uniformly to an
+exception raised by ``poll()``, a broker-error message returned by
+``poll()`` (this adapter never returns one to its caller -- it always
+raises instead), and a synchronous ``commit_message()`` failure (both a
+raised exception and an unconfirmed-but-non-raising result). A
+``KafkaErrorClass.RECOVERABLE`` classification raises
+``atlas.consumer.errors.TransientKafkaError``; every other case (fatal,
+unrecognized, or a malformed/unexpected result shape with no structured
+error object to classify at all) raises the existing fatal ``ConsumerError``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Protocol
+from typing import NoReturn, Protocol
 
 from confluent_kafka import Consumer, KafkaException, Message, TopicPartition
 
-from atlas.consumer.errors import ConsumerConfigurationError, ConsumerError
+from atlas.consumer.errors import (
+    ConsumerConfigurationError,
+    ConsumerError,
+    TransientKafkaError,
+)
 from atlas.consumer.identity import (
     ALLOWED_CONSUMER_GROUP_IDS,
     CLIENT_ID_BY_CONSUMER_GROUP_ID,
 )
 from atlas.eventing.topic import RESEARCH_JOB_EVENTS_TOPIC_V1
+from atlas.outbox.kafka_errors import (
+    KafkaErrorClass,
+    classify_kafka_error,
+    kafka_error_from_exception,
+)
 
 
 class _RdKafkaConsumerLike(Protocol):
@@ -74,6 +99,30 @@ def _commit_result_confirms_success(result: object) -> bool:
         if getattr(partition, "error", True) is not None:
             return False
     return True
+
+
+def _classify_unconfirmed_commit_result(result: object) -> KafkaErrorClass:
+    """Classify a non-raising but unconfirmed ``commit()`` result.
+
+    Only a well-shaped result (a nonempty list of ``TopicPartition``-like
+    objects, each carrying its own structured ``KafkaError`` in ``.error``)
+    has any metadata to classify at all. Any other shape (``None``, empty,
+    non-list, or an element missing/mistyping ``.error``) has no structured
+    signal and fails closed as fatal. When every offending partition's error
+    is itself recoverable, the whole result is recoverable; any fatal
+    partition error, or a mix including one, makes the whole result fatal.
+    """
+    if not isinstance(result, list) or len(result) == 0:
+        return KafkaErrorClass.FATAL
+    saw_any_error = False
+    for partition in result:
+        error = getattr(partition, "error", True)
+        if error is None:
+            continue
+        saw_any_error = True
+        if classify_kafka_error(error) is KafkaErrorClass.FATAL:
+            return KafkaErrorClass.FATAL
+    return KafkaErrorClass.RECOVERABLE if saw_any_error else KafkaErrorClass.FATAL
 
 
 class KafkaEventConsumer:
@@ -145,13 +194,26 @@ class KafkaEventConsumer:
             raise ConsumerConfigurationError("SubscribeFailed") from None
 
     def poll(self, timeout_seconds: float) -> Message | None:
-        """Return the next record within ``timeout_seconds``, or ``None``."""
+        """Return the next record within ``timeout_seconds``, or ``None``.
+
+        Never returns an error-carrying ``Message`` to the caller: a
+        broker-error result is classified and raised the same way as a
+        raised ``poll()`` exception (see module docstring).
+        """
         if self._closed:
             raise ConsumerError("PollAfterClose")
         try:
-            return self._consumer.poll(timeout_seconds)
-        except KafkaException:
-            raise ConsumerError("PollFailed") from None
+            message = self._consumer.poll(timeout_seconds)
+        except KafkaException as exc:
+            self._raise_classified(
+                kafka_error_from_exception(exc), context="PollFailed"
+            )
+        if message is None:
+            return None
+        error = message.error()
+        if error is not None:
+            self._raise_classified(error, context="PollReturnedBrokerError")
+        return message
 
     def commit_message(self, message: Message) -> None:
         """Synchronously commit the offset for exactly one processed record.
@@ -159,16 +221,32 @@ class KafkaEventConsumer:
         Fails closed unless the synchronous ``commit()`` call both avoids
         raising and returns a result that itself confirms success (see
         :func:`_commit_result_confirms_success`) -- a raised
-        ``KafkaException`` is not the only failure signal this checks.
+        ``KafkaException`` is not the only failure signal this checks. Both
+        failure shapes are classified transient-vs-fatal (see module
+        docstring) rather than always treated as fatal.
         """
         if self._closed:
             raise ConsumerError("CommitAfterClose")
         try:
             result = self._consumer.commit(message=message, asynchronous=False)
-        except KafkaException:
-            raise ConsumerError("CommitFailed") from None
+        except KafkaException as exc:
+            self._raise_classified(
+                kafka_error_from_exception(exc), context="CommitFailed"
+            )
         if not _commit_result_confirms_success(result):
+            classification = _classify_unconfirmed_commit_result(result)
+            if classification is KafkaErrorClass.RECOVERABLE:
+                raise TransientKafkaError("CommitFailed")
             raise ConsumerError("CommitFailed")
+
+    def _raise_classified(self, error: object, *, context: str) -> NoReturn:
+        """Raise ``TransientKafkaError`` if recoverable, else fatal ``ConsumerError``.
+
+        See module docstring for the classification policy.
+        """
+        if classify_kafka_error(error) is KafkaErrorClass.RECOVERABLE:
+            raise TransientKafkaError(context)
+        raise ConsumerError(context)
 
     def close(self) -> None:
         """Best-effort shutdown (triggers a clean consumer-group leave). Idempotent."""

@@ -6,9 +6,11 @@ from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from atlas.consumer.retention import DeadLetterRetention
 from atlas.eventing.contracts import DomainEvent
 
 
@@ -52,3 +54,31 @@ class ProjectionPort(Protocol):
 
     def apply(self, session: Session, event: DomainEvent, *, at: datetime) -> None:
         """Apply one event's effect. Raises on an inconsistent lifecycle transition."""
+
+
+class DeadLetterRepository(Protocol):
+    """Durable, permanent-poison-only dead-letter storage (Slice 13C2B).
+
+    ``upsert`` is the sole write path used by ``ConsumerRunner``: the
+    ``(consumer_id, kafka_partition, kafka_offset)`` uniqueness boundary
+    means a redelivery of an already-dead-lettered record increments only
+    ``dead_letter_delivery_count`` -- ``processing_attempt_count`` and every
+    retained field keep their original first-insert values.
+    """
+
+    def upsert(
+        self,
+        session: Session,
+        *,
+        consumer_id: str,
+        kafka_partition: int,
+        kafka_offset: int,
+        failure_code: str,
+        processing_attempt_count: int,
+        at: datetime,
+        retention: DeadLetterRetention,
+    ) -> UUID:
+        """Insert a new dead-letter row, or bump delivery count on conflict.
+
+        Returns the row's id (existing or newly created).
+        """

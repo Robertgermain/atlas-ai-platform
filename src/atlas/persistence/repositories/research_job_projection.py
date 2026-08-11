@@ -39,7 +39,7 @@ class SqlAlchemyResearchJobProjectionRepository:
         existing = session.get(ResearchJobEventProjectionModel, research_job_id)
 
         if existing is not None and existing.last_event_type in TERMINAL_EVENT_TYPES:
-            raise LifecycleOrderViolationError("TerminalProjectionAlreadyRecorded")
+            raise LifecycleOrderViolationError()
 
         if existing is None:
             session.add(

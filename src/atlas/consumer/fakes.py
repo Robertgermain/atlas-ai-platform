@@ -12,10 +12,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from uuid import UUID, uuid4
 
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from atlas.consumer.ports import ApplyEffect, InboxOutcome
+from atlas.consumer.retention import DeadLetterRetention
 from atlas.eventing.contracts import DomainEvent
 from atlas.eventing.serialization import serialize_domain_event
 
@@ -73,14 +76,23 @@ def build_kafka_message_for_event(
 
 
 class FakeKafkaConsumer:
-    """Returns queued messages from ``poll()`` and records commits."""
+    """Returns queued messages from ``poll()`` and records commits.
+
+    ``raise_on_commit`` always raises on every ``commit_message()`` call
+    (for "commit never succeeds" tests). ``raise_on_commit_before_success``
+    instead consumes one exception per call from a queue, then falls back to
+    recording a successful commit -- for "commit fails N times then
+    succeeds" retry tests. The two are mutually exclusive.
+    """
 
     def __init__(self, messages: list[FakeKafkaMessage] | None = None) -> None:
         self._messages = list(messages or [])
         self.poll_calls = 0
         self.committed: list[FakeKafkaMessage] = []
+        self.commit_calls = 0
         self.raise_on_poll: Exception | None = None
         self.raise_on_commit: Exception | None = None
+        self.raise_on_commit_before_success: list[Exception] = []
 
     def poll(self, timeout_seconds: float) -> FakeKafkaMessage | None:
         del timeout_seconds
@@ -92,17 +104,29 @@ class FakeKafkaConsumer:
         return self._messages.pop(0)
 
     def commit_message(self, message: FakeKafkaMessage) -> None:
+        self.commit_calls += 1
         if self.raise_on_commit is not None:
             raise self.raise_on_commit
+        if self.raise_on_commit_before_success:
+            raise self.raise_on_commit_before_success.pop(0)
         self.committed.append(message)
 
 
 class InMemoryInboxRepository:
-    """Real (not scripted) in-memory dedup boundary for runner unit tests."""
+    """Real (not scripted) in-memory dedup boundary for runner unit tests.
 
-    def __init__(self) -> None:
+    ``raise_before_success`` lets retry tests inject a queue of exceptions
+    (e.g. a synthetic transient ``DBAPIError``) consumed one per call before
+    falling back to genuine dedup/apply behavior -- this fake never invents
+    its own retry logic, it only controls what the caller (``ConsumerRunner``)
+    observes.
+    """
+
+    def __init__(self, *, raise_before_success: list[Exception] | None = None) -> None:
         self._seen: set[tuple[str, object]] = set()
         self.applied_effects: list[DomainEvent] = []
+        self._raise_queue: list[Exception] = list(raise_before_success or [])
+        self.call_count = 0
 
     def record_and_apply(
         self,
@@ -116,6 +140,9 @@ class InMemoryInboxRepository:
         apply_effect: ApplyEffect,
     ) -> InboxOutcome:
         del kafka_partition, kafka_offset, at
+        self.call_count += 1
+        if self._raise_queue:
+            raise self._raise_queue.pop(0)
         key = (consumer_id, event.event_id)
         if key in self._seen:
             return InboxOutcome.DUPLICATE
@@ -126,17 +153,99 @@ class InMemoryInboxRepository:
 
 
 class RecordingProjection:
-    """Records every applied event without touching the database."""
+    """Records every applied event without touching the database.
 
-    def __init__(self, *, raise_on_apply: Exception | None = None) -> None:
+    ``raise_on_apply`` may be a single exception (raised on every call) or a
+    list consumed one exception per call, then falling back to recording --
+    useful for "fails N times then succeeds" retry tests.
+    """
+
+    def __init__(
+        self,
+        *,
+        raise_on_apply: Exception | list[Exception] | None = None,
+    ) -> None:
         self.applied: list[DomainEvent] = []
-        self._raise_on_apply = raise_on_apply
+        self._raise_queue: list[Exception] = (
+            list(raise_on_apply)
+            if isinstance(raise_on_apply, list)
+            else ([raise_on_apply] * 10_000 if raise_on_apply is not None else [])
+        )
+        self._single = not isinstance(raise_on_apply, list)
 
     def apply(self, session: Session, event: DomainEvent, *, at: datetime) -> None:
         del session, at
-        if self._raise_on_apply is not None:
-            raise self._raise_on_apply
+        if self._raise_queue:
+            raise self._raise_queue.pop(0)
         self.applied.append(event)
+
+
+class InMemoryDeadLetterRepository:
+    """Real (not scripted) in-memory dead-letter store for runner unit tests."""
+
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, int, int], dict[str, object]] = {}
+
+    def upsert(
+        self,
+        session: Session,
+        *,
+        consumer_id: str,
+        kafka_partition: int,
+        kafka_offset: int,
+        failure_code: str,
+        processing_attempt_count: int,
+        at: datetime,
+        retention: DeadLetterRetention,
+    ) -> UUID:
+        del session
+        key = (consumer_id, kafka_partition, kafka_offset)
+        existing = self.rows.get(key)
+        if existing is not None:
+            previous_count = existing["dead_letter_delivery_count"]
+            assert isinstance(previous_count, int)
+            existing["dead_letter_delivery_count"] = previous_count + 1
+            existing["last_failed_at"] = at
+            existing_id = existing["id"]
+            assert isinstance(existing_id, UUID)
+            return existing_id
+        row_id = uuid4()
+        self.rows[key] = {
+            "id": row_id,
+            "failure_code": failure_code,
+            "processing_attempt_count": processing_attempt_count,
+            "dead_letter_delivery_count": 1,
+            "first_failed_at": at,
+            "last_failed_at": at,
+            "retention": retention,
+        }
+        return row_id
+
+
+class _FakeDriverError(Exception):
+    """A network-free stand-in for a psycopg3 driver exception's ``sqlstate``."""
+
+    def __init__(self, *, sqlstate: str | None) -> None:
+        super().__init__("synthetic-driver-error")
+        self.sqlstate = sqlstate
+
+
+def build_dbapi_error(
+    *, sqlstate: str | None = None, connection_invalidated: bool = False
+) -> DBAPIError:
+    """Build a network-free, accurately-shaped ``DBAPIError`` for classifier tests.
+
+    Mirrors psycopg3's convention of exposing SQLSTATE via ``orig.sqlstate``
+    (see ``atlas.consumer.db_classify.classify_database_error``). Never a
+    real driver exception -- used only to exercise classification/retry
+    logic without a real PostgreSQL error.
+    """
+    return DBAPIError(
+        "SELECT 1",
+        {},
+        _FakeDriverError(sqlstate=sqlstate),
+        connection_invalidated=connection_invalidated,
+    )
 
 
 #: Type alias documenting the on-before-poll test hook shape some tests use.

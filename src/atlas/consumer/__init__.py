@@ -1,7 +1,9 @@
-"""Business Kafka consumer: inbox deduplication and lifecycle projection.
+"""Business Kafka consumer: inbox deduplication, lifecycle projection,
+bounded retry, dead-letter storage, and operator replay.
 
-Slice 13C2A. See ``python -m atlas.consumer`` (``atlas/consumer/__main__.py``)
-for the standalone runtime entry point.
+Slice 13C2A/13C2B. See ``python -m atlas.consumer`` (``atlas/consumer/
+__main__.py``) for the standalone runtime entry point, and
+``python -m atlas.consumer.replay`` for the operator replay CLI.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from atlas.consumer.errors import (
     InvalidHeaderError,
     LifecycleOrderViolationError,
     MalformedEnvelopeError,
+    PoisonEventError,
 )
 from atlas.consumer.identity import (
     ALLOWED_CONSUMER_GROUP_IDS,
@@ -20,6 +23,7 @@ from atlas.consumer.identity import (
 )
 from atlas.consumer.ports import (
     ApplyEffect,
+    DeadLetterRepository,
     InboxOutcome,
     InboxRepository,
     ProjectionPort,
@@ -34,11 +38,13 @@ __all__ = [
     "ConsumerConfigurationError",
     "ConsumerError",
     "ConsumerRunner",
+    "DeadLetterRepository",
     "InboxOutcome",
     "InboxRepository",
     "InvalidHeaderError",
     "LifecycleOrderViolationError",
     "MalformedEnvelopeError",
+    "PoisonEventError",
     "ProcessOutcome",
     "ProjectionPort",
 ]

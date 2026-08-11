@@ -16,7 +16,6 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
-from atlas.consumer.errors import LifecycleOrderViolationError
 from atlas.consumer.fakes import FakeKafkaConsumer, build_kafka_message_for_event
 from atlas.consumer.identity import RESEARCH_JOB_PROJECTION_CONSUMER_GROUP_V1
 from atlas.consumer.runner import ConsumerRunner, ProcessOutcome
@@ -28,8 +27,12 @@ from atlas.eventing import (
 )
 from atlas.persistence.db import session_scope
 from atlas.persistence.models.consumer import (
+    ConsumerDeadLetterModel,
     ConsumerInboxModel,
     ResearchJobEventProjectionModel,
+)
+from atlas.persistence.repositories.consumer_dead_letter import (
+    SqlAlchemyDeadLetterRepository,
 )
 from atlas.persistence.repositories.consumer_inbox import SqlAlchemyInboxRepository
 from atlas.persistence.repositories.research_job_projection import (
@@ -65,6 +68,7 @@ def _runner(
         session_factory=session_factory,
         inbox=SqlAlchemyInboxRepository(),
         projection=projection,
+        dead_letters=SqlAlchemyDeadLetterRepository(),
         consumer_id=_CONSUMER_ID,
         poll_timeout_seconds=1.0,
         clock=clock,
@@ -152,15 +156,13 @@ def test_lifecycle_order_violation_is_rejected_and_rolled_back(
     assert runner.run_once() == ProcessOutcome.APPLIED
     assert projection.apply_calls == 2
 
-    with pytest.raises(
-        LifecycleOrderViolationError, match="TerminalProjectionAlreadyRecorded"
-    ):
-        runner.run_once()
+    # A lifecycle-order violation is permanent, record-specific poison
+    # (Slice 13C2B): it is dead-lettered, not raised, and its offset is
+    # still committed so the poisoned record never blocks the partition.
+    outcome = runner.run_once()
+    assert outcome == ProcessOutcome.DEAD_LETTERED
 
-    # The failed transaction must never have committed the stray event's
-    # offset, inbox row, or a projection overwrite -- only the first two
-    # (legitimate) records' offsets were committed.
-    assert len(consumer.committed) == 2
+    assert len(consumer.committed) == 3
 
     with session_scope(session_factory) as session:
         inbox_row = session.get(
@@ -172,6 +174,15 @@ def test_lifecycle_order_violation_is_rejected_and_rolled_back(
         assert projection_row is not None
         assert projection_row.last_event_id == completed.event_id
         assert projection_row.last_event_type == "research_job.completed"
+
+        dead_letter = (
+            session.query(ConsumerDeadLetterModel)
+            .filter_by(consumer_id=_CONSUMER_ID, kafka_partition=0, kafka_offset=3)
+            .one()
+        )
+        assert dead_letter.failure_code == "lifecycle_order_violation"
+        assert dead_letter.event_id == stray_after_terminal.event_id
+        assert dead_letter.replay_eligible is True
 
 
 def test_crash_before_db_commit_leaves_no_partial_state_and_offset_uncommitted(
@@ -210,6 +221,7 @@ def test_crash_before_db_commit_leaves_no_partial_state_and_offset_uncommitted(
         session_factory=session_factory,
         inbox=SqlAlchemyInboxRepository(),
         projection=faulty,
+        dead_letters=SqlAlchemyDeadLetterRepository(),
         consumer_id=_CONSUMER_ID,
         poll_timeout_seconds=1.0,
         clock=lambda: T0,

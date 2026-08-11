@@ -104,6 +104,18 @@ def _reset_fake_consumer() -> Iterator[None]:
     _FakeKafkaEventConsumer.raise_on_close = None
 
 
+def _fake_build_consumer_engine(
+    database_url: str,
+    *,
+    connect_timeout_seconds: float,
+    pool_timeout_seconds: float,
+    statement_timeout_seconds: float,
+) -> object:
+    del database_url, connect_timeout_seconds, pool_timeout_seconds
+    del statement_timeout_seconds
+    return object()
+
+
 @pytest.fixture
 def _patched_composition(monkeypatch: pytest.MonkeyPatch) -> Settings:
     """Patch every dependency past settings/engine construction with a working fake.
@@ -112,11 +124,16 @@ def _patched_composition(monkeypatch: pytest.MonkeyPatch) -> Settings:
     """
     settings = Settings(kafka_bootstrap_servers="unit-test-broker:9092")
     monkeypatch.setattr(consumer_main, "get_settings", lambda: settings)
-    monkeypatch.setattr(consumer_main, "get_engine", lambda _url: object())
+    monkeypatch.setattr(
+        consumer_main, "build_consumer_engine", _fake_build_consumer_engine
+    )
     monkeypatch.setattr(consumer_main, "get_session_factory", lambda _engine: object())
     monkeypatch.setattr(consumer_main, "SqlAlchemyInboxRepository", lambda: object())
     monkeypatch.setattr(
         consumer_main, "SqlAlchemyResearchJobProjectionRepository", lambda: object()
+    )
+    monkeypatch.setattr(
+        consumer_main, "SqlAlchemyDeadLetterRepository", lambda: object()
     )
     monkeypatch.setattr(
         consumer_main, "verify_broker_connectivity", lambda **_kwargs: None
@@ -127,7 +144,7 @@ def _patched_composition(monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setattr(
         consumer_main,
         "_run_poll_loop",
-        lambda runner, shutdown_requested: 0,
+        lambda runner, *, shutdown_requested, wait, kafka_retry_backoff_seconds: 0,
     )
     return settings
 
@@ -169,10 +186,12 @@ def test_main_exits_nonzero_when_database_engine_construction_fails(
     settings = Settings(kafka_bootstrap_servers="unit-test-broker:9092")
     monkeypatch.setattr(consumer_main, "get_settings", lambda: settings)
 
-    def _fail_get_engine(_url: str) -> object:
+    def _fail_build_consumer_engine(_url: str, **_kwargs: object) -> object:
         raise RuntimeError("synthetic-engine-failure")
 
-    monkeypatch.setattr(consumer_main, "get_engine", _fail_get_engine)
+    monkeypatch.setattr(
+        consumer_main, "build_consumer_engine", _fail_build_consumer_engine
+    )
 
     assert consumer_main.main() == 1
     assert _FakeKafkaEventConsumer.close_call_count == 0
@@ -184,15 +203,69 @@ def test_main_logs_are_sanitized_when_database_engine_construction_fails(
     settings = Settings(kafka_bootstrap_servers="unit-test-broker:9092")
     monkeypatch.setattr(consumer_main, "get_settings", lambda: settings)
 
-    def _fail_get_engine(_url: str) -> object:
+    def _fail_build_consumer_engine(_url: str, **_kwargs: object) -> object:
         raise RuntimeError(_SENSITIVE_MESSAGE)
 
-    monkeypatch.setattr(consumer_main, "get_engine", _fail_get_engine)
+    monkeypatch.setattr(
+        consumer_main, "build_consumer_engine", _fail_build_consumer_engine
+    )
 
     with caplog.at_level(logging.INFO):
         assert consumer_main.main() == 1
     _assert_no_sensitive_fragments(caplog.text)
     assert "RuntimeError" in caplog.text
+
+
+def test_main_builds_the_consumer_engine_with_the_settings_derived_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blocker 1 drift guard: the exact settings values ``atlas.consumer.timing``
+    assumes are enforced must be exactly what ``main()`` passes to
+    ``build_consumer_engine`` -- never a different or hardcoded value."""
+    settings = Settings(
+        kafka_bootstrap_servers="unit-test-broker:9092",
+        consumer_db_connect_timeout_seconds=1.5,
+        consumer_db_pool_timeout_seconds=2.5,
+        consumer_db_statement_timeout_seconds=3.5,
+    )
+    monkeypatch.setattr(consumer_main, "get_settings", lambda: settings)
+    captured: dict[str, object] = {}
+
+    def _capturing_build_consumer_engine(url: str, **kwargs: object) -> object:
+        captured["url"] = url
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        consumer_main, "build_consumer_engine", _capturing_build_consumer_engine
+    )
+    monkeypatch.setattr(consumer_main, "get_session_factory", lambda _engine: object())
+    monkeypatch.setattr(consumer_main, "SqlAlchemyInboxRepository", lambda: object())
+    monkeypatch.setattr(
+        consumer_main, "SqlAlchemyResearchJobProjectionRepository", lambda: object()
+    )
+    monkeypatch.setattr(
+        consumer_main, "SqlAlchemyDeadLetterRepository", lambda: object()
+    )
+    monkeypatch.setattr(consumer_main, "KafkaEventConsumer", _FakeKafkaEventConsumer)
+    monkeypatch.setattr(signal, "signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        consumer_main, "verify_broker_connectivity", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        consumer_main, "verify_topic_partitioning", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        consumer_main,
+        "_run_poll_loop",
+        lambda runner, *, shutdown_requested, wait, kafka_retry_backoff_seconds: 0,
+    )
+
+    assert consumer_main.main() == 0
+    assert captured["url"] == settings.database_url
+    assert captured["connect_timeout_seconds"] == 1.5
+    assert captured["pool_timeout_seconds"] == 2.5
+    assert captured["statement_timeout_seconds"] == 3.5
 
 
 # --- Kafka consumer construction -----------------------------------------

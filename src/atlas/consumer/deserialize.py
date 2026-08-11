@@ -10,7 +10,25 @@ from __future__ import annotations
 import json
 from typing import Protocol
 
-from atlas.consumer.errors import InvalidHeaderError, MalformedEnvelopeError
+from atlas.consumer.errors import (
+    AggregateTypeHeaderMismatchError,
+    DuplicateHeaderKeyError,
+    EventTypeHeaderMismatchError,
+    EventVersionHeaderMismatchError,
+    InvalidJsonError,
+    MissingHeadersError,
+    MissingValueError,
+    NullHeaderValueError,
+    SchemaValidationFailedError,
+    UndecodableHeaderValueError,
+    UndecodableValueError,
+    UnexpectedHeaderKeysError,
+    UnexpectedHeaderKeyTypeError,
+    UnexpectedHeadersShapeError,
+    UnexpectedHeaderValueTypeError,
+    ValueNotAnObjectError,
+    ValueTooLargeError,
+)
 from atlas.eventing.contracts import DomainEvent, parse_domain_event
 from atlas.eventing.errors import DomainEventError
 
@@ -40,7 +58,7 @@ class _KafkaMessageLike(Protocol):
 def _headers_as_mapping(message: _KafkaMessageLike) -> dict[str, str]:
     raw_headers = message.headers()
     if raw_headers is None:
-        raise InvalidHeaderError("MissingHeaders")
+        raise MissingHeadersError()
 
     pairs: list[tuple[object, object]] = []
     if isinstance(raw_headers, dict):
@@ -48,30 +66,30 @@ def _headers_as_mapping(message: _KafkaMessageLike) -> dict[str, str]:
     elif isinstance(raw_headers, list):
         for item in raw_headers:
             if not (isinstance(item, tuple) and len(item) == 2):
-                raise InvalidHeaderError("UnexpectedHeadersShape")
+                raise UnexpectedHeadersShapeError()
             pairs.append(item)
     else:
-        raise InvalidHeaderError("UnexpectedHeadersShape")
+        raise UnexpectedHeadersShapeError()
 
     mapping: dict[str, str] = {}
     for key, value in pairs:
         if not isinstance(key, str):
-            raise InvalidHeaderError("UnexpectedHeaderKeyType")
+            raise UnexpectedHeaderKeyTypeError()
         if key in mapping:
-            raise InvalidHeaderError("DuplicateHeaderKey")
+            raise DuplicateHeaderKeyError()
         if value is None:
-            raise InvalidHeaderError("NullHeaderValue")
+            raise NullHeaderValueError()
         if isinstance(value, bytes):
             try:
                 mapping[key] = value.decode("utf-8")
             except UnicodeDecodeError:
-                raise InvalidHeaderError("UndecodableHeaderValue") from None
+                raise UndecodableHeaderValueError() from None
         elif isinstance(value, str):
             mapping[key] = value
         else:
-            raise InvalidHeaderError("UnexpectedHeaderValueType")
+            raise UnexpectedHeaderValueTypeError()
     if set(mapping) != _EXPECTED_HEADER_KEYS:
-        raise InvalidHeaderError("UnexpectedHeaderKeys")
+        raise UnexpectedHeaderKeysError()
     return mapping
 
 
@@ -89,30 +107,30 @@ def decode_message(message: _KafkaMessageLike) -> DomainEvent:
 
     value = message.value()
     if value is None:
-        raise MalformedEnvelopeError("MissingValue")
+        raise MissingValueError()
     if len(value) > MAX_MESSAGE_VALUE_BYTES:
-        raise MalformedEnvelopeError("ValueTooLarge")
+        raise ValueTooLargeError()
     try:
         decoded_text = value.decode("utf-8")
     except UnicodeDecodeError:
-        raise MalformedEnvelopeError("UndecodableValue") from None
+        raise UndecodableValueError() from None
     try:
         data = json.loads(decoded_text)
     except json.JSONDecodeError:
-        raise MalformedEnvelopeError("InvalidJson") from None
+        raise InvalidJsonError() from None
     if not isinstance(data, dict):
-        raise MalformedEnvelopeError("ValueNotAnObject")
+        raise ValueNotAnObjectError()
 
     try:
         event = parse_domain_event(data)
     except DomainEventError:
-        raise MalformedEnvelopeError("SchemaValidationFailed") from None
+        raise SchemaValidationFailedError() from None
 
     if headers["event_type"] != event.event_type:
-        raise InvalidHeaderError("EventTypeHeaderMismatch")
+        raise EventTypeHeaderMismatchError()
     if headers["event_version"] != str(int(event.event_version)):
-        raise InvalidHeaderError("EventVersionHeaderMismatch")
+        raise EventVersionHeaderMismatchError()
     if headers["aggregate_type"] != event.aggregate_type:
-        raise InvalidHeaderError("AggregateTypeHeaderMismatch")
+        raise AggregateTypeHeaderMismatchError()
 
     return event
