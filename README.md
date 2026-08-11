@@ -16,7 +16,7 @@ The repository already has a working local backend and workflow foundation: Pyth
 
 ## Current milestone
 
-Milestone 12 is **Complete** through Pull Request #17 (`e3412c3`) and calibration-closeout Pull Request #18 (`9d5abde`). Milestone 13 is **Current**: Slice 13A is **Complete** through Pull Request #19 (`dc19714`). Slice 13B (PostgreSQL transactional outbox + typed research-job domain events; global head-of-line `outbox_position` ordering) is **Complete** through Pull Request #20 (`48ce40a`). Slice 13C1 (real Kafka 4.3.1 broker, typed `confluent-kafka` producer, topic administration, and the executable `python -m atlas.outbox` relay) is implemented and locally verified in Pull Request #21 on `milestone-13-kafka`; PR CI and resulting `main` CI are still pending. Consumer inbox/dedup, replay, and DLQ remain Slice 13C2. `evaluation.candidate.v1` remains provisional. The comprehensive Visio and AWS design remains deferred.
+Milestone 12 is **Complete** through Pull Request #17 (`e3412c3`) and calibration-closeout Pull Request #18 (`9d5abde`). Milestone 13 is **Current**: Slice 13A is **Complete** through Pull Request #19 (`dc19714`). Slice 13B (PostgreSQL transactional outbox + typed research-job domain events; global head-of-line `outbox_position` ordering) is **Complete** through Pull Request #20 (`48ce40a`). Slice 13C1 (real Kafka 4.3.1 broker, typed `confluent-kafka` producer, topic administration, and the executable `python -m atlas.outbox` relay) is **Complete** through Pull Request #21 (`cd5b25e`). Slice 13C2A (PostgreSQL-backed consumer inbox/deduplication, the research-job lifecycle projection business consumer, and the non-HTTP executable `python -m atlas.consumer`) is implemented and locally verified on `milestone-13-kafka-consumers`; it has not yet opened a Pull Request. Retry/backoff, poison-event/DLQ handling, and replay remain Slice 13C2B. `evaluation.candidate.v1` remains provisional. The comprehensive Visio and AWS design remains deferred.
 
 ### Run locally
 
@@ -51,4 +51,8 @@ uv run python -m atlas.worker
 # Optional: Kafka outbox relay (terminal 3, Slice 13C1). Requires Compose
 # Kafka to be healthy and the reserved topic already created (kafka-topic-init).
 # uv run python -m atlas.outbox
+
+# Optional: research-job lifecycle projection consumer (terminal 4, Slice 13C2A).
+# Requires the same Compose Kafka/topic prerequisites as the relay above.
+# uv run python -m atlas.consumer
 ```

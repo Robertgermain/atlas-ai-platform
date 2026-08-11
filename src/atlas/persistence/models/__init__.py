@@ -1,6 +1,10 @@
 """ORM model package."""
 
 from atlas.persistence.models.base import Base
+from atlas.persistence.models.consumer import (
+    ConsumerInboxModel,
+    ResearchJobEventProjectionModel,
+)
 from atlas.persistence.models.embedding import EvidenceEmbeddingModel
 from atlas.persistence.models.evaluation import (
     EvaluationDimensionResultModel,
@@ -39,6 +43,7 @@ __all__ = [
     "Base",
     "CitationModel",
     "ClaimModel",
+    "ConsumerInboxModel",
     "DocumentModel",
     "EvaluationDimensionResultModel",
     "EvaluationRunModel",
@@ -52,6 +57,7 @@ __all__ = [
     "OutboxEventModel",
     "PolicyDecisionModel",
     "ReportArtifactModel",
+    "ResearchJobEventProjectionModel",
     "ResearchJobModel",
     "SourceModel",
     "ToolInvocationAttemptModel",
