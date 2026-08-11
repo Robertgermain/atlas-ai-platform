@@ -1,5 +1,16 @@
 # Atlas Technical Design
 
+## Governing architecture rule: local-first, cloud-portable
+
+Every cloud capability must first have a working local equivalent whenever technically practical. AWS hosts and operationalizes an already-validated system; AWS must not become the first environment where Atlas components are integrated.
+
+- Application/domain behavior must not directly depend on AWS-specific APIs.
+- The same application contracts and Docker images flow through local processes, Docker Compose, local Kubernetes (`kind`), and AWS EKS.
+- Helm charts must be validated on `kind` (Milestone 18) before EKS (Milestone 22).
+- PostgreSQL, Redis, Kafka, storage, ingress, secrets, telemetry, and workload boundaries each require an explicit local-to-AWS mapping (Milestone 20).
+- AWS-only capabilities that cannot be reproduced faithfully — IAM, WAF, Route 53, managed-service failover, AWS networking — still require a local contract/configuration boundary where practical, automated configuration/contract tests, an explicit local-to-AWS mapping and trade-off analysis, and final integration validation in AWS.
+- Do not claim full behavioral equivalence where local emulation is incomplete. This rule does not authorize working ahead of the milestone marked **Current** in `docs/LOCAL_BUILD_PLAN.md`.
+
 ## Status
 
 Local foundation decisions are recorded as they are validated. The comprehensive local-to-AWS system architecture remains incomplete until working local components exist and the Visio diagrams are reviewed.
@@ -208,7 +219,7 @@ These decisions cover the verified foundation through Milestone 11 Complete on `
 - Heartbeat liveness proves process-level heartbeat activity (interpreter scheduling + Redis reachability on the interval). It does **not** prove that a particular job or processing thread is healthy; PostgreSQL claim/lease fencing remains the sole job-ownership authority.
 - All Redis-dependent controls fail open: Redis errors allow the request / discard the beat, with 0.2s connect and socket timeouts. Outage warnings are once-per-episode (reset on success); messages never include Redis URL, credentials, raw exception text, or tracebacks. No fail-closed configuration is added.
 - Redis caching, retry/backoff policy, poison-event/dead-letter handling, and replay tooling are deferred to Slice 13C2B. Celery is excluded. PostgreSQL remains authoritative for jobs and the outbox.
-- Milestone 13 is Current. Slice 13A is Complete through Pull Request #19 (`dc19714`). Slice 13B (transactional outbox) is Complete through Pull Request #20 (`48ce40a`). Slice 13C1 (real Kafka broker/producer) is Complete through Pull Request #21 (`cd5b25e`). Slice 13C2A (consumer inbox/deduplication + research-job lifecycle projection) is implemented locally on `milestone-13-kafka-consumers`; Slice 13C2B remains pending.
+- Milestone 13 is Current. Slice 13A is Complete through Pull Request #19 (`dc19714`). Slice 13B (transactional outbox) is Complete through Pull Request #20 (`48ce40a`). Slice 13C1 (real Kafka broker/producer) is Complete through Pull Request #21 (`cd5b25e`). Slice 13C2A (consumer inbox/deduplication + research-job lifecycle projection) is **Complete** through Pull Request #22 (`9f2b7af`; PR CI run #48 and resulting `main` CI run #49 passed); Slice 13C2B remains pending.
 
 ### Transactional outbox and domain events (Milestone 13 Slice 13B)
 
@@ -241,7 +252,28 @@ These decisions cover the verified foundation through Milestone 11 Complete on `
 - `atlas.consumer.runner.ConsumerRunner.run_once()` orchestrates one poll → decode → (PostgreSQL transaction: inbox record + business effect) → commit-offset cycle. The Kafka offset is committed synchronously, once, only after `session_scope` has returned normally — any exception raised before that point (decode failure, lifecycle violation, database error) propagates with the offset never committed, so the record redelivers on restart.
 - The executable `python -m atlas.consumer` has no HTTP surface (matches `python -m atlas.outbox`'s existing precedent: its own process exit code is the health signal for its process supervisor). Startup order is: load/validate `Settings` and construct PostgreSQL session/engine dependencies; construct `KafkaEventConsumer` (subscribes to the fixed topic under the fixed group); install SIGINT/SIGTERM handlers; verify Kafka broker connectivity then the fixed topic's partitioning (reusing `atlas.outbox.topic_admin`); enter the poll loop. Every one of these startup steps is wrapped so a failure yields a sanitized, class-name-only log line and a controlled nonzero exit rather than an uncaught traceback (a raw settings-validation error, for example, can otherwise embed the invalid environment-derived value in its own exception message). A settings/database-dependency failure never attempts consumer cleanup (no consumer exists yet); a Kafka-consumer-construction failure never attempts cleanup either (construction either fully failed, with nothing to clean up, or fully succeeded); a failure installing the signal handlers *does* close the already-constructed consumer before exiting, since the consumer exists by that point. Signal-handler installation itself (`_install_signal_handlers`) is not treated as atomic: SIGINT and SIGTERM are installed one at a time, and each successfully installed signal's previous handler is recorded as it succeeds, so if installing a later signal fails, `_restore_signal_handlers` puts back every signal already replaced (independently, best-effort, never letting one restoration failure skip the other) before the consumer is closed and the process exits 1 — the original "failed to install" classification is always the logged reason, regardless of whether the subsequent consumer close also fails. Every poll is bounded by `consumer_poll_timeout_seconds` (default 1.0s) so SIGINT/SIGTERM are observed between polls even when no records arrive. Every steady-state error — a decode/validation failure, an inconsistent lifecycle transition, a PostgreSQL error, or a Kafka error — terminates the process nonzero; Slice 13C2A has no retry/backoff/DLQ policy (that is Slice 13C2B). Normal shutdown's `_cleanup` always attempts to close the consumer (triggering a clean consumer-group leave) and always attempts to restore each previously-installed signal handler independently, regardless of whether the consumer close or an earlier restoration failed; `_cleanup` returns failure (forcing a nonzero exit) if any of these steps failed, and no such failure can escape `main()` as an uncaught traceback.
 - Every log call in `atlas.consumer` uses only a fixed, sanitized message and, where useful, `exc.__class__.__name__` — never `str(exc)`, `repr(exc)`, `exc.args`, `exc_info`, or any secret, database URL, or Kafka broker address; no log line interpolates a settings-derived configuration value.
-- Slice 13C2A is implemented and locally verified on `milestone-13-kafka-consumers` (based at `cd5b25e`); it has not yet opened a Pull Request. Retry/backoff, poison-event/dead-letter handling, and replay tooling remain Slice 13C2B.
+- Slice 13C2A is **Complete** through Pull Request #22 (`9f2b7af`, squash-merged from `milestone-13-kafka-consumers` based at `cd5b25e`); PR CI run #48 and resulting `main` CI run #49 both passed (independently verified against the GitHub API). Retry/backoff, poison-event/dead-letter handling, and replay tooling remain Slice 13C2B.
+
+## Planned architecture decisions (approved ahead of implementation)
+
+These decisions are approved and govern how Milestone 14 (and later milestones) must be built, but nothing described in this section is implemented yet. They are recorded now, ahead of implementation, so later work does not have to re-litigate them; do not treat any capability named here as existing until `PROJECT_STATE.md` records it as built and verified.
+
+### Mandatory LangSmith AI observability (Milestone 14 Slice 14B)
+
+- LangSmith is **mandatory** for Atlas AI observability and must never be described or implemented as optional.
+- Scope split: LangSmith is mandatory for LangGraph/LLM/RAG/tool/evaluation observability. OpenTelemetry, Prometheus, Grafana, Alertmanager, and structured logging (Slice 14A) remain mandatory for infrastructure and distributed-system observability. LangSmith does not replace operational monitoring, and operational monitoring does not replace LangSmith — they cover different concerns.
+- Availability: LangSmith must never become an availability dependency. A LangSmith export outage must not fail a research job; the failure must be caught, logged (sanitized), and reflected in operational metrics instead.
+- Testing: local/offline tests must not require a real LangSmith API key. Contract tests use fakes/mocks. At least one explicit opt-in live integration test must prove traces actually appear in a real LangSmith project. A simulated LangSmith outage test must prove research continues and the failure is handled safely.
+- Data safety: no API keys, raw secrets, unrestricted evidence, or unsanitized exception text may ever be exported to LangSmith. A documented trace-data/redaction policy must define exactly which prompts, responses, evidence, and metadata may be sent before any trace is exported.
+- Correlation: LangSmith trace identifiers must correlate safely with Atlas's own durable identifiers — job, workflow execution, node execution, model invocation, tool invocation, and evaluation — without leaking sensitive data through that correlation.
+- Evaluation freeze discipline: a live semantic grader landing under Slice 14B does not automatically freeze `evaluation.v1`. `evaluation.candidate.v1` remains provisional until the documented held-out/live-semantic calibration gate passes (see Milestone 12's existing provisional-profile decisions above).
+
+### Bounded advisory monitoring/operations analyst (Milestone 14 Slice 14C)
+
+- The analyst consumes only sanitized, bounded telemetry summaries — never unrestricted raw production data (logs, traces, or database rows) directly.
+- Allowed: summarizing incidents, clustering recurring failures, suggesting likely causes/remediation, and explaining job/agent/model/tool/retrieval/Kafka/evaluation failures in natural language.
+- Forbidden, with no exceptions: restarting workloads, retrying jobs, changing configuration, modifying prompts, deploying code, acknowledging alerts, mutating database state, or invoking infrastructure APIs.
+- Deterministic Prometheus/Alertmanager rules remain the authoritative monitoring control plane; the advisory analyst is read-only and advisory only, never a substitute for or override of that control plane.
 
 ## Why the full diagram comes later
 

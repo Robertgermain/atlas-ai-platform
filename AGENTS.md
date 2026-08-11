@@ -12,6 +12,18 @@ Before proposing or changing anything:
 4. Inspect the repository instead of assuming documented plans are implemented.
 5. Keep the requested work aligned with the current milestone.
 
+## Governing architecture rule: local-first, cloud-portable
+
+Every cloud capability must first have a working local equivalent whenever technically practical. AWS hosts and operationalizes an already-validated system; AWS must not become the first environment where Atlas components are integrated.
+
+- Application/domain behavior must not directly depend on AWS-specific APIs.
+- The same application contracts and Docker images flow through local processes, Docker Compose, local Kubernetes (`kind`), and AWS EKS.
+- Helm charts must be validated on `kind` before EKS.
+- PostgreSQL, Redis, Kafka, storage, ingress, secrets, telemetry, and workload boundaries each need an explicit local-to-AWS mapping.
+- AWS-only capabilities that cannot be reproduced faithfully (IAM, WAF, Route 53, managed-service failover, AWS networking) still need a local contract/configuration boundary where practical, automated configuration/contract tests, an explicit local-to-AWS mapping with trade-offs, and final validation in AWS.
+- Never claim full behavioral equivalence where local emulation is incomplete.
+- This rule does not authorize working ahead of the milestone marked **Current**.
+
 ## Working rules
 
 - Build the smallest useful, testable vertical slice.

@@ -6,6 +6,20 @@ This is the ordered roadmap for building Atlas completely on a local machine bef
 
 This file answers **what comes next and why**. `PROJECT_STATE.md` answers **what is true right now**.
 
+## Governing architecture rule: local-first, cloud-portable
+
+Every cloud capability must first have a working local equivalent whenever technically practical. AWS hosts and operationalizes an already-validated system; AWS must not become the first environment where Atlas components are integrated. This rule shapes every milestone below, not just the cloud ones.
+
+Required implications:
+
+- Application/domain behavior must not directly depend on AWS-specific APIs.
+- The same application contracts and Docker images flow through: local processes → Docker Compose → local Kubernetes with `kind` → AWS EKS.
+- Helm charts must be validated on `kind` (Milestone 18) before EKS (Milestone 22).
+- PostgreSQL, Redis, Kafka, storage, ingress, secrets, telemetry, and workload boundaries each require an explicit local-to-AWS mapping (produced in Milestone 20).
+- AWS-only capabilities that cannot be reproduced faithfully — IAM, WAF, Route 53, managed-service failover, AWS networking — still require: a local contract or configuration boundary where practical; automated configuration/contract tests; an explicit local-to-AWS mapping and trade-off analysis; and final integration validation in AWS.
+- Do not claim full behavioral equivalence where local emulation is incomplete.
+- This rule does not authorize working ahead of the milestone marked **Current**.
+
 ## How to use this plan
 
 1. Work on only the milestone marked **Current** in this document and `PROJECT_STATE.md`.
@@ -247,105 +261,233 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Completion gate:** Redis loss does not lose jobs; rate limits work concurrently; database updates and outbox events stay consistent; duplicate Kafka delivery is safe; replay and poison-message handling are tested.
 
-**Local implementation status:** Slice 13A is **Complete** through Pull Request #19 (`dc19714`; PR CI run #40 and resulting `main` CI run #41 passed): Redis-backed fixed-window rate limiting for `POST /v1/research-jobs` by direct peer IP; dedicated worker heartbeat thread with TTL keys; `noop` default coordination provider; pinned Redis 8.8.1 in Compose/CI. Slice 13B is **Complete** through Pull Request #20 (`48ce40a`; corrected PR CI run #43 and resulting `main` CI run #44 passed): typed research-job domain events + PostgreSQL transactional outbox + singleton advisory-lock relay; global `outbox_position` head-of-line claiming; fresh post-producer lease fencing; strict stop-on-failure ordering. Slice 13C1 is **Complete** through Pull Request #21 (`cd5b25e`; PR CI and resulting `main` CI run #47 passed): real Kafka 4.3.1 broker; typed `confluent-kafka` producer adapter with delivery-callback-confirmed publish and a narrow, fail-closed Kafka error classification — fatal, or retriable/`_MSG_TIMED_OUT` recoverable, or else fatal; `AdminClient`-based topic administration/verification; Kafka-only executable `python -m atlas.outbox`. Slice 13C2A (PostgreSQL-backed consumer inbox with `(consumer_id, event_id)` deduplication; the research-job lifecycle projection as the first business consumer; typed `KafkaEventConsumer` with manual offset commit only after the PostgreSQL transaction commits; non-HTTP executable `python -m atlas.consumer`; migration `20260809_0012`) is implemented and locally verified on branch `milestone-13-kafka-consumers` (based at `cd5b25e`); it has not yet opened a Pull Request. Slice 13C2B (retry/backoff, poison-event/dead-letter handling, and replay tooling) remains pending. Celery remains excluded. Do not mark Milestone 13 Complete until Slice 13C2A and Slice 13C2B (and their PR/`main` CI) pass.
+**Local implementation status:** Slice 13A is **Complete** through Pull Request #19 (`dc19714`; PR CI run #40 and resulting `main` CI run #41 passed): Redis-backed fixed-window rate limiting for `POST /v1/research-jobs` by direct peer IP; dedicated worker heartbeat thread with TTL keys; `noop` default coordination provider; pinned Redis 8.8.1 in Compose/CI. Slice 13B is **Complete** through Pull Request #20 (`48ce40a`; corrected PR CI run #43 and resulting `main` CI run #44 passed): typed research-job domain events + PostgreSQL transactional outbox + singleton advisory-lock relay; global `outbox_position` head-of-line claiming; fresh post-producer lease fencing; strict stop-on-failure ordering. Slice 13C1 is **Complete** through Pull Request #21 (`cd5b25e`; PR CI and resulting `main` CI run #47 passed): real Kafka 4.3.1 broker; typed `confluent-kafka` producer adapter with delivery-callback-confirmed publish and a narrow, fail-closed Kafka error classification — fatal, or retriable/`_MSG_TIMED_OUT` recoverable, or else fatal; `AdminClient`-based topic administration/verification; Kafka-only executable `python -m atlas.outbox`. Slice 13C2A (PostgreSQL-backed consumer inbox with `(consumer_id, event_id)` deduplication; the research-job lifecycle projection as the first business consumer; typed `KafkaEventConsumer` with manual offset commit only after the PostgreSQL transaction commits; non-HTTP executable `python -m atlas.consumer`; migration `20260809_0012`) is **Complete** through Pull Request #22 (`9f2b7af`; PR CI run #48 and resulting `main` CI run #49 passed). Slice 13C2B (retry/backoff, poison-event/dead-letter handling, and replay tooling) remains pending. Celery remains excluded. Do not mark Milestone 13 Complete until Slice 13C2B (and its PR/`main` CI) passes.
 
-## Milestone 14 — Observability
+## Milestone 14 — Observability, LangSmith, semantic grading, and advisory operations analysis
 
 **Status:** Pending
 
-**Goal:** Make the distributed local platform explainable and measurable before defending it.
+**Goal:** Make the distributed local platform explainable and measurable — for both infrastructure and AI behavior — before defending it, and provide a bounded advisory analyst over that telemetry without granting it any control-plane power.
 
-**Build:** Structured logs and correlation/trace IDs throughout the API, worker, outbox relay, and consumer; OpenTelemetry traces across the HTTP → worker → LangGraph → model/tool/Kafka boundary; Prometheus metrics; Grafana dashboards; Alertmanager routing; optional justified log/trace backends. No authentication, RBAC, or scanning work — that is Milestone 15's scope.
+**Existing agent, grading, repair, retry, and monitoring truth (for context, not new work in this milestone):**
 
-**Measure:** API/job latency, throughput, failures, recovery, worker utilization, database behavior, Redis metrics, Kafka consumer lag/offset behavior, outbox publish latency, model tokens/cost/latency, tool failures, retrieval quality, and evaluation scores.
+- Existing specialists (Milestone 11): planner specialist, governed research/retrieval specialist, report synthesizer, deterministic citation verifier.
+- Existing evaluation/grading (Milestone 12): citation-integrity grader, tool-use grader, report-structure grader, coverage grader, completeness grader, lexical groundedness grader, durable evaluation runs/results, evaluation ownership fencing, human-review routing, and provisional `evaluation.candidate.v1` (frozen `evaluation.v1` remains deferred).
+- Existing repair/retry (Milestone 12): a deterministic recovery policy controls all loops; one bounded report-repair attempt is allowed for eligible structural failures and re-enters drafting/synthesis only (never planning, research, or tools automatically); transient failed jobs may receive at most two job-level retries with exponential backoff and bounded jitter; permanent, ownership, citation-integrity, and tool-policy failures fail closed; an AI component may generate a repaired draft, but deterministic policy — not an unconstrained retry agent — decides whether repair/retry is allowed.
+- Existing monitoring (Milestone 13 Slice 13A): a Redis-backed worker heartbeat exists, plus durable job, workflow, model, tool, evaluation, outbox, and consumer records. A dedicated monitoring agent does **not** exist yet. The heartbeat alone is not full monitoring or job health — full observability is this milestone.
+- Slice 13C2B (Kafka-consumer retry/backoff, poison-event handling, PostgreSQL DLQ, and operator replay) is separate, pending work under Milestone 13, not this milestone.
 
-**Why now:** Basic instrumentation grows throughout earlier milestones; a dedicated slice is needed once enough distributed components (API, worker, PostgreSQL, Redis, Kafka producer + consumer) exist that correlating one job across all of them provides real value.
+**Build in three reviewable slices:**
 
-**Completion gate:** One job's full lifecycle can be followed end to end via correlated logs/traces; dashboards answer real operational questions (latency, failure rate, Kafka lag, recovery counts); alerts are actionable and not noisy; secrets and sensitive content remain excluded from all telemetry.
+### Slice 14A — Operational telemetry foundation
+
+- Structured JSON logs and correlation IDs.
+- OpenTelemetry traces across API → worker → LangGraph → model/tool → outbox → Kafka → consumer.
+- Prometheus metrics; Grafana dashboards; Alertmanager alerts.
+- PostgreSQL, Redis, Kafka, worker, outbox, consumer, API, retrieval, evaluation, model token/cost/latency, and tool metrics.
+- Kafka consumer lag; stale heartbeat and stuck-job detection; outbox backlog and DLQ/retry metrics.
+
+### Slice 14B — Mandatory LangSmith AI observability and live semantic grading
+
+LangSmith is **mandatory** for Atlas AI observability — it must never be described as optional. Distinction to preserve everywhere this is documented: LangSmith is mandatory for LangGraph/LLM/RAG/tool/evaluation observability; OpenTelemetry, Prometheus, Grafana, Alertmanager, and structured logging remain mandatory for infrastructure and distributed-system observability; LangSmith does not replace operational monitoring; and LangSmith must never become an availability dependency — an export outage must not fail a research job.
+
+- Mandatory LangSmith integration through LangChain/LangGraph.
+- Traces for planner, researcher, synthesizer, citation verification, grading, repair, retries, model calls, tool calls, and retrieval.
+- Safe correlation with durable Atlas identifiers (job, workflow execution, node execution, model invocation, tool invocation, evaluation).
+- Dataset-based LangSmith evaluation; a live LangChain semantic groundedness grader; durable semantic-grading results in the Atlas evaluation system.
+- An explicit prompt/response/evidence redaction and sampling policy defining exactly which prompts, responses, evidence, and metadata may be sent.
+- Cost, token, latency, error, and retry metadata.
+- Local/offline tests must not require a real LangSmith API key: contract tests use fakes/mocks; at least one explicit opt-in live integration test proves traces appear in a real LangSmith project; a simulated LangSmith outage proves research continues and the failure is logged/metriced safely.
+- No API keys, raw secrets, unrestricted evidence, or unsanitized exception text may ever be exported to LangSmith.
+- `evaluation.candidate.v1` must remain provisional until the documented held-out/live-semantic calibration gate passes; do not automatically freeze `evaluation.v1` when live semantic grading lands.
+
+### Slice 14C — Bounded advisory monitoring/operations analyst
+
+An advisory AI analyst that consumes sanitized, bounded telemetry summaries (never unrestricted raw production data) to: summarize incidents; cluster recurring failures; suggest likely causes and remediation; and explain job, agent, model, tool, retrieval, Kafka, and evaluation failures.
+
+It must **not**: restart workloads; retry jobs; change configuration; modify prompts; deploy code; acknowledge alerts; mutate database state; or invoke infrastructure APIs. Deterministic Prometheus/Alertmanager rules remain authoritative — the advisory analyst is not the monitoring control plane.
+
+**Why now:** Basic instrumentation grows throughout earlier milestones; a dedicated slice is needed once enough distributed components (API, worker, PostgreSQL, Redis, Kafka producer + consumer) exist that correlating one job across all of them provides real value, and AI-specific observability/grading is the natural next step once infrastructure telemetry exists to correlate it against.
+
+**Completion gate:**
+
+- One complete job is traceable end to end in both LangSmith and the local operational stack.
+- A live semantic grade is persisted.
+- A LangSmith export failure does not fail the job.
+- Tested deterministic alerts fire for meaningful failure conditions.
+- Dashboards answer latency, throughput, failure, retry, backlog, lag, cost, and quality questions.
+- Sensitive information is excluded from all telemetry (metrics, traces, logs, LangSmith exports).
+- The advisory analyst explains a sanitized test incident without any mutation capability.
 
 ---
 
-## Milestone 15 — Security and software-supply-chain CI
+## Milestone 15 — Security, authentication, and supply-chain GitHub Actions
 
 **Status:** Pending
 
-**Goal:** Make the CI pipeline itself defensible: authenticated APIs, scoped tools, and automated supply-chain scanning, not just green tests.
+**Goal:** Make the CI pipeline and the API itself defensible: authenticated APIs, scoped tools, and automated supply-chain scanning, not just green tests.
 
-**Build:** API authentication/authorization for previously local-only/flag-gated endpoints (e.g. the operator review API); scoped-tool and prompt-injection defenses hardened for the now-larger tool/consumer surface; dependency vulnerability scanning (e.g. `pip-audit`/`uv`-aware scanning); source/secret scanning (e.g. gitleaks-style); container image scanning once application images exist (Milestone 17); auditability of security-relevant decisions (auth failures, scan suppressions).
+**Build:**
+
+- API authentication and authorization.
+- RBAC for operator/review/replay endpoints.
+- Prompt-injection and governed-tool hardening.
+- Dependency vulnerability scanning with a `uv`-compatible scanner.
+- Static security analysis using Bandit and/or Semgrep.
+- Secret scanning using Gitleaks or equivalent.
+- GitHub dependency review on pull requests.
+- CodeQL.
+- SBOM generation.
+- License-policy checks.
+- GitHub Actions workflow validation.
+- Verification that actions remain pinned to full commit SHAs.
+- Documented vulnerability suppression with justification, owner, and expiration.
+- Sanitized scanner output.
 
 **Why after observability:** Security review is more effective once logs/traces/metrics exist to show what a security control actually observes and blocks; this also keeps Milestone 14 focused on visibility rather than mixing in an unrelated authn/authz surface.
 
-**Completion gate:** CI fails on a newly introduced known-vulnerable dependency or a detected secret; authenticated endpoints reject unauthenticated/unauthorized requests with structured errors; scan results are either clean or have a documented, reviewed suppression; no security tests are skipped silently.
+**Completion gate:**
+
+- A deliberately vulnerable test dependency or fixture is detected.
+- A test secret is detected.
+- Unauthorized API requests fail with structured responses.
+- No finding is silently ignored.
+- CI remains green only when findings are fixed or explicitly reviewed and time-bounded.
 
 ---
 
-## Milestone 16 — Next.js/TypeScript/Tailwind frontend and document upload
+## Milestone 16 — Next.js, TypeScript, Tailwind frontend and document upload
 
 **Status:** Pending
 
 **Goal:** Give Atlas a real user-facing surface instead of only an HTTP API, and close the "live document ingest" gap left open since Milestone 10.
 
-**Build:** A Next.js + TypeScript + Tailwind frontend (functional components, typed props/hooks, no `any`) for submitting research jobs, tracking status, viewing cited reports and evaluation results, and the local-only operator review flow; a document-upload endpoint (multipart) feeding the existing evidence/embedding pipeline, replacing the current JSON/text-only ingest path; browser-safe error handling (no raw backend exception text reaching the UI).
+**Build:**
+
+- Next.js, TypeScript, Tailwind.
+- Typed client contracts.
+- Research submission; job progress/status.
+- Reports, citations, provenance, and evaluation results.
+- Operator review flow.
+- Multipart document uploads feeding the evidence/embedding pipeline (replacing the current JSON/text-only ingest path).
+- Browser-safe errors (no raw backend exception text reaching the UI).
+- Frontend lint, type checks, unit/component tests, and backend integration tests.
+- No `any` without an explicit reviewed justification.
 
 **Why here:** A frontend is more valuable once the backend has observability and baseline security (Milestones 14–15) to build on, and document upload is the one Milestone 10 gap (live arbitrary-URL fetch/HTML/PDF ingest/object storage) most directly unblocked by adding a real upload surface.
 
-**Completion gate:** A user can submit a job, upload a document, and see a cited, evaluated report in the browser without directly calling the API; frontend and backend integration tests pass; no secrets or raw exception text are exposed client-side.
+**Completion gate:** A user can upload a document, submit research, follow progress, and view a cited and evaluated report without directly calling the API.
 
 ---
 
-## Milestone 17 — Complete containerized local release
+## Milestone 17 — Complete local container release and build verification
 
 **Status:** Pending
 
-**Goal:** Package every proven local component into one reproducible Docker Compose environment.
+**Goal:** Package every proven local component into reproducible, scanned container images and prove the built images actually run — not just that they build.
 
-**Build:** Application Docker images for the API, worker, outbox relay, and Kafka consumer (replacing the current bare-`uv run` local processes); the frontend's own container; Compose wiring for PostgreSQL/pgvector, Redis, Kafka, Prometheus, Grafana, Alertmanager, and any justified trace/log backend; setup/runbook documentation for a clean checkout.
+**Build:**
 
-**Why here:** Containerizing is meaningful only once the set of services is actually stable (through Milestone 16); packaging earlier would mean repeatedly re-packaging as new services appear.
+- Application images for the API, worker, outbox relay, Kafka consumer, and frontend.
+- Multi-stage builds; non-root runtime users; minimal runtime contents; immutable Git-SHA tags; appropriate health/readiness behavior.
+- Docker Compose for the entire stack; database migration/setup behavior; Kafka topic setup.
+- Container vulnerability scanning; SBOM generation.
 
-**Completion gate:** A clean checkout can `docker compose up` the entire stack (including the frontend) from published/build images, migrate, and complete an observed, cited research job without any host-installed Python/Node tooling beyond Docker itself.
+GitHub Actions must: build every image; fail if any image cannot build; start the built images; wait for readiness; run migrations; execute smoke tests against the running containers; fail if an image builds but cannot start or serve its responsibility; scan every image; retain useful sanitized build/test evidence.
+
+**Why here:** Containerizing is meaningful only once the set of services is actually stable (through Milestone 16); packaging earlier would mean repeatedly re-packaging as new services appear. Container scanning begins here and remains enforced in every later milestone that ships an image.
+
+**Completion gate:** A clean checkout can build and run the complete platform through Docker Compose with no host-installed Python or Node tooling beyond Docker.
 
 ---
 
-## Milestone 18 — Full local E2E, load, failure, recovery, and backup/restore validation
+## Milestone 18 — Local Kubernetes and Helm
 
 **Status:** Pending
 
-**Goal:** Prove the fully containerized platform behaves correctly under realistic load and failure, not just under unit/integration tests.
+**Goal:** Run the Milestone 17 images on Kubernetes locally, on `kind`, before Kubernetes is ever attempted in AWS — per the local-first, cloud-portable rule.
 
-**Build:** End-to-end test scenarios driving the real containerized stack (frontend → API → worker → Kafka → consumer); load testing (concurrent job submission, rate-limit behavior under load); deliberate failure injection (broker/database/Redis restarts, worker/consumer crashes) validating the recovery, outbox, and consumer-inbox guarantees already proven in isolation; backup/restore drills for PostgreSQL; poison-event and DLQ replay drills (Slice 13C2B) under the full stack.
+**Build:**
 
-**Why last locally:** This is the local platform's final gate — it validates the integration of every earlier milestone together, which is only possible once Milestone 17's single environment exists.
+- A reproducible `kind` cluster (the default local Kubernetes distribution).
+- Helm charts for the API, worker, outbox relay, Kafka consumer, and frontend.
+- Database migration and Kafka topic initialization Jobs/hooks.
+- Services and local ingress; ConfigMaps; Kubernetes Secrets without committed credentials.
+- Resource requests/limits; workload-specific liveness/readiness/startup probes (including the caveat already carried locally that a healthy process does not imply every partition/business handler is healthy).
+- Persistent-volume behavior where required.
+- A local observability stack running on `kind`.
+- Upgrade, rollback, teardown, and recreation workflow.
+- CI Helm lint/template validation; CI `kind` deployment and smoke testing where practical.
 
-**Completion gate:** The full E2E suite passes against the containerized stack; a documented load profile with measured latency/throughput/failure rates exists; each tested failure (broker/DB/Redis/worker/consumer restart) recovers without data loss or duplicate business effects; a backup can be restored and validated; bottlenecks and local limitations are documented.
+**Why here:** Kubernetes and Helm must first prove themselves locally on `kind`, the same way every other cloud-bound capability does; EKS (Milestone 22) reuses these exact charts rather than being the first place they ever run.
+
+**Completion gate:** The same images proven in Compose install through Helm on `kind`, complete an end-to-end research job, survive tested pod restarts, upgrade and roll back correctly, and recreate cleanly.
 
 ---
 
 ## After local completion — Cloud architecture
 
-Cloud design work is intentionally out of scope until Milestone 18 passes. Milestones 19–23 then use measured local behavior to design, provision, deploy, and validate Atlas on AWS.
+Cloud design work is intentionally out of scope until Milestone 19 passes. Milestones 20–24 then use measured local behavior to design, provision, deploy, and validate Atlas on AWS, per the local-first, cloud-portable governing rule above.
 
-## Milestone 19 — Local and AWS Visio/system-design diagrams
+## Milestone 19 — Local E2E, load, failure, recovery, and backup/restore validation
+
+**Status:** Pending
+
+**Goal:** Prove the fully containerized platform — both Docker Compose and `kind`/Helm — behaves correctly under realistic load and failure, not just under unit/integration tests. This is the final local release gate.
+
+**Build**, validating both Docker Compose and `kind`/Helm:
+
+- Full browser-to-report end-to-end tests.
+- Concurrent load; rate limiting under load.
+- Broker, database, Redis, worker, relay, consumer, and pod failures.
+- Kafka retry/DLQ/replay drills (Slice 13C2B).
+- Stuck-job and stale-worker behavior.
+- Backup and restore; restart/rescheduling; scaling; recovery-time measurements.
+- Security-control verification.
+- Observability and LangSmith trace continuity.
+- Local limitations documented honestly.
+
+**Why last locally:** This is the local platform's final gate — it validates the integration of every earlier milestone together, across both deployment surfaces (Compose and `kind`/Helm), which is only possible once Milestones 17 and 18 exist.
+
+**Completion gate:** The full E2E suite passes against both the Compose and `kind`/Helm stacks; a documented load profile with measured latency/throughput/failure rates exists; each tested failure recovers without data loss or duplicate business effects; a backup can be restored and validated; bottlenecks and local limitations are documented.
+
+---
+
+## Milestone 20 — Local and AWS Visio/system-design diagrams
 
 **Status:** Pending
 
 **Goal:** Turn validated local architecture into credible design artifacts before any cloud provisioning.
 
-**Build:** A logical local system/workflow diagram reflecting what Milestone 18 actually validated (not aspirational architecture); a Microsoft Visio AWS deployment and network diagram mapping each local component (API, worker, outbox relay, consumer, PostgreSQL, Redis, Kafka, frontend, observability stack) to a proposed AWS service; completed cloud-architecture sections in `docs/TECHNICAL_DESIGN.md`; an explicit local-to-AWS service mapping and trade-off analysis (e.g. self-managed Kafka vs. MSK, self-managed Postgres vs. RDS/Aurora).
+**Build:**
 
-**Why now:** Diagrams produced before Milestone 18 would describe an unvalidated system; producing them immediately after gives the cloud milestones a concrete, defensible target instead of a speculative one.
+- Validated local logical architecture.
+- Docker Compose deployment view; `kind`/Kubernetes deployment view.
+- AWS network/deployment view.
+- Trust boundaries; data flows; failure/recovery flows; observability flows; CI/CD flow.
+- An explicit local-to-AWS service mapping and trade-off analysis.
+
+Include Route 53, WAF, ALB/API routing, VPC/subnets, EKS, ECR, RDS/Aurora PostgreSQL/pgvector, ElastiCache, MSK, S3, Secrets Manager, IAM, and selected AWS observability services only after design review.
+
+**Why now:** Diagrams produced before Milestone 19 would describe an unvalidated system; producing them immediately after gives the cloud milestones a concrete, defensible target instead of a speculative one.
 
 **Completion gate:** Diagrams and trade-off analysis are reviewed and approved before any Terraform code is written; every local component has an explicit AWS mapping or an explicit, justified decision to omit/replace it.
 
 ---
 
-## Milestone 20 — Terraform AWS infrastructure
+## Milestone 21 — Terraform AWS infrastructure
 
 **Status:** Pending
 
-**Goal:** Provision the AWS infrastructure designed in Milestone 19 as reviewable, versioned code.
+**Goal:** Provision the AWS infrastructure designed in Milestone 20 as reviewable, versioned code.
 
-**Build:** Terraform modules for networking (VPC, subnets, security groups), managed data services chosen in Milestone 19's trade-off analysis, an EKS cluster (consumed by Milestone 21), IAM roles/policies scoped to least privilege, and remote state management. Provisional scope — the exact managed-service choices depend on Milestone 19's approved mapping.
+**Build:**
+
+- Networking; EKS; managed data services selected in Milestone 20.
+- ECR; IAM; Secrets; remote Terraform state and locking.
+- Least privilege; environment separation; drift detection.
+
+GitHub Actions: `terraform fmt -check`; `terraform validate`; TFLint; Checkov or tfsec; Terraform plan on PR; protected apply only after review/approval (no automatic apply from an unreviewed PR); controlled destroy/recreate validation.
 
 **Why after the diagrams:** Infrastructure-as-code should implement an already-approved design, not drive architecture decisions ad hoc.
 
@@ -353,41 +495,52 @@ Cloud design work is intentionally out of scope until Milestone 18 passes. Miles
 
 ---
 
-## Milestone 21 — Kubernetes/EKS and Helm deployment
+## Milestone 22 — Kubernetes/EKS deployment
 
 **Status:** Pending
 
-**Goal:** Run the containerized platform (Milestone 17's images) on the EKS cluster provisioned in Milestone 20.
+**Goal:** Run the containerized platform on the EKS cluster provisioned in Milestone 21, reusing the Helm charts already validated on `kind` in Milestone 18 — EKS must not be the first place the Helm workloads run.
 
-**Build:** Helm charts for the API, worker, outbox relay, consumer, and frontend; Kubernetes-native configuration for the observability stack; readiness/liveness probes appropriate to each workload (including the explicit caveat already carried locally that a healthy process does not imply every partition/business handler is healthy); horizontal scaling policy for stateless components; secrets management via a Kubernetes-native or AWS-native mechanism (never plain ConfigMaps for credentials).
+**Build:**
 
-**Why after Terraform:** Kubernetes workloads need the cluster and networking Milestone 20 provisions; deploying before that would have nowhere to run.
+- ECR image pull; AWS-native workload identity; AWS secrets integration.
+- Ingress/load balancer; network policies; autoscaling; pod disruption budgets.
+- Safe migrations; rolling update; rollback; managed-service connectivity.
 
-**Completion gate:** A clean `helm install` against the provisioned EKS cluster brings up a working platform reachable end to end; probes correctly reflect real health; a rolling update/rollback succeeds without downtime for stateless components.
+**Why after Terraform:** Kubernetes workloads need the cluster and networking Milestone 21 provisions; deploying before that would have nowhere to run.
+
+**Completion gate:** A clean `helm install` (the same charts proven on `kind`) against the provisioned EKS cluster brings up a working platform reachable end to end; probes correctly reflect real health; a rolling update/rollback succeeds without downtime for stateless components.
 
 ---
 
-## Milestone 22 — Cloud CI/CD, promotion, verification, and rollback
+## Milestone 23 — Cloud CI/CD, promotion, verification, and rollback
 
 **Status:** Pending
 
 **Goal:** Automate build, promotion, and safe rollback for the deployed cloud platform.
 
-**Build:** CI/CD pipelines building and publishing the Milestone 17 container images; environment promotion (e.g. staging → production) gated on automated verification; automated smoke/health verification post-deploy; a documented, tested rollback procedure; integration with Milestone 15's supply-chain scanning gates in the cloud pipeline.
+**Required pipeline:** pull request → formatting/lint/type/unit/integration/evaluation tests → security and secret scans → image builds → image scans and SBOMs → container smoke tests → `kind`/Helm tests → Terraform plan → review/merge → immutable image publication to ECR → staging deployment → post-deploy smoke/E2E tests → approval/promotion → production deployment → health verification → automatic or controlled rollback on failure. No production deployment directly from an unreviewed pull request.
 
-**Why after the deployment exists:** Automating promotion and rollback requires a real deployed target (Milestone 21) to promote to and roll back against.
+**Why after the deployment exists:** Automating promotion and rollback requires a real deployed target (Milestone 22) to promote to and roll back against.
 
 **Completion gate:** A merged change is built, scanned, deployed to a non-production environment, verified, and promotable to production through the pipeline without manual server access; a deliberately bad deploy is caught and rolled back automatically or via a documented one-command procedure.
 
 ---
 
-## Milestone 23 — Cloud validation, runbooks, cost analysis, portfolio demo, and interview narrative
+## Milestone 24 — Cloud validation, runbooks, cost analysis, portfolio demonstration, and interview narrative
 
 **Status:** Pending
 
 **Goal:** Close out the project as a defensible, explainable, portfolio-ready system.
 
-**Build:** Cloud-environment load/failure/recovery validation mirroring Milestone 18's local drills; operational runbooks for on-call scenarios (broker down, database failover, consumer stuck/poison event); a cost analysis of the running cloud environment with identified optimization opportunities; a recorded or scripted portfolio demonstration; a written interview narrative connecting design decisions, trade-offs, and validated evidence across all 23 milestones.
+**Build:**
+
+- Cloud load/failure/recovery validation; backup and disaster-recovery drills.
+- Operational and security runbooks.
+- Cost tracking and optimization analysis.
+- LangSmith and operational observability demonstration.
+- Architecture diagrams; recorded/scripted demo; written interview narrative.
+- Evidence-based explanation of trade-offs and limitations across all 24 milestones.
 
 **Why last:** This milestone only synthesizes and validates what every prior milestone already proved; it adds no new architecture.
 
@@ -397,6 +550,6 @@ Cloud design work is intentionally out of scope until Milestone 18 passes. Miles
 
 ## Planned technology coverage
 
-The roadmap provides justified entry points for Python, AsyncIO, FastAPI, Pydantic, Pytest, Ruff, mypy, GitHub Actions, PostgreSQL, SQLAlchemy, Alembic, Docker Compose, LangChain/LangGraph, OpenAI/Anthropic, RAG, pgvector, MCP/FastMCP, specialist agents, grading/evaluations, retries and recovery, Redis, Kafka, OpenTelemetry, Prometheus, Grafana, Alertmanager, structured logging, security/supply-chain scanning, Next.js/TypeScript/Tailwind, and complete local containerization.
+The roadmap provides justified entry points for Python, AsyncIO, FastAPI, Pydantic, Pytest, Ruff, mypy, GitHub Actions, PostgreSQL, SQLAlchemy, Alembic, Docker Compose, LangChain/LangGraph, OpenAI/Anthropic, RAG, pgvector, MCP/FastMCP, specialist agents, grading/evaluations, retries and recovery, Redis, Kafka, OpenTelemetry, Prometheus, Grafana, Alertmanager, structured logging, mandatory LangSmith AI observability and live semantic grading, a bounded advisory operations analyst, security/supply-chain scanning (Bandit/Semgrep, Gitleaks, CodeQL, SBOM), Next.js/TypeScript/Tailwind, complete local containerization, local Kubernetes/Helm via `kind`, Terraform, EKS, and cloud CI/CD.
 
-Kubernetes, Helm, Terraform, and AWS begin only after the local release gate (Milestone 18) passes, per Milestones 19–23 above.
+Kubernetes and Helm begin locally on `kind` at Milestone 18 — not for the first time in AWS. Container scanning begins when images exist at Milestone 17 and remains enforced thereafter. Security GitHub Actions begin at Milestone 15. Mandatory LangSmith begins at Milestone 14. Local work completes after Milestone 19; cloud architecture starts at Milestone 20 (Terraform is Milestone 21, EKS is Milestone 22, cloud CI/CD is Milestone 23, and final cloud validation is Milestone 24) — 24 milestones in total.
