@@ -59,7 +59,7 @@ The initial user is a professional researcher or knowledge worker who needs a ci
 - Reliability: duplicate requests and events must not produce uncontrolled duplicate work.
 - Observability: logs, metrics, and traces must correlate requests, jobs, agents, tools, and model calls.
 - Security: least privilege, protected secrets, safe input/tool boundaries, and auditable access.
-- Portability: the local design must map clearly to AWS services without changing core domain behavior.
+- Portability: every cloud capability must first have a working local equivalent whenever technically practical, so AWS operationalizes an already-validated system rather than becoming the first place a component is integrated; the local design must map clearly to AWS services without changing core domain behavior.
 - Testability: deterministic logic and external integrations must be independently verifiable.
 - Operability: failed work must be diagnosable, recoverable, and safe to replay.
 - Cost awareness: token, model, storage, compute, and data-transfer costs must be measurable and bounded.
