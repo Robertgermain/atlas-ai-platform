@@ -16,17 +16,18 @@ The repository already has a working local backend and workflow foundation: Pyth
 
 ## Current milestone
 
-Milestone 12 is **Complete** through Pull Request #17 (`e3412c3`) and calibration-closeout Pull Request #18 (`9d5abde`). Milestone 13 is **Current**: Slice 13A is **Complete** through Pull Request #19 (`dc19714`). Slice 13B (PostgreSQL transactional outbox + typed research-job domain events; global head-of-line `outbox_position` ordering; fake producer only) is under review on `milestone-13-transactional-outbox`. Kafka is deferred to Slice 13C. `evaluation.candidate.v1` remains provisional. The comprehensive Visio and AWS design remains deferred.
+Milestone 12 is **Complete** through Pull Request #17 (`e3412c3`) and calibration-closeout Pull Request #18 (`9d5abde`). Milestone 13 is **Current**: Slice 13A is **Complete** through Pull Request #19 (`dc19714`). Slice 13B (PostgreSQL transactional outbox + typed research-job domain events; global head-of-line `outbox_position` ordering) is **Complete** through Pull Request #20 (`48ce40a`). Slice 13C1 (real Kafka 4.3.1 broker, typed `confluent-kafka` producer, topic administration, and the executable `python -m atlas.outbox` relay) is implemented locally on `milestone-13-kafka` and pending its own PR/`main` CI. Consumer inbox/dedup, replay, and DLQ remain Slice 13C2. `evaluation.candidate.v1` remains provisional. The comprehensive Visio and AWS design remains deferred.
 
 ### Run locally
 
-Development-only Compose credentials are `atlas` / `atlas`. Postgres is published on `127.0.0.1:5433` only; Redis 8.8.1 on `127.0.0.1:6380` only (see `.env.example` and `docker-compose.yml`). Do not use these values outside local development.
+Development-only Compose credentials are `atlas` / `atlas`. Postgres is published on `127.0.0.1:5433` only; Redis 8.8.1 on `127.0.0.1:6380` only; Kafka 4.3.1 (single-node KRaft, `auto.create.topics.enable=false`) on `127.0.0.1:9094` only, with a one-shot `kafka-topic-init` service creating/verifying the reserved topic `atlas.research-job-events.v1` (see `.env.example` and `docker-compose.yml`). Do not use these values outside local development.
 
 ```bash
 # 1. Install locked dependencies
 uv sync --frozen
 
-# 2. Start PostgreSQL + Redis (creates databases atlas and atlas_test)
+# 2. Start PostgreSQL + Redis + Kafka (creates databases atlas and atlas_test,
+#    and creates/verifies the reserved Kafka topic via kafka-topic-init)
 docker compose up -d
 
 # 3. Apply migrations to the local application database
@@ -46,4 +47,8 @@ uv run python -m atlas.worker
 
 # Optional: FastMCP stdio server for the same governed tools
 # uv run python -m atlas.mcp
+
+# Optional: Kafka outbox relay (terminal 3, Slice 13C1). Requires Compose
+# Kafka to be healthy and the reserved topic already created (kafka-topic-init).
+# uv run python -m atlas.outbox
 ```

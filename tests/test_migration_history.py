@@ -27,9 +27,9 @@ def test_default_base_ref_is_origin_main() -> None:
     assert DEFAULT_MIGRATION_BASE_REF == "origin/main"
 
 
-def test_list_prior_migration_paths_finds_exactly_ten() -> None:
+def test_list_prior_migration_paths_finds_exactly_eleven() -> None:
     prior = list_prior_migration_paths(REPO_ROOT)
-    assert len(prior) == 10
+    assert len(prior) == 11
     for index, relative in enumerate(prior, start=1):
         assert f"{index:04d}_" in Path(relative).name
 
@@ -79,7 +79,7 @@ def test_assert_prior_migrations_unchanged_uses_resolved_sha_not_local_main(
     """Comparison must target the resolved remote-tracking SHA, never bare ``main``."""
     versions = tmp_path / "alembic" / "versions"
     versions.mkdir(parents=True)
-    for index in range(1, 11):
+    for index in range(1, 12):
         (versions / f"20260808_{index:04d}_placeholder.py").write_text(
             "# stub\n", encoding="utf-8"
         )
@@ -109,7 +109,7 @@ def test_assert_prior_migrations_propagates_unavailable_base_ref(
 ) -> None:
     versions = tmp_path / "alembic" / "versions"
     versions.mkdir(parents=True)
-    for index in range(1, 11):
+    for index in range(1, 12):
         (versions / f"20260808_{index:04d}_placeholder.py").write_text(
             "# stub\n", encoding="utf-8"
         )

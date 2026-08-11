@@ -2,6 +2,13 @@
 
 from atlas.outbox.clock import ControllableClock, utc_now
 from atlas.outbox.errors import (
+    EventPublishError,
+    FatalEventPublishError,
+    KafkaFatalProducerError,
+    KafkaProducerConfigurationError,
+    KafkaPublishError,
+    KafkaPublishTimeoutError,
+    KafkaTopicVerificationError,
     OutboxEnqueueError,
     OutboxError,
     RelayNotOwnerError,
@@ -18,7 +25,12 @@ from atlas.outbox.ports import (
     OutboxEnqueuer,
     OutboxRepository,
 )
-from atlas.outbox.relay import DEFAULT_OUTBOX_BATCH_SIZE, OutboxRelay
+from atlas.outbox.relay import (
+    DEFAULT_OUTBOX_BATCH_SIZE,
+    OutboxRelay,
+    RelayBatchResult,
+    RelayRunOutcome,
+)
 from atlas.outbox.relay_lock import (
     OUTBOX_RELAY_ADVISORY_LOCK_KEY,
     PostgresOutboxRelayLock,
@@ -32,7 +44,14 @@ __all__ = [
     "ClockAdvancingProducer",
     "ControllableClock",
     "EventProducer",
+    "EventPublishError",
     "FakeEventProducer",
+    "FatalEventPublishError",
+    "KafkaFatalProducerError",
+    "KafkaProducerConfigurationError",
+    "KafkaPublishError",
+    "KafkaPublishTimeoutError",
+    "KafkaTopicVerificationError",
     "OutboxEnqueueError",
     "OutboxEnqueuer",
     "OutboxError",
@@ -40,8 +59,10 @@ __all__ = [
     "OutboxRepository",
     "PostgresOutboxRelayLock",
     "RecordingOutbox",
+    "RelayBatchResult",
     "RelayNotOwnerError",
     "RelayOwnershipError",
+    "RelayRunOutcome",
     "SqlAlchemyOutboxRepository",
     "utc_now",
 ]

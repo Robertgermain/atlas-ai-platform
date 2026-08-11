@@ -1,8 +1,8 @@
-"""Outbox relay orchestration with a typed producer port (no Kafka yet).
+"""Outbox relay orchestration behind a typed ``EventProducer`` port.
 
 Delivery guarantee is at-least-once. A crash after producer acknowledgment but
 before ``mark_published`` re-publishes the same ``event_id`` after lease expiry.
-Consumer inbox deduplication remains mandatory in Slice 13C.
+Consumer inbox deduplication remains mandatory in Slice 13C2.
 
 Publication order is strict by ascending ``outbox_position``. Within a claimed
 batch, a producer failure or lost mark ownership stops later rows: they are not
@@ -17,13 +17,19 @@ from __future__ import annotations
 import logging
 import secrets
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import timedelta
+from enum import StrEnum
 from uuid import UUID
 
 from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.outbox.clock import Clock, utc_now
-from atlas.outbox.errors import RelayNotOwnerError
+from atlas.outbox.errors import (
+    EventPublishError,
+    FatalEventPublishError,
+    RelayNotOwnerError,
+)
 from atlas.outbox.ports import ClaimedOutboxRecord, EventProducer, OutboxRepository
 from atlas.outbox.relay_lock import PostgresOutboxRelayLock
 from atlas.persistence.db import session_scope
@@ -35,6 +41,34 @@ DEFAULT_OUTBOX_BATCH_SIZE = 50
 # Sanitized error classes persisted for non-producer stop reasons (never raw text).
 _EARLIER_PUBLISH_FAILURE = "EarlierEventPublishFailure"
 _EARLIER_OWNERSHIP_LOST = "EarlierEventOwnershipLost"
+
+
+class RelayRunOutcome(StrEnum):
+    """Distinguishes why a ``run_once()`` batch ended (Slice 13C1).
+
+    ``FATAL_FAILURE`` and ``UNEXPECTED_FAILURE`` are the only outcomes that
+    must cause the caller (the Kafka relay executable) to stop the poll loop
+    and terminate nonzero; the row's claim has already been safely released
+    before either is returned.
+    """
+
+    EMPTY = "empty"
+    PUBLISHED = "published"
+    RECOVERABLE_FAILURE = "recoverable_failure"
+    FATAL_FAILURE = "fatal_failure"
+    OWNERSHIP_LOST = "ownership_lost"
+    # A producer raised something other than the typed EventPublishError /
+    # FatalEventPublishError hierarchy -- e.g. a programming error. Never
+    # treated as recoverable: Atlas has no basis to assume a retry is safe.
+    UNEXPECTED_FAILURE = "unexpected_failure"
+
+
+@dataclass(frozen=True, slots=True)
+class RelayBatchResult:
+    """Outcome of one ``run_once()`` call."""
+
+    outcome: RelayRunOutcome
+    published_count: int
 
 
 class OutboxRelay:
@@ -67,10 +101,11 @@ class OutboxRelay:
         self._publish_lease_seconds = publish_lease_seconds
         self._clock: Clock = clock or utc_now
 
-    def run_once(self) -> int:
+    def run_once(self) -> RelayBatchResult:
         """Process at most one claimable batch in ``outbox_position`` order.
 
-        Returns the number of rows successfully marked published in this run.
+        Returns a :class:`RelayBatchResult` describing how many rows were
+        marked published and why the batch ended.
         """
         if not self._lock.held:
             raise RelayNotOwnerError(
@@ -90,24 +125,46 @@ class OutboxRelay:
             )
         # Claim transaction is committed before any producer I/O.
 
+        if not claimed:
+            return RelayBatchResult(outcome=RelayRunOutcome.EMPTY, published_count=0)
+
         published = 0
         for index, record in enumerate(claimed):
+            failure_outcome: RelayRunOutcome | None = None
+            error_class: str | None = None
             try:
                 self._producer.publish(record.event)
+            except FatalEventPublishError as exc:
+                failure_outcome = RelayRunOutcome.FATAL_FAILURE
+                error_class = exc.__class__.__name__
+            except EventPublishError as exc:
+                failure_outcome = RelayRunOutcome.RECOVERABLE_FAILURE
+                error_class = exc.__class__.__name__
             except Exception as exc:
+                # Not a typed publish error: a programming error or some
+                # other unexpected failure. Never assume this is safe to
+                # retry -- release what we can, using only the safe class
+                # name, then stop and let the caller terminate nonzero.
+                failure_outcome = RelayRunOutcome.UNEXPECTED_FAILURE
+                error_class = exc.__class__.__name__
+
+            if failure_outcome is not None:
+                assert error_class is not None
                 finalize_at = self._clock()
                 self._release_owned(
                     event_id=record.event_id,
                     claimant_token=claim_token,
                     at=finalize_at,
-                    error_class=exc.__class__.__name__,
+                    error_class=error_class,
                 )
                 self._release_remaining(
                     claimed[index + 1 :],
                     claimant_token=claim_token,
                     error_class=_EARLIER_PUBLISH_FAILURE,
                 )
-                break
+                return RelayBatchResult(
+                    outcome=failure_outcome, published_count=published
+                )
 
             finalize_at = self._clock()
             with session_scope(self._session_factory) as session:
@@ -133,8 +190,12 @@ class OutboxRelay:
                 claimant_token=claim_token,
                 error_class=_EARLIER_OWNERSHIP_LOST,
             )
-            break
-        return published
+            return RelayBatchResult(
+                outcome=RelayRunOutcome.OWNERSHIP_LOST, published_count=published
+            )
+        return RelayBatchResult(
+            outcome=RelayRunOutcome.PUBLISHED, published_count=published
+        )
 
     def _release_owned(
         self,
