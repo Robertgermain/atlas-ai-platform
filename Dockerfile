@@ -7,14 +7,12 @@
 # image's ENTRYPOINT -- a minimal init process, see below -- is identical
 # for every role and is never overridden):
 #
-#   API              (default CMD): uvicorn atlas.main:app --host 0.0.0.0 --port 8000
+#   API              (default CMD): uvicorn atlas.main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 10
 #   Worker:                         python -m atlas.worker
 #   Outbox relay:                   python -m atlas.outbox
 #   Kafka consumer:                 python -m atlas.consumer
 #   Migration (one-shot):           alembic upgrade head
-#   Topic administration (one-shot): not yet available as a `python -m` entry
-#                                    point -- see Slice 14B requirement noted
-#                                    in PROJECT_STATE.md / docs/LOCAL_BUILD_PLAN.md.
+#   Topic administration (one-shot): python -m atlas.outbox.topic_admin
 #
 # See docs/TECHNICAL_DESIGN.md ("Backend container image, Milestone 14 Slice
 # 14A") for the full design rationale (shared-image decision, digest-pinning
@@ -166,11 +164,18 @@ EXPOSE 8000
 # overriding CMD wholesale, exactly as before Tini was added -- ENTRYPOINT
 # itself is fixed and identical for every role.
 #
-# This is the API's default command. Other roles override the full command
-# (ENTRYPOINT still applies, so Tini remains PID 1 for all of them):
+# This is the API's default command. `--timeout-graceful-shutdown 10`
+# gives uvicorn's own graceful-shutdown window an explicit, documented
+# upper bound (uvicorn's undocumented default is 5s if this flag is
+# omitted) so the Compose `api` service's `stop_grace_period: 15s`
+# (docker-compose.yml) has 5s of margin beyond uvicorn's own worst-case
+# shutdown time, not merely whatever uvicorn happens to default to today.
+# Other roles override the full command (ENTRYPOINT still applies, so Tini
+# remains PID 1 for all of them):
 #   docker run <image> python -m atlas.worker
 #   docker run <image> python -m atlas.outbox
 #   docker run <image> python -m atlas.consumer
 #   docker run <image> alembic upgrade head
+#   docker run <image> python -m atlas.outbox.topic_admin
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["uvicorn", "atlas.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "atlas.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "10"]

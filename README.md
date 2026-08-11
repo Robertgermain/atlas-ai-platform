@@ -16,7 +16,7 @@ The repository already has a working local backend and workflow foundation: Pyth
 
 ## Current milestone
 
-Milestone 12 is **Complete** through Pull Request #17 (`e3412c3`) and calibration-closeout Pull Request #18 (`9d5abde`). Milestone 13 (Redis and Kafka) is **Complete**: Slice 13A is **Complete** through Pull Request #19 (`dc19714`). Slice 13B (PostgreSQL transactional outbox + typed research-job domain events; global head-of-line `outbox_position` ordering) is **Complete** through Pull Request #20 (`48ce40a`). Slice 13C1 (real Kafka 4.3.1 broker, typed `confluent-kafka` producer, topic administration, and the executable `python -m atlas.outbox` relay) is **Complete** through Pull Request #21 (`cd5b25e`). Slice 13C2A (PostgreSQL-backed consumer inbox/deduplication, the research-job lifecycle projection business consumer, and the non-HTTP executable `python -m atlas.consumer`) is **Complete** through Pull Request #22 (`9f2b7af`). Slice 13C2B (bounded consumer retry, permanent-poison classification into a PostgreSQL dead-letter store, and a local operator replay CLI, `python -m atlas.consumer.replay`, with durable ownership fencing) is **Complete** through Pull Request #25, merge commit `865023b`. Milestone 14 (backend container foundation and build/runtime CI) is **Current** on branch `milestone-14-backend-containers`. Slice 14A — one shared, digest-pinned, non-root, multi-stage backend `Dockerfile` with a checksum-verified, digest-pinned Tini `ENTRYPOINT` (a portable PID 1/init boundary that works unchanged in Compose, `kind`, and EKS) running the API, worker, outbox relay, and Kafka consumer by overriding the container command — is locally built and verified (image build, role-module imports, absent dev dependencies, non-root UID/GID, read-only-root + tmpfs `/tmp` compatibility, `/health`/`/ready`, sanitized unavailable-dependency logging for all four roles, prompt SIGTERM shutdown for all four roles without `docker run --init`, zombie reaping) without any host-run PostgreSQL/Redis/Kafka dependency; not yet Complete (no PR opened). Slices 14B (Compose topology) and 14C (container CI/Trivy/Syft) remain Pending. `evaluation.candidate.v1` remains provisional. The comprehensive Visio and AWS design remains deferred.
+Milestone 12 is **Complete** through Pull Request #17 (`e3412c3`) and calibration-closeout Pull Request #18 (`9d5abde`). Milestone 13 (Redis and Kafka) is **Complete**: Slice 13A is **Complete** through Pull Request #19 (`dc19714`). Slice 13B (PostgreSQL transactional outbox + typed research-job domain events; global head-of-line `outbox_position` ordering) is **Complete** through Pull Request #20 (`48ce40a`). Slice 13C1 (real Kafka 4.3.1 broker, typed `confluent-kafka` producer, topic administration, and the executable `python -m atlas.outbox` relay) is **Complete** through Pull Request #21 (`cd5b25e`). Slice 13C2A (PostgreSQL-backed consumer inbox/deduplication, the research-job lifecycle projection business consumer, and the non-HTTP executable `python -m atlas.consumer`) is **Complete** through Pull Request #22 (`9f2b7af`). Slice 13C2B (bounded consumer retry, permanent-poison classification into a PostgreSQL dead-letter store, and a local operator replay CLI, `python -m atlas.consumer.replay`, with durable ownership fencing) is **Complete** through Pull Request #25, merge commit `865023b`. Milestone 14 (backend container foundation and build/runtime CI) is **Current** on branch `milestone-14-backend-containers`. Slice 14A — one shared, digest-pinned, non-root, multi-stage backend `Dockerfile` with a checksum-verified, digest-pinned Tini `ENTRYPOINT` (a portable PID 1/init boundary that works unchanged in Compose, `kind`, and EKS) running the API, worker, outbox relay, and Kafka consumer by overriding the container command — is locally built and verified (image build, role-module imports, absent dev dependencies, non-root UID/GID, read-only-root + tmpfs `/tmp` compatibility, `/health`/`/ready`, sanitized unavailable-dependency logging for all four roles, prompt SIGTERM shutdown for all four roles without `docker run --init`, zombie reaping) without any host-run PostgreSQL/Redis/Kafka dependency; not yet Complete (no PR opened). Slice 14B — the full Docker Compose application topology (`db-migrate`, `kafka-topic-init`, `api`, `worker`, `outbox-relay`, `consumer`, all six sharing one image built once and never overriding the Tini `ENTRYPOINT`) plus a new `python -m atlas.outbox.topic_admin` executable — is locally verified end-to-end against real Compose-started PostgreSQL/Redis/Kafka (submit-to-completion research job, event flow through the outbox/Kafka/consumer/projection, idempotent replay, prompt SIGTERM shutdown); not yet Complete (no PR opened). Slice 14C (container CI/Trivy/Syft) remains Pending. `evaluation.candidate.v1` remains provisional. The comprehensive Visio and AWS design remains deferred.
 
 ### Roadmap
 
@@ -24,7 +24,38 @@ The complete roadmap (`docs/LOCAL_BUILD_PLAN.md`) has 24 milestones: Milestones 
 
 ### Run locally
 
-Development-only Compose credentials are `atlas` / `atlas`. Postgres is published on `127.0.0.1:5433` only; Redis 8.8.1 on `127.0.0.1:6380` only; Kafka 4.3.1 (single-node KRaft, `auto.create.topics.enable=false`) on `127.0.0.1:9094` only, with a one-shot `kafka-topic-init` service creating/verifying the reserved topic `atlas.research-job-events.v1` (see `.env.example` and `docker-compose.yml`). Do not use these values outside local development.
+Development-only Compose credentials are `atlas` / `atlas`. Postgres is published on `127.0.0.1:5433` only; Redis 8.8.1 on `127.0.0.1:6380` only; Kafka 4.3.1 (single-node KRaft, `auto.create.topics.enable=false`) on `127.0.0.1:9094` only, with a one-shot `kafka-topic-init` service creating/verifying the reserved topic `atlas.research-job-events.v1` via the typed `python -m atlas.outbox.topic_admin` executable (Milestone 14 Slice 14B; see `.env.example` and `docker-compose.yml`). Do not use these values outside local development.
+
+There are now two ways to run the backend locally: entirely through Docker Compose (Milestone 14 Slice 14B, no host-installed Python needed beyond building the image once), or as host processes against Compose-provided infrastructure only (the original Milestones 1–13 workflow, still fully supported). Both use the same `docker-compose.yml`.
+
+#### Option A: full backend through Docker Compose (Milestone 14 Slice 14B)
+
+```bash
+# 1. Build the shared backend image once, tagged with the current commit
+export GIT_SHA=$(git rev-parse HEAD)
+export BUILD_DATE=$(git show -s --format=%cI "$GIT_SHA")
+docker compose build api
+
+# 2. Start everything: PostgreSQL, Redis, Kafka, the one-shot db-migrate/
+#    kafka-topic-init jobs, then the API, worker, outbox relay, and consumer.
+#    Dependency ordering (depends_on health/completion conditions) means the
+#    one-shot jobs always finish before any long-running service starts.
+docker compose up -d
+
+# 3. API is published at 127.0.0.1:8000 only.
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/ready
+
+# Real OpenAI/Anthropic/Tavily credentials, if you want live providers instead
+# of the default fake ones, are picked up from ATLAS_OPENAI_API_KEY /
+# ATLAS_ANTHROPIC_API_KEY / ATLAS_TAVILY_API_KEY in your shell or a Compose
+# `.env` file -- never from env_file: .env (see docker-compose.yml).
+
+# 4. Tear down (including volumes) when done
+docker compose down -v
+```
+
+#### Option B: host-run processes against Compose infrastructure only
 
 ```bash
 # 1. Install locked dependencies
@@ -32,7 +63,7 @@ uv sync --frozen
 
 # 2. Start PostgreSQL + Redis + Kafka (creates databases atlas and atlas_test,
 #    and creates/verifies the reserved Kafka topic via kafka-topic-init)
-docker compose up -d
+docker compose up -d postgres redis kafka kafka-topic-init
 
 # 3. Apply migrations to the local application database
 export ATLAS_DATABASE_URL=postgresql+psycopg://atlas:atlas@127.0.0.1:5433/atlas
