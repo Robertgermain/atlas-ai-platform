@@ -261,9 +261,30 @@ The local platform is complete when a new developer can clone Atlas, configure s
 
 **Completion gate:** Redis loss does not lose jobs; rate limits work concurrently; database updates and outbox events stay consistent; duplicate Kafka delivery is safe; replay and poison-message handling are tested.
 
-**Local implementation status:** Slice 13A is **Complete** through Pull Request #19 (`dc19714`; PR CI run #40 and resulting `main` CI run #41 passed): Redis-backed fixed-window rate limiting for `POST /v1/research-jobs` by direct peer IP; dedicated worker heartbeat thread with TTL keys; `noop` default coordination provider; pinned Redis 8.8.1 in Compose/CI. Slice 13B is **Complete** through Pull Request #20 (`48ce40a`; corrected PR CI run #43 and resulting `main` CI run #44 passed): typed research-job domain events + PostgreSQL transactional outbox + singleton advisory-lock relay; global `outbox_position` head-of-line claiming; fresh post-producer lease fencing; strict stop-on-failure ordering. Slice 13C1 is **Complete** through Pull Request #21 (`cd5b25e`; PR CI and resulting `main` CI run #47 passed): real Kafka 4.3.1 broker; typed `confluent-kafka` producer adapter with delivery-callback-confirmed publish and a narrow, fail-closed Kafka error classification — fatal, or retriable/`_MSG_TIMED_OUT` recoverable, or else fatal; `AdminClient`-based topic administration/verification; Kafka-only executable `python -m atlas.outbox`. Slice 13C2A (PostgreSQL-backed consumer inbox with `(consumer_id, event_id)` deduplication; the research-job lifecycle projection as the first business consumer; typed `KafkaEventConsumer` with manual offset commit only after the PostgreSQL transaction commits; non-HTTP executable `python -m atlas.consumer`; migration `20260809_0012`) is **Complete** through Pull Request #22 (`9f2b7af`; PR CI run #48 and resulting `main` CI run #49 passed). Slice 13C2B (retry/backoff, poison-event/dead-letter handling, and replay tooling) remains pending. Celery remains excluded. Do not mark Milestone 13 Complete until Slice 13C2B (and its PR/`main` CI) passes.
+**Local implementation status:** Slice 13A is **Complete** through Pull Request #19 (`dc19714`; PR CI run #40 and resulting `main` CI run #41 passed): Redis-backed fixed-window rate limiting for `POST /v1/research-jobs` by direct peer IP; dedicated worker heartbeat thread with TTL keys; `noop` default coordination provider; pinned Redis 8.8.1 in Compose/CI. Slice 13B is **Complete** through Pull Request #20 (`48ce40a`; corrected PR CI run #43 and resulting `main` CI run #44 passed): typed research-job domain events + PostgreSQL transactional outbox + singleton advisory-lock relay; global `outbox_position` head-of-line claiming; fresh post-producer lease fencing; strict stop-on-failure ordering. Slice 13C1 is **Complete** through Pull Request #21 (`cd5b25e`; PR CI and resulting `main` CI run #47 passed): real Kafka 4.3.1 broker; typed `confluent-kafka` producer adapter with delivery-callback-confirmed publish and a narrow, fail-closed Kafka error classification — fatal, or retriable/`_MSG_TIMED_OUT` recoverable, or else fatal; `AdminClient`-based topic administration/verification; Kafka-only executable `python -m atlas.outbox`. Slice 13C2A (PostgreSQL-backed consumer inbox with `(consumer_id, event_id)` deduplication; the research-job lifecycle projection as the first business consumer; typed `KafkaEventConsumer` with manual offset commit only after the PostgreSQL transaction commits; non-HTTP executable `python -m atlas.consumer`; migration `20260809_0012`) is **Complete** through Pull Request #22 (`9f2b7af`; PR CI run #48 and resulting `main` CI run #49 passed). Slice 13C2B (bounded, deterministic in-process retry with a runtime processing deadline; permanent-poison classification into a PostgreSQL-backed dead-letter store, migration `20260809_0013`; offset commit only after durable DLQ persistence; a local-only operator replay CLI, `python -m atlas.consumer.replay`, with durable replay ownership fencing and idempotency) is implemented and locally verified on branch `milestone-13-kafka-consumer-recovery` (quality gates, real-PostgreSQL and real-Kafka tests all passed locally), pending its own pull request and `main` CI. Celery remains excluded. Do not mark Milestone 13 Complete until Slice 13C2B's PR and the resulting `main` CI both pass.
 
-## Milestone 14 — Observability, LangSmith, semantic grading, and advisory operations analysis
+## Milestone 14 — Backend container foundation and build/runtime CI
+
+**Status:** Pending
+
+**Goal:** Package the backend services proven through Milestone 13 (API, worker, outbox relay, Kafka consumer) into reproducible, scanned container images and prove the built images actually run — not just that they build — before observability, security, and frontend work continues.
+
+**Build:**
+
+- Application images for the API, worker, outbox relay, and Kafka consumer. Frontend imaging is deferred to Milestone 17, once a frontend exists.
+- Multi-stage builds; non-root runtime users; minimal runtime contents; immutable Git-SHA tags; appropriate health/readiness behavior.
+- Docker Compose for the backend stack, including database migration/setup behavior and Kafka topic setup.
+- Container vulnerability scanning; SBOM generation.
+
+GitHub Actions must: build every backend image; fail if any image cannot build; start the built images; wait for readiness; run migrations; execute smoke tests against the running containers; fail if an image builds but cannot start or serve its responsibility; scan every image; retain useful sanitized build/test evidence.
+
+**Why now:** Containerizing the backend is meaningful once its set of services is actually stable (through Milestone 13); doing so immediately, before observability/security/frontend work, means every later milestone builds and tests against real containers instead of host-installed Python, and keeps the frontend's own container (added in Milestone 17) additive rather than requiring the backend to be re-packaged later. Container scanning begins here and remains enforced in every later milestone that ships an image.
+
+**Completion gate:** A clean checkout can build and run the backend platform (API, worker, outbox relay, Kafka consumer, and their PostgreSQL/Redis/Kafka dependencies) through Docker Compose with no host-installed Python tooling beyond Docker.
+
+---
+
+## Milestone 15 — Observability, LangSmith, semantic grading, and advisory operations analysis
 
 **Status:** Pending
 
@@ -275,11 +296,12 @@ The local platform is complete when a new developer can clone Atlas, configure s
 - Existing evaluation/grading (Milestone 12): citation-integrity grader, tool-use grader, report-structure grader, coverage grader, completeness grader, lexical groundedness grader, durable evaluation runs/results, evaluation ownership fencing, human-review routing, and provisional `evaluation.candidate.v1` (frozen `evaluation.v1` remains deferred).
 - Existing repair/retry (Milestone 12): a deterministic recovery policy controls all loops; one bounded report-repair attempt is allowed for eligible structural failures and re-enters drafting/synthesis only (never planning, research, or tools automatically); transient failed jobs may receive at most two job-level retries with exponential backoff and bounded jitter; permanent, ownership, citation-integrity, and tool-policy failures fail closed; an AI component may generate a repaired draft, but deterministic policy — not an unconstrained retry agent — decides whether repair/retry is allowed.
 - Existing monitoring (Milestone 13 Slice 13A): a Redis-backed worker heartbeat exists, plus durable job, workflow, model, tool, evaluation, outbox, and consumer records. A dedicated monitoring agent does **not** exist yet. The heartbeat alone is not full monitoring or job health — full observability is this milestone.
-- Slice 13C2B (Kafka-consumer retry/backoff, poison-event handling, PostgreSQL DLQ, and operator replay) is separate, pending work under Milestone 13, not this milestone.
+- Existing consumer retry/DLQ/replay (Milestone 13 Slice 13C2B): bounded, deterministic Kafka-consumer retry with a runtime processing deadline; permanent-poison classification into a PostgreSQL-backed dead-letter store; offset commit only after durable DLQ persistence; a local operator replay CLI with durable ownership fencing. Implemented and locally verified, pending its own PR/`main` CI — this milestone adds telemetry/observability around that behavior (e.g. DLQ/retry metrics), not the retry/DLQ/replay mechanism itself.
+- Milestone 14 (backend container foundation) now precedes this milestone in the approved roadmap order; this milestone's build/runtime CI work assumes the backend already runs as containers.
 
 **Build in three reviewable slices:**
 
-### Slice 14A — Operational telemetry foundation
+### Slice 15A — Operational telemetry foundation
 
 - Structured JSON logs and correlation IDs.
 - OpenTelemetry traces across API → worker → LangGraph → model/tool → outbox → Kafka → consumer.
@@ -287,7 +309,7 @@ The local platform is complete when a new developer can clone Atlas, configure s
 - PostgreSQL, Redis, Kafka, worker, outbox, consumer, API, retrieval, evaluation, model token/cost/latency, and tool metrics.
 - Kafka consumer lag; stale heartbeat and stuck-job detection; outbox backlog and DLQ/retry metrics.
 
-### Slice 14B — Mandatory LangSmith AI observability and live semantic grading
+### Slice 15B — Mandatory LangSmith AI observability and live semantic grading
 
 LangSmith is **mandatory** for Atlas AI observability — it must never be described as optional. Distinction to preserve everywhere this is documented: LangSmith is mandatory for LangGraph/LLM/RAG/tool/evaluation observability; OpenTelemetry, Prometheus, Grafana, Alertmanager, and structured logging remain mandatory for infrastructure and distributed-system observability; LangSmith does not replace operational monitoring; and LangSmith must never become an availability dependency — an export outage must not fail a research job.
 
@@ -301,7 +323,7 @@ LangSmith is **mandatory** for Atlas AI observability — it must never be descr
 - No API keys, raw secrets, unrestricted evidence, or unsanitized exception text may ever be exported to LangSmith.
 - `evaluation.candidate.v1` must remain provisional until the documented held-out/live-semantic calibration gate passes; do not automatically freeze `evaluation.v1` when live semantic grading lands.
 
-### Slice 14C — Bounded advisory monitoring/operations analyst
+### Slice 15C — Bounded advisory monitoring/operations analyst
 
 An advisory AI analyst that consumes sanitized, bounded telemetry summaries (never unrestricted raw production data) to: summarize incidents; cluster recurring failures; suggest likely causes and remediation; and explain job, agent, model, tool, retrieval, Kafka, and evaluation failures.
 
@@ -321,7 +343,7 @@ It must **not**: restart workloads; retry jobs; change configuration; modify pro
 
 ---
 
-## Milestone 15 — Security, authentication, and supply-chain GitHub Actions
+## Milestone 16 — Security, authentication, and supply-chain GitHub Actions
 
 **Status:** Pending
 
@@ -344,7 +366,7 @@ It must **not**: restart workloads; retry jobs; change configuration; modify pro
 - Documented vulnerability suppression with justification, owner, and expiration.
 - Sanitized scanner output.
 
-**Why after observability:** Security review is more effective once logs/traces/metrics exist to show what a security control actually observes and blocks; this also keeps Milestone 14 focused on visibility rather than mixing in an unrelated authn/authz surface.
+**Why after observability:** Security review is more effective once logs/traces/metrics exist to show what a security control actually observes and blocks; this also keeps Milestone 15 focused on visibility rather than mixing in an unrelated authn/authz surface.
 
 **Completion gate:**
 
@@ -356,11 +378,11 @@ It must **not**: restart workloads; retry jobs; change configuration; modify pro
 
 ---
 
-## Milestone 16 — Next.js, TypeScript, Tailwind frontend and document upload
+## Milestone 17 — Next.js, TypeScript, Tailwind frontend, document upload, and frontend container
 
 **Status:** Pending
 
-**Goal:** Give Atlas a real user-facing surface instead of only an HTTP API, and close the "live document ingest" gap left open since Milestone 10.
+**Goal:** Give Atlas a real user-facing surface instead of only an HTTP API, close the "live document ingest" gap left open since Milestone 10, and complete the container release (started for the backend in Milestone 14) by adding the frontend's own image.
 
 **Build:**
 
@@ -373,31 +395,11 @@ It must **not**: restart workloads; retry jobs; change configuration; modify pro
 - Browser-safe errors (no raw backend exception text reaching the UI).
 - Frontend lint, type checks, unit/component tests, and backend integration tests.
 - No `any` without an explicit reviewed justification.
+- A frontend container image: multi-stage build, non-root runtime user, minimal runtime contents, immutable Git-SHA tag, and appropriate health/readiness behavior — matching the standard already set for the backend images in Milestone 14. Docker Compose is extended to run the frontend alongside the already-containerized backend. GitHub Actions builds, starts, and smoke-tests the frontend image the same way it already does for the backend images, and scans it (vulnerability scan + SBOM) the same way.
 
-**Why here:** A frontend is more valuable once the backend has observability and baseline security (Milestones 14–15) to build on, and document upload is the one Milestone 10 gap (live arbitrary-URL fetch/HTML/PDF ingest/object storage) most directly unblocked by adding a real upload surface.
+**Why here:** A frontend is more valuable once the backend has observability and baseline security (Milestones 15–16) to build on, and document upload is the one Milestone 10 gap (live arbitrary-URL fetch/HTML/PDF ingest/object storage) most directly unblocked by adding a real upload surface. The frontend's container is added here, once the frontend itself exists, rather than in Milestone 14 — the backend does not need to wait for the frontend to be containerized, and the frontend does not need a placeholder image before there is anything to package.
 
-**Completion gate:** A user can upload a document, submit research, follow progress, and view a cited and evaluated report without directly calling the API.
-
----
-
-## Milestone 17 — Complete local container release and build verification
-
-**Status:** Pending
-
-**Goal:** Package every proven local component into reproducible, scanned container images and prove the built images actually run — not just that they build.
-
-**Build:**
-
-- Application images for the API, worker, outbox relay, Kafka consumer, and frontend.
-- Multi-stage builds; non-root runtime users; minimal runtime contents; immutable Git-SHA tags; appropriate health/readiness behavior.
-- Docker Compose for the entire stack; database migration/setup behavior; Kafka topic setup.
-- Container vulnerability scanning; SBOM generation.
-
-GitHub Actions must: build every image; fail if any image cannot build; start the built images; wait for readiness; run migrations; execute smoke tests against the running containers; fail if an image builds but cannot start or serve its responsibility; scan every image; retain useful sanitized build/test evidence.
-
-**Why here:** Containerizing is meaningful only once the set of services is actually stable (through Milestone 16); packaging earlier would mean repeatedly re-packaging as new services appear. Container scanning begins here and remains enforced in every later milestone that ships an image.
-
-**Completion gate:** A clean checkout can build and run the complete platform through Docker Compose with no host-installed Python or Node tooling beyond Docker.
+**Completion gate:** A user can upload a document, submit research, follow progress, and view a cited and evaluated report without directly calling the API. A clean checkout can build and run the complete platform (backend, from Milestone 14, plus this milestone's frontend image) through Docker Compose with no host-installed Python or Node tooling beyond Docker.
 
 ---
 
@@ -405,7 +407,7 @@ GitHub Actions must: build every image; fail if any image cannot build; start th
 
 **Status:** Pending
 
-**Goal:** Run the Milestone 17 images on Kubernetes locally, on `kind`, before Kubernetes is ever attempted in AWS — per the local-first, cloud-portable rule.
+**Goal:** Run the backend images from Milestone 14 and the frontend image from Milestone 17 on Kubernetes locally, on `kind`, before Kubernetes is ever attempted in AWS — per the local-first, cloud-portable rule.
 
 **Build:**
 
@@ -447,7 +449,7 @@ Cloud design work is intentionally out of scope until Milestone 19 passes. Miles
 - Observability and LangSmith trace continuity.
 - Local limitations documented honestly.
 
-**Why last locally:** This is the local platform's final gate — it validates the integration of every earlier milestone together, across both deployment surfaces (Compose and `kind`/Helm), which is only possible once Milestones 17 and 18 exist.
+**Why last locally:** This is the local platform's final gate — it validates the integration of every earlier milestone together, across both deployment surfaces (Compose and `kind`/Helm), which is only possible once Milestones 14, 17, and 18 exist.
 
 **Completion gate:** The full E2E suite passes against both the Compose and `kind`/Helm stacks; a documented load profile with measured latency/throughput/failure rates exists; each tested failure recovers without data loss or duplicate business effects; a backup can be restored and validated; bottlenecks and local limitations are documented.
 
@@ -552,4 +554,4 @@ GitHub Actions: `terraform fmt -check`; `terraform validate`; TFLint; Checkov or
 
 The roadmap provides justified entry points for Python, AsyncIO, FastAPI, Pydantic, Pytest, Ruff, mypy, GitHub Actions, PostgreSQL, SQLAlchemy, Alembic, Docker Compose, LangChain/LangGraph, OpenAI/Anthropic, RAG, pgvector, MCP/FastMCP, specialist agents, grading/evaluations, retries and recovery, Redis, Kafka, OpenTelemetry, Prometheus, Grafana, Alertmanager, structured logging, mandatory LangSmith AI observability and live semantic grading, a bounded advisory operations analyst, security/supply-chain scanning (Bandit/Semgrep, Gitleaks, CodeQL, SBOM), Next.js/TypeScript/Tailwind, complete local containerization, local Kubernetes/Helm via `kind`, Terraform, EKS, and cloud CI/CD.
 
-Kubernetes and Helm begin locally on `kind` at Milestone 18 — not for the first time in AWS. Container scanning begins when images exist at Milestone 17 and remains enforced thereafter. Security GitHub Actions begin at Milestone 15. Mandatory LangSmith begins at Milestone 14. Local work completes after Milestone 19; cloud architecture starts at Milestone 20 (Terraform is Milestone 21, EKS is Milestone 22, cloud CI/CD is Milestone 23, and final cloud validation is Milestone 24) — 24 milestones in total.
+Kubernetes and Helm begin locally on `kind` at Milestone 18 — not for the first time in AWS. Container scanning begins when the first (backend) images exist at Milestone 14 and remains enforced thereafter, including the frontend image added at Milestone 17. Security GitHub Actions begin at Milestone 16. Mandatory LangSmith begins at Milestone 15. Local work completes after Milestone 19; cloud architecture starts at Milestone 20 (Terraform is Milestone 21, EKS is Milestone 22, cloud CI/CD is Milestone 23, and final cloud validation is Milestone 24) — 24 milestones in total.

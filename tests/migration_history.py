@@ -25,6 +25,7 @@ _PRIOR_MIGRATION_MARKERS: tuple[str, ...] = (
     "0009_",
     "0010_",
     "0011_",
+    "0012_",
 )
 
 
@@ -38,7 +39,7 @@ Runner = Callable[..., _CompletedProcess]
 
 
 def list_prior_migration_paths(repo_root: Path) -> list[str]:
-    """Return repo-relative paths for Alembic migrations ``0001``–``0011``."""
+    """Return repo-relative paths for Alembic migrations ``0001``–``0012``."""
     versions = repo_root / "alembic" / "versions"
     files = sorted(versions.glob("2026080*_00*.py"))
     return [
@@ -85,13 +86,13 @@ def assert_prior_migrations_unchanged_versus_ref(
     base_ref: str = DEFAULT_MIGRATION_BASE_REF,
     runner: Runner = subprocess.run,
 ) -> None:
-    """Assert migrations ``0001``–``0011`` match ``base_ref``.
+    """Assert migrations ``0001``–``0012`` match ``base_ref``.
 
     Default ``base_ref`` is ``origin/main``.
     """
     prior = list_prior_migration_paths(repo_root)
-    assert len(prior) == 11, (
-        f"Expected exactly 11 prior migrations (0001–0011); found {len(prior)}: {prior}"
+    assert len(prior) == 12, (
+        f"Expected exactly 12 prior migrations (0001–0012); found {len(prior)}: {prior}"
     )
     resolved = resolve_git_ref(repo_root, base_ref, runner=runner)
     result = runner(
@@ -102,7 +103,7 @@ def assert_prior_migrations_unchanged_versus_ref(
         text=True,
     )
     assert result.returncode == 0, (
-        f"Migrations 0001–0011 differ from {base_ref} (resolved {resolved}):\n"
+        f"Migrations 0001–0012 differ from {base_ref} (resolved {resolved}):\n"
         f"{result.stdout}{result.stderr}"
     )
 

@@ -12,7 +12,11 @@ from dataclasses import dataclass
 import pytest
 from confluent_kafka import KafkaError, KafkaException, Message
 
-from atlas.consumer.errors import ConsumerConfigurationError, ConsumerError
+from atlas.consumer.errors import (
+    ConsumerConfigurationError,
+    ConsumerError,
+    TransientKafkaError,
+)
 from atlas.consumer.identity import RESEARCH_JOB_PROJECTION_CONSUMER_GROUP_V1
 from atlas.consumer.kafka_consumer import KafkaEventConsumer
 from atlas.eventing.topic import RESEARCH_JOB_EVENTS_TOPIC_V1
@@ -22,6 +26,33 @@ _GROUP = RESEARCH_JOB_PROJECTION_CONSUMER_GROUP_V1
 #: ``None`` on purpose" (``None`` is itself one of the invalid commit shapes
 #: under test).
 _NO_OVERRIDE = object()
+
+
+def _kafka_error(
+    *, code: int = KafkaError._TIMED_OUT, fatal: bool = False, retriable: bool = False
+) -> KafkaError:
+    """A real ``KafkaError`` with the requested code/fatal/retriable flags.
+
+    Mirrors ``tests/outbox/test_kafka_producer_unit.py``'s helper: exercises
+    the same ``isinstance``/flag reads the production classifier uses,
+    rather than a duck-typed stand-in.
+    """
+    return KafkaError(
+        code,
+        "synthetic-test-error-reason",
+        fatal=fatal,
+        retriable=retriable,
+    )
+
+
+@dataclass
+class _FakeErrorMessage:
+    """A ``confluent_kafka.Message``-shaped double carrying a broker error."""
+
+    _error: object
+
+    def error(self) -> object:
+        return self._error
 
 
 @dataclass
@@ -40,6 +71,7 @@ class _FakeRdKafkaConsumer:
         raise_on_commit: Exception | None = None,
         raise_on_close: Exception | None = None,
         commit_result: object = _NO_OVERRIDE,
+        poll_result: object = None,
     ) -> None:
         self.subscribed_topics: list[str] | None = None
         self.polled: list[float] = []
@@ -50,6 +82,7 @@ class _FakeRdKafkaConsumer:
         self._raise_on_commit = raise_on_commit
         self._raise_on_close = raise_on_close
         self._commit_result = commit_result
+        self._poll_result = poll_result
 
     def subscribe(self, topics: list[str]) -> None:
         if self._raise_on_subscribe is not None:
@@ -60,7 +93,7 @@ class _FakeRdKafkaConsumer:
         self.polled.append(timeout)
         if self._raise_on_poll is not None:
             raise self._raise_on_poll
-        return None
+        return self._poll_result  # type: ignore[return-value]
 
     def commit(
         self,
@@ -230,6 +263,56 @@ def test_poll_failure_is_wrapped_and_sanitized() -> None:
     assert "synthetic-poll-detail" not in str(excinfo.value)
 
 
+def test_poll_exception_with_an_unrecognized_payload_is_fatal_not_transient() -> None:
+    """A ``KafkaException`` with no ``KafkaError`` payload has no evidence to
+    classify recoverable -- fails closed as the plain fatal ``ConsumerError``."""
+    consumer, _fake = _make(raise_on_poll=KafkaException("synthetic-poll-detail"))
+    with pytest.raises(ConsumerError, match="PollFailed") as excinfo:
+        consumer.poll(1.0)
+    assert not isinstance(excinfo.value, TransientKafkaError)
+
+
+def test_poll_exception_with_a_retriable_kafka_error_is_transient() -> None:
+    error = _kafka_error(retriable=True)
+    consumer, _fake = _make(raise_on_poll=KafkaException(error))
+    with pytest.raises(TransientKafkaError, match="PollFailed") as excinfo:
+        consumer.poll(1.0)
+    assert "synthetic-test-error-reason" not in str(excinfo.value)
+
+
+def test_poll_exception_with_a_fatal_kafka_error_is_fatal_not_transient() -> None:
+    error = _kafka_error(fatal=True)
+    consumer, _fake = _make(raise_on_poll=KafkaException(error))
+    with pytest.raises(ConsumerError, match="PollFailed") as excinfo:
+        consumer.poll(1.0)
+    assert not isinstance(excinfo.value, TransientKafkaError)
+
+
+def test_poll_exception_with_a_neither_flag_kafka_error_is_fatal() -> None:
+    error = _kafka_error(code=KafkaError._BAD_MSG, fatal=False, retriable=False)
+    consumer, _fake = _make(raise_on_poll=KafkaException(error))
+    with pytest.raises(ConsumerError, match="PollFailed") as excinfo:
+        consumer.poll(1.0)
+    assert not isinstance(excinfo.value, TransientKafkaError)
+
+
+def test_poll_returned_broker_error_is_never_returned_to_the_caller() -> None:
+    """A non-raising ``poll()`` result that itself carries a broker error
+    must be classified and raised, never handed back as a normal message."""
+    error = _kafka_error(fatal=True)
+    consumer, _fake = _make(poll_result=_FakeErrorMessage(error))
+    with pytest.raises(ConsumerError, match="PollReturnedBrokerError") as excinfo:
+        consumer.poll(1.0)
+    assert not isinstance(excinfo.value, TransientKafkaError)
+
+
+def test_poll_returned_broker_error_retriable_is_transient() -> None:
+    error = _kafka_error(retriable=True)
+    consumer, _fake = _make(poll_result=_FakeErrorMessage(error))
+    with pytest.raises(TransientKafkaError, match="PollReturnedBrokerError"):
+        consumer.poll(1.0)
+
+
 class _FakeMessage:
     def __init__(self) -> None:
         self.marker = "fake-message"
@@ -256,10 +339,35 @@ def test_commit_failure_is_wrapped_and_sanitized() -> None:
     assert "synthetic-commit-detail" not in str(excinfo.value)
 
 
+def test_commit_exception_with_an_unrecognized_payload_is_fatal_not_transient() -> None:
+    consumer, _fake = _make(raise_on_commit=KafkaException("synthetic-commit-detail"))
+    with pytest.raises(ConsumerError, match="CommitFailed") as excinfo:
+        consumer.commit_message(_FakeMessage())  # type: ignore[arg-type]
+    assert not isinstance(excinfo.value, TransientKafkaError)
+
+
+def test_commit_exception_with_a_retriable_kafka_error_is_transient() -> None:
+    error = _kafka_error(retriable=True)
+    consumer, _fake = _make(raise_on_commit=KafkaException(error))
+    with pytest.raises(TransientKafkaError, match="CommitFailed") as excinfo:
+        consumer.commit_message(_FakeMessage())  # type: ignore[arg-type]
+    assert "synthetic-test-error-reason" not in str(excinfo.value)
+
+
+def test_commit_exception_with_a_fatal_kafka_error_is_fatal_not_transient() -> None:
+    error = _kafka_error(fatal=True)
+    consumer, _fake = _make(raise_on_commit=KafkaException(error))
+    with pytest.raises(ConsumerError, match="CommitFailed") as excinfo:
+        consumer.commit_message(_FakeMessage())  # type: ignore[arg-type]
+    assert not isinstance(excinfo.value, TransientKafkaError)
+
+
 def test_commit_with_partition_level_error_is_rejected_and_sanitized() -> None:
     """A synchronous ``commit()`` can return without raising yet still report
     a per-partition failure via ``.error`` -- this must not be treated as
-    success just because no exception was raised."""
+    success just because no exception was raised. ``_MSG_TIMED_OUT`` is the
+    one documented code classified recoverable despite neither flag being
+    set (see ``atlas.outbox.kafka_errors``), so this is transient."""
 
     partition_error = KafkaError(
         KafkaError._MSG_TIMED_OUT, reason="synthetic-partition-error-detail"
@@ -267,9 +375,33 @@ def test_commit_with_partition_level_error_is_rejected_and_sanitized() -> None:
     consumer, _fake = _make(
         commit_result=[_FakeCommittedPartition(error=partition_error)],
     )
-    with pytest.raises(ConsumerError, match="CommitFailed") as excinfo:
+    with pytest.raises(TransientKafkaError, match="CommitFailed") as excinfo:
         consumer.commit_message(_FakeMessage())  # type: ignore[arg-type]
     assert "synthetic-partition-error-detail" not in str(excinfo.value)
+
+
+def test_commit_with_fatal_partition_level_error_is_fatal_not_transient() -> None:
+    partition_error = _kafka_error(fatal=True)
+    consumer, _fake = _make(
+        commit_result=[_FakeCommittedPartition(error=partition_error)],
+    )
+    with pytest.raises(ConsumerError, match="CommitFailed") as excinfo:
+        consumer.commit_message(_FakeMessage())  # type: ignore[arg-type]
+    assert not isinstance(excinfo.value, TransientKafkaError)
+
+
+def test_commit_with_mixed_fatal_and_retriable_partition_errors_is_fatal() -> None:
+    """One fatal partition error makes the whole unconfirmed result fatal,
+    even if another partition's error is independently recoverable."""
+    consumer, _fake = _make(
+        commit_result=[
+            _FakeCommittedPartition(error=_kafka_error(retriable=True)),
+            _FakeCommittedPartition(error=_kafka_error(fatal=True)),
+        ],
+    )
+    with pytest.raises(ConsumerError, match="CommitFailed") as excinfo:
+        consumer.commit_message(_FakeMessage())  # type: ignore[arg-type]
+    assert not isinstance(excinfo.value, TransientKafkaError)
 
 
 def test_commit_with_none_result_is_rejected() -> None:

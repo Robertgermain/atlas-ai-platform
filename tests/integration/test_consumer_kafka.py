@@ -27,6 +27,9 @@ from atlas.persistence.models.consumer import (
     ConsumerInboxModel,
     ResearchJobEventProjectionModel,
 )
+from atlas.persistence.repositories.consumer_dead_letter import (
+    SqlAlchemyDeadLetterRepository,
+)
 from atlas.persistence.repositories.consumer_inbox import SqlAlchemyInboxRepository
 from atlas.persistence.repositories.research_job_projection import (
     SqlAlchemyResearchJobProjectionRepository,
@@ -65,6 +68,7 @@ def _new_runner(
         session_factory=session_factory,
         inbox=SqlAlchemyInboxRepository(),
         projection=SqlAlchemyResearchJobProjectionRepository(),
+        dead_letters=SqlAlchemyDeadLetterRepository(),
         consumer_id=_CONSUMER_ID,
         poll_timeout_seconds=2.0,
     )
@@ -224,6 +228,7 @@ def test_crash_before_real_offset_ack_causes_genuine_kafka_redelivery(
             session_factory=session_factory,
             inbox=SqlAlchemyInboxRepository(),
             projection=SqlAlchemyResearchJobProjectionRepository(),
+            dead_letters=SqlAlchemyDeadLetterRepository(),
             consumer_id=_CONSUMER_ID,
             poll_timeout_seconds=2.0,
         )

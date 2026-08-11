@@ -5,6 +5,11 @@ from typing import Literal, Self
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from atlas.config.timeout_math import (
+    effective_connect_timeout_seconds,
+    effective_statement_timeout_seconds,
+)
+
 
 class Settings(BaseSettings):
     """Runtime settings for Atlas infrastructure."""
@@ -115,12 +120,91 @@ class Settings(BaseSettings):
     consumer_session_timeout_seconds: float = Field(default=10.0, gt=0)
     consumer_max_poll_interval_seconds: float = Field(default=300.0, gt=0)
 
+    # Kafka consumer bounded retry, DLQ, and replay (Milestone 13 Slice
+    # 13C2B). Retry attempts are process-local (never durable): a consumer
+    # restart resets the transient-infrastructure retry budget. See
+    # atlas.consumer.timing for the same worst-case timing formula applied
+    # at runtime; _validate_consumer_retry_timing_margin below intentionally
+    # duplicates that arithmetic rather than importing it, to avoid a
+    # config -> consumer import cycle (atlas.consumer already imports
+    # atlas.config transitively).
+    consumer_retry_max_attempts: int = Field(default=3, ge=1)
+    consumer_retry_base_seconds: float = Field(default=1.0, gt=0)
+    consumer_retry_max_backoff_seconds: float = Field(default=30.0, gt=0)
+    # Deterministic (no jitter) is intentional for the current
+    # single-consumer/single-partition architecture, where randomized
+    # backoff buys no contention benefit but would make the worst-case
+    # timing bound probabilistic instead of exact. Future multi-partition
+    # or multi-consumer work may reconsider this.
+    consumer_retry_jitter_max_seconds: float = Field(default=0.0, ge=0)
+    consumer_retry_safety_margin_seconds: float = Field(default=60.0, ge=0)
+    consumer_db_connect_timeout_seconds: float = Field(default=5.0, gt=0)
+    consumer_db_pool_timeout_seconds: float = Field(default=5.0, gt=0)
+    consumer_db_statement_timeout_seconds: float = Field(default=5.0, gt=0)
+    # Non-DB-timeout allowance (object construction, Pydantic validation,
+    # JSON encode/decode, GC/scheduler jitter) that no PostgreSQL-side
+    # timeout bounds.
+    consumer_retry_processing_overhead_seconds: float = Field(default=2.0, ge=0)
+    # Conservative cap on SQL statements/round trips per processing attempt.
+    # Verified maximum today is 5 (normal apply); this cap is intentionally
+    # larger, see tests/persistence/test_consumer_statement_counts.py.
+    consumer_max_db_round_trips_per_attempt: int = Field(default=8, ge=1)
+    consumer_replay_lease_seconds: float = Field(default=90.0, gt=0)
+
     @model_validator(mode="after")
     def _validate_heartbeat_timing(self) -> Self:
         if self.heartbeat_ttl_seconds < (2 * self.heartbeat_interval_seconds):
             raise ValueError(
                 "heartbeat_ttl_seconds must be at least twice "
                 "heartbeat_interval_seconds"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_consumer_retry_timing_margin(self) -> Self:
+        """Fail closed unless the worst-case retry episode fits under Kafka's bound.
+
+        Mirrors atlas.consumer.timing.worst_case_total_processing_seconds
+        exactly (kept duplicated on purpose -- see the field comment above).
+        Uses ``effective_connect_timeout_seconds``/``effective_statement_
+        timeout_seconds`` (ceiling-rounded, floored at 1) rather than the
+        raw configured floats, matching exactly what ``atlas.consumer.db.
+        build_consumer_engine`` applies to the real engine at runtime --
+        otherwise a fractional configured value could round up to a larger
+        effective timeout than this proof assumed, silently invalidating
+        the margin it exists to guarantee.
+        """
+        worst_case_attempt_seconds = (
+            self.consumer_db_pool_timeout_seconds
+            + effective_connect_timeout_seconds(
+                self.consumer_db_connect_timeout_seconds
+            )
+            + self.consumer_max_db_round_trips_per_attempt
+            * effective_statement_timeout_seconds(
+                self.consumer_db_statement_timeout_seconds
+            )
+            + self.consumer_retry_processing_overhead_seconds
+        )
+        backoff_sum = sum(
+            min(
+                self.consumer_retry_base_seconds * (2**attempt_index),
+                self.consumer_retry_max_backoff_seconds,
+            )
+            for attempt_index in range(self.consumer_retry_max_attempts - 1)
+        )
+        worst_case_total_processing_seconds = (
+            self.consumer_retry_max_attempts * worst_case_attempt_seconds
+            + backoff_sum
+            + self.consumer_retry_safety_margin_seconds
+        )
+        if (
+            worst_case_total_processing_seconds
+            >= self.consumer_max_poll_interval_seconds
+        ):
+            raise ValueError(
+                "Kafka consumer retry timing settings (max attempts, DB "
+                "timeouts, round-trip cap, backoff, safety margin) must "
+                "sum to strictly less than consumer_max_poll_interval_seconds."
             )
         return self
 

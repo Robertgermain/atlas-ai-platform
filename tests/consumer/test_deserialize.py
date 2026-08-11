@@ -8,7 +8,22 @@ from uuid import uuid4
 import pytest
 
 from atlas.consumer.deserialize import MAX_MESSAGE_VALUE_BYTES, decode_message
-from atlas.consumer.errors import InvalidHeaderError, MalformedEnvelopeError
+from atlas.consumer.errors import (
+    AggregateTypeHeaderMismatchError,
+    DuplicateHeaderKeyError,
+    EventTypeHeaderMismatchError,
+    EventVersionHeaderMismatchError,
+    InvalidJsonError,
+    MissingHeadersError,
+    MissingValueError,
+    NullHeaderValueError,
+    SchemaValidationFailedError,
+    UndecodableHeaderValueError,
+    UndecodableValueError,
+    UnexpectedHeaderKeysError,
+    ValueNotAnObjectError,
+    ValueTooLargeError,
+)
 from atlas.consumer.fakes import FakeKafkaMessage, build_kafka_message_for_event
 from atlas.eventing import ResearchJobCreatedEvent, build_research_job_created
 
@@ -34,7 +49,7 @@ def test_missing_headers_is_rejected() -> None:
     event = _event()
     message = build_kafka_message_for_event(event)
     message.raw_headers = None
-    with pytest.raises(InvalidHeaderError, match="MissingHeaders"):
+    with pytest.raises(MissingHeadersError):
         decode_message(message)
 
 
@@ -46,7 +61,7 @@ def test_duplicate_header_key_is_rejected() -> None:
         *message.raw_headers,
         ("event_type", b"research_job.created"),
     ]
-    with pytest.raises(InvalidHeaderError, match="DuplicateHeaderKey"):
+    with pytest.raises(DuplicateHeaderKeyError):
         decode_message(message)
 
 
@@ -59,7 +74,7 @@ def test_null_header_value_is_rejected() -> None:
             ("aggregate_type", b"research_job"),
         ],
     )
-    with pytest.raises(InvalidHeaderError, match="NullHeaderValue"):
+    with pytest.raises(NullHeaderValueError):
         decode_message(message)
 
 
@@ -72,7 +87,7 @@ def test_undecodable_header_value_is_rejected() -> None:
             ("aggregate_type", b"research_job"),
         ],
     )
-    with pytest.raises(InvalidHeaderError, match="UndecodableHeaderValue"):
+    with pytest.raises(UndecodableHeaderValueError):
         decode_message(message)
 
 
@@ -84,7 +99,7 @@ def test_unexpected_header_keys_missing_one_is_rejected() -> None:
             ("event_version", b"1"),
         ],
     )
-    with pytest.raises(InvalidHeaderError, match="UnexpectedHeaderKeys"):
+    with pytest.raises(UnexpectedHeaderKeysError):
         decode_message(message)
 
 
@@ -93,7 +108,7 @@ def test_unexpected_header_keys_extra_one_is_rejected() -> None:
     message = build_kafka_message_for_event(event)
     assert message.raw_headers is not None
     message.raw_headers = [*message.raw_headers, ("extra_header", b"value")]
-    with pytest.raises(InvalidHeaderError, match="UnexpectedHeaderKeys"):
+    with pytest.raises(UnexpectedHeaderKeysError):
         decode_message(message)
 
 
@@ -101,7 +116,7 @@ def test_missing_value_is_rejected() -> None:
     event = _event()
     message = build_kafka_message_for_event(event)
     message.raw_value = None
-    with pytest.raises(MalformedEnvelopeError, match="MissingValue"):
+    with pytest.raises(MissingValueError):
         decode_message(message)
 
 
@@ -109,7 +124,7 @@ def test_oversized_value_is_rejected() -> None:
     event = _event()
     message = build_kafka_message_for_event(event)
     message.raw_value = b"x" * (MAX_MESSAGE_VALUE_BYTES + 1)
-    with pytest.raises(MalformedEnvelopeError, match="ValueTooLarge"):
+    with pytest.raises(ValueTooLargeError):
         decode_message(message)
 
 
@@ -117,7 +132,7 @@ def test_undecodable_value_is_rejected() -> None:
     event = _event()
     message = build_kafka_message_for_event(event)
     message.raw_value = b"\xff\xfe\xfd"
-    with pytest.raises(MalformedEnvelopeError, match="UndecodableValue"):
+    with pytest.raises(UndecodableValueError):
         decode_message(message)
 
 
@@ -125,7 +140,7 @@ def test_invalid_json_value_is_rejected() -> None:
     event = _event()
     message = build_kafka_message_for_event(event)
     message.raw_value = b"{not json"
-    with pytest.raises(MalformedEnvelopeError, match="InvalidJson"):
+    with pytest.raises(InvalidJsonError):
         decode_message(message)
 
 
@@ -133,7 +148,7 @@ def test_value_not_an_object_is_rejected() -> None:
     event = _event()
     message = build_kafka_message_for_event(event)
     message.raw_value = b"[1, 2, 3]"
-    with pytest.raises(MalformedEnvelopeError, match="ValueNotAnObject"):
+    with pytest.raises(ValueNotAnObjectError):
         decode_message(message)
 
 
@@ -149,7 +164,7 @@ def test_unknown_event_type_fails_schema_validation() -> None:
             ("aggregate_type", b"research_job"),
         ],
     )
-    with pytest.raises(MalformedEnvelopeError, match="SchemaValidationFailed"):
+    with pytest.raises(SchemaValidationFailedError):
         decode_message(message)
 
 
@@ -165,7 +180,7 @@ def test_unsupported_event_version_fails_schema_validation() -> None:
         ("event_version", b"2"),
         ("aggregate_type", b"research_job"),
     ]
-    with pytest.raises(MalformedEnvelopeError, match="SchemaValidationFailed"):
+    with pytest.raises(SchemaValidationFailedError):
         decode_message(message)
 
 
@@ -177,7 +192,7 @@ def test_event_type_header_mismatch_is_rejected() -> None:
         ("event_version", b"1"),
         ("aggregate_type", b"research_job"),
     ]
-    with pytest.raises(InvalidHeaderError, match="EventTypeHeaderMismatch"):
+    with pytest.raises(EventTypeHeaderMismatchError):
         decode_message(message)
 
 
@@ -189,7 +204,7 @@ def test_event_version_header_mismatch_is_rejected() -> None:
         ("event_version", b"2"),
         ("aggregate_type", b"research_job"),
     ]
-    with pytest.raises(InvalidHeaderError, match="EventVersionHeaderMismatch"):
+    with pytest.raises(EventVersionHeaderMismatchError):
         decode_message(message)
 
 
@@ -201,7 +216,7 @@ def test_aggregate_type_header_mismatch_is_rejected() -> None:
         ("event_version", b"1"),
         ("aggregate_type", b"other_aggregate"),
     ]
-    with pytest.raises(InvalidHeaderError, match="AggregateTypeHeaderMismatch"):
+    with pytest.raises(AggregateTypeHeaderMismatchError):
         decode_message(message)
 
 
@@ -219,7 +234,7 @@ def test_no_sensitive_raw_bytes_ever_appear_in_exception_text() -> None:
             ("aggregate_type", b"research_job"),
         ],
     )
-    with pytest.raises(MalformedEnvelopeError) as excinfo:
+    with pytest.raises(SchemaValidationFailedError) as excinfo:
         decode_message(message)
     assert "hunter2" not in str(excinfo.value)
     assert "10.0.0.5" not in str(excinfo.value)

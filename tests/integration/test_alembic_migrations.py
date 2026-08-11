@@ -62,7 +62,7 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
         version = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-    assert version == "20260809_0012"
+    assert version == "20260809_0013"
     assert inspector.has_table("workflow_executions")
     assert inspector.has_table("workflow_node_executions")
     assert inspector.has_table("model_invocations")
@@ -127,6 +127,46 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
     assert "ck_research_job_event_projection_event_type" in projection_constraints
     projection_pk = inspector.get_pk_constraint("research_job_event_projection")
     assert projection_pk["constrained_columns"] == ["research_job_id"]
+
+    assert inspector.has_table("consumer_dead_letters")
+    dead_letter_constraints = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("consumer_dead_letters")
+    }
+    assert "ck_consumer_dead_letters_failure_code" in dead_letter_constraints
+    assert "ck_consumer_dead_letters_replay_state" in dead_letter_constraints
+    dead_letter_uniques = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("consumer_dead_letters")
+    }
+    assert "uq_consumer_dead_letters_identity" in dead_letter_uniques
+
+    assert inspector.has_table("consumer_dead_letter_replay_attempts")
+    replay_attempt_constraints = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints(
+            "consumer_dead_letter_replay_attempts"
+        )
+    }
+    assert (
+        "ck_consumer_dead_letter_replay_attempts_status" in replay_attempt_constraints
+    )
+    replay_attempt_uniques = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints(
+            "consumer_dead_letter_replay_attempts"
+        )
+    }
+    assert "uq_consumer_dead_letter_replay_attempts_key" in replay_attempt_uniques
+    replay_attempt_fks = {
+        constraint["name"]
+        for constraint in inspector.get_foreign_keys(
+            "consumer_dead_letter_replay_attempts"
+        )
+    }
+    assert (
+        "fk_consumer_dead_letter_replay_attempts_dead_letter_id" in replay_attempt_fks
+    )
 
     job_columns = {column["name"] for column in inspector.get_columns("research_jobs")}
     assert "repair_count" in job_columns
@@ -262,7 +302,7 @@ def test_legacy_row_survives_upgrade_from_0001(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
 
-        assert version == "20260809_0012"
+        assert version == "20260809_0013"
         assert row["id"] == "legacy-job"
         assert row["question"] == "legacy question"
         assert row["status"] == "PENDING"
@@ -500,12 +540,62 @@ def test_upgrade_downgrade_0012_and_0011(
                 os.environ["ATLAS_DATABASE_URL"] = previous
 
 
-def test_migrations_0001_through_0011_unchanged_versus_main() -> None:
-    """Slice 13C1 must not modify migrations 0001–0011 relative to origin/main.
+def test_upgrade_downgrade_0013_and_0012(
+    test_database_url: str,
+    engine: Engine,
+) -> None:
+    """Explicit 0013 ↔ 0012 round-trip required by Slice 13C2B."""
+    assert_safe_test_database(test_database_url)
+    previous = os.environ.get("ATLAS_DATABASE_URL")
+    os.environ["ATLAS_DATABASE_URL"] = test_database_url
+    config = _alembic_config(test_database_url)
 
-    Migration ``20260809_0011`` (the outbox table added in Slice 13B) is now
-    merged into ``origin/main`` through Pull Request #20, so the invariant
-    covers all eleven prior migrations, not just 0001–0010.
+    try:
+        _reset_public_schema(engine)
+        command.upgrade(config, "20260809_0012")
+        inspector = inspect(engine)
+        assert inspector.has_table("consumer_inbox")
+        assert not inspector.has_table("consumer_dead_letters")
+        assert not inspector.has_table("consumer_dead_letter_replay_attempts")
+
+        command.upgrade(config, "20260809_0013")
+        inspector = inspect(engine)
+        assert inspector.has_table("consumer_dead_letters")
+        assert inspector.has_table("consumer_dead_letter_replay_attempts")
+
+        command.downgrade(config, "20260809_0012")
+        inspector = inspect(engine)
+        assert not inspector.has_table("consumer_dead_letters")
+        assert not inspector.has_table("consumer_dead_letter_replay_attempts")
+        assert inspector.has_table("consumer_inbox")
+
+        command.upgrade(config, "20260809_0013")
+        inspector = inspect(engine)
+        assert inspector.has_table("consumer_dead_letters")
+        assert inspector.has_table("consumer_dead_letter_replay_attempts")
+        with engine.connect() as connection:
+            version = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert version == "20260809_0013"
+    finally:
+        try:
+            _reset_public_schema(engine)
+            command.upgrade(config, "head")
+            initialize_langgraph_checkpoint_schema(test_database_url)
+        finally:
+            if previous is None:
+                os.environ.pop("ATLAS_DATABASE_URL", None)
+            else:
+                os.environ["ATLAS_DATABASE_URL"] = previous
+
+
+def test_migrations_0001_through_0012_unchanged_versus_main() -> None:
+    """Slice 13C2B must not modify migrations 0001–0012 relative to origin/main.
+
+    Migration ``20260809_0012`` (the consumer inbox/projection tables added in
+    Slice 13C2A) is now merged into ``origin/main`` through Pull Request #22,
+    so the invariant covers all twelve prior migrations, not just 0001–0011.
 
     Compares against the remote-tracking ref ``origin/main`` (not a local
     ``main`` branch) so GitHub Actions PR checkouts succeed when only remotes
