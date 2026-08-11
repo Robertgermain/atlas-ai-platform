@@ -62,7 +62,7 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
         version = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-    assert version == "20260809_0011"
+    assert version == "20260809_0012"
     assert inspector.has_table("workflow_executions")
     assert inspector.has_table("workflow_node_executions")
     assert inspector.has_table("model_invocations")
@@ -101,6 +101,32 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
     assert "ix_outbox_events_claimable_position" in outbox_indexes
     assert "ix_outbox_events_aggregate_history" in outbox_indexes
     assert "ix_outbox_events_occurred_at" in outbox_indexes
+
+    assert inspector.has_table("consumer_inbox")
+    consumer_inbox_constraints = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("consumer_inbox")
+    }
+    assert "ck_consumer_inbox_consumer_id" in consumer_inbox_constraints
+    assert "ck_consumer_inbox_event_type" in consumer_inbox_constraints
+    assert "ck_consumer_inbox_kafka_partition_nonneg" in consumer_inbox_constraints
+    assert "ck_consumer_inbox_kafka_offset_nonneg" in consumer_inbox_constraints
+    consumer_inbox_pk = inspector.get_pk_constraint("consumer_inbox")
+    assert set(consumer_inbox_pk["constrained_columns"]) == {
+        "consumer_id",
+        "event_id",
+    }
+
+    assert inspector.has_table("research_job_event_projection")
+    projection_constraints = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints(
+            "research_job_event_projection"
+        )
+    }
+    assert "ck_research_job_event_projection_event_type" in projection_constraints
+    projection_pk = inspector.get_pk_constraint("research_job_event_projection")
+    assert projection_pk["constrained_columns"] == ["research_job_id"]
 
     job_columns = {column["name"] for column in inspector.get_columns("research_jobs")}
     assert "repair_count" in job_columns
@@ -236,7 +262,7 @@ def test_legacy_row_survives_upgrade_from_0001(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
 
-        assert version == "20260809_0011"
+        assert version == "20260809_0012"
         assert row["id"] == "legacy-job"
         assert row["question"] == "legacy question"
         assert row["status"] == "PENDING"
@@ -412,6 +438,56 @@ def test_upgrade_downgrade_0011_and_0010(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
         assert version == "20260809_0011"
+    finally:
+        try:
+            _reset_public_schema(engine)
+            command.upgrade(config, "head")
+            initialize_langgraph_checkpoint_schema(test_database_url)
+        finally:
+            if previous is None:
+                os.environ.pop("ATLAS_DATABASE_URL", None)
+            else:
+                os.environ["ATLAS_DATABASE_URL"] = previous
+
+
+def test_upgrade_downgrade_0012_and_0011(
+    test_database_url: str,
+    engine: Engine,
+) -> None:
+    """Explicit 0012 ↔ 0011 round-trip required by Slice 13C2A."""
+    assert_safe_test_database(test_database_url)
+    previous = os.environ.get("ATLAS_DATABASE_URL")
+    os.environ["ATLAS_DATABASE_URL"] = test_database_url
+    config = _alembic_config(test_database_url)
+
+    try:
+        _reset_public_schema(engine)
+        command.upgrade(config, "20260809_0011")
+        inspector = inspect(engine)
+        assert inspector.has_table("outbox_events")
+        assert not inspector.has_table("consumer_inbox")
+        assert not inspector.has_table("research_job_event_projection")
+
+        command.upgrade(config, "20260809_0012")
+        inspector = inspect(engine)
+        assert inspector.has_table("consumer_inbox")
+        assert inspector.has_table("research_job_event_projection")
+
+        command.downgrade(config, "20260809_0011")
+        inspector = inspect(engine)
+        assert not inspector.has_table("consumer_inbox")
+        assert not inspector.has_table("research_job_event_projection")
+        assert inspector.has_table("outbox_events")
+
+        command.upgrade(config, "20260809_0012")
+        inspector = inspect(engine)
+        assert inspector.has_table("consumer_inbox")
+        assert inspector.has_table("research_job_event_projection")
+        with engine.connect() as connection:
+            version = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert version == "20260809_0012"
     finally:
         try:
             _reset_public_schema(engine)

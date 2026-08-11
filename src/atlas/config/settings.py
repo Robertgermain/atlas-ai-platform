@@ -107,6 +107,14 @@ class Settings(BaseSettings):
     # _validate_kafka_delivery_timeout_margin below.
     kafka_delivery_timeout_lease_margin_seconds: float = Field(default=5.0, ge=0)
 
+    # Business Kafka consumer (Milestone 13 Slice 13C2A). Consumer group and
+    # client identity are fixed constants (atlas.consumer.identity), never
+    # settings-configurable, matching the reserved-topic-constant pattern.
+    # These knobs govern only bounded polling and Kafka group timing.
+    consumer_poll_timeout_seconds: float = Field(default=1.0, gt=0)
+    consumer_session_timeout_seconds: float = Field(default=10.0, gt=0)
+    consumer_max_poll_interval_seconds: float = Field(default=300.0, gt=0)
+
     @model_validator(mode="after")
     def _validate_heartbeat_timing(self) -> Self:
         if self.heartbeat_ttl_seconds < (2 * self.heartbeat_interval_seconds):

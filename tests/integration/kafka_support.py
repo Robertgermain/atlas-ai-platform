@@ -62,6 +62,48 @@ def get_topic_end_offset(
         consumer.close()
 
 
+def seed_consumer_group_offset(
+    bootstrap_servers: str,
+    *,
+    group_id: str,
+    offset: int,
+    topic: str = RESEARCH_JOB_EVENTS_TOPIC_V1,
+    assignment_timeout: float = 10.0,
+) -> None:
+    """Seed ``group_id``'s committed offset for partition 0 to ``offset``.
+
+    Test-only isolation helper. The reserved topic is append-only and its
+    Compose volume persists across local test runs, so a consumer using
+    the real fixed production ``group_id`` (Slice 13C2A intentionally has
+    no arbitrary-group escape hatch) would otherwise resume from whatever
+    a previous local run last committed, or -- for a brand-new group --
+    from the topic's entire history under ``auto.offset.reset=earliest``.
+    Call this immediately before publishing a test's own events so the
+    test's consumer only ever sees records the test itself produced.
+
+    Uses a throwaway ``Consumer`` in the same group: subscribes, polls
+    once to force partition assignment, then commits the target offset
+    explicitly. Never constructs an ``atlas.consumer.kafka_consumer.
+    KafkaEventConsumer`` (which enforces the group-id allowlist); this
+    helper intentionally works with any group id a test supplies.
+    """
+    consumer = Consumer(
+        {
+            "bootstrap.servers": bootstrap_servers,
+            "group.id": group_id,
+            "enable.auto.commit": False,
+        }
+    )
+    try:
+        consumer.subscribe([topic])
+        deadline = time.monotonic() + assignment_timeout
+        while not consumer.assignment() and time.monotonic() < deadline:
+            consumer.poll(timeout=0.5)
+        consumer.commit(offsets=[TopicPartition(topic, 0, offset)], asynchronous=False)
+    finally:
+        consumer.close()
+
+
 def consume_from_offset(
     bootstrap_servers: str,
     *,
