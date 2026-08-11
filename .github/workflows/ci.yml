@@ -37,6 +37,35 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      kafka:
+        # Pinned exact version (no floating tags), matching docker-compose.yml.
+        # Single-node KRaft mode sized for the GitHub runner: one combined
+        # broker+controller listener, no persistent volume (CI is ephemeral).
+        image: apache/kafka:4.3.1
+        env:
+          KAFKA_NODE_ID: "1"
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+          # Atlas topic administration always goes through the AdminClient
+          # helper (src/atlas/outbox/topic_admin.py); the broker never
+          # auto-creates topics.
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+          # Static, non-secret development KRaft cluster ID, matching
+          # docker-compose.yml.
+          CLUSTER_ID: gNvDlYfoQ-iLZBOSMUlr1w
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     env:
       ATLAS_DATABASE_URL: postgresql+psycopg://atlas:atlas@127.0.0.1:5432/atlas_test
@@ -48,6 +77,7 @@ jobs:
       # directly. See docs/TESTING.md.
       ATLAS_COORDINATION_PROVIDER: redis
       ATLAS_REDIS_URL: redis://127.0.0.1:6379/0
+      ATLAS_KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
 
     steps:
       - name: Check out repository
@@ -66,6 +96,15 @@ jobs:
 
       - name: Install dependencies from lockfile
         run: uv sync --frozen
+
+      - name: Create and verify the reserved Kafka topic
+        run: |
+          uv run python -c "
+          from atlas.outbox.topic_admin import ensure_topic_exists, verify_topic_partitioning
+          ensure_topic_exists(bootstrap_servers='127.0.0.1:9092')
+          verify_topic_partitioning(bootstrap_servers='127.0.0.1:9092')
+          print('Kafka topic verified.')
+          "
 
       - name: Ruff format
         run: uv run ruff format --check .

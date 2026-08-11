@@ -36,5 +36,70 @@ services:
       timeout: 5s
       retries: 10
 
+  kafka:
+    # Pinned exact version (no floating tags). Single-node KRaft mode:
+    # combined broker+controller, no ZooKeeper. Local API/worker/relay
+    # processes run on the host and must explicitly opt in:
+    #   ATLAS_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9094
+    # The PLAINTEXT listener (kafka:9092) is for other Compose containers
+    # only (e.g. kafka-topic-init below); Atlas has no application image yet.
+    image: apache/kafka:4.3.1
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9094"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,EXTERNAL://127.0.0.1:9094"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # Atlas topic administration always goes through the AdminClient
+      # helper (src/atlas/outbox/topic_admin.py) or kafka-topics.sh below;
+      # the broker never auto-creates topics.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      # Static, non-secret development KRaft cluster ID (generated once via
+      # `kafka-storage.sh random-uuid`). Fine to be public; it only scopes
+      # this single-node local metadata log, not a credential.
+      CLUSTER_ID: "gNvDlYfoQ-iLZBOSMUlr1w"
+    ports:
+      # Localhost-only host access for API/worker/relay processes.
+      - "127.0.0.1:9094:9094"
+    volumes:
+      - atlas_kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  kafka-topic-init:
+    # One-shot idempotent topic creation. Atlas has no application image
+    # yet, so this reuses the broker image's own kafka-topics.sh rather
+    # than pretending the Python AdminClient helper can run in Compose.
+    # Safe to rerun: exits 0 immediately if the topic already exists with
+    # exactly one partition, and fails nonzero otherwise.
+    image: apache/kafka:4.3.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        BOOTSTRAP="kafka:9092"
+        TOPIC="atlas.research-job-events.v1"
+        if ! /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BOOTSTRAP" --describe --topic "$$TOPIC" >/dev/null 2>&1; then
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BOOTSTRAP" --create --topic "$$TOPIC" --partitions 1 --replication-factor 1
+        fi
+        PARTITION_COUNT=$$(/opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BOOTSTRAP" --describe --topic "$$TOPIC" | grep -c "Partition: ")
+        if [ "$$PARTITION_COUNT" -ne 1 ]; then
+          echo "atlas.research-job-events.v1 has $$PARTITION_COUNT partitions, expected 1" >&2
+          exit 1
+        fi
+        echo "Topic $$TOPIC verified with 1 partition."
+
 volumes:
   atlas_pg_data:
+  atlas_kafka_data:

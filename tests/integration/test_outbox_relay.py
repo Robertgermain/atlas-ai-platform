@@ -12,7 +12,7 @@ from atlas.eventing import build_research_job_created
 from atlas.outbox.clock import ControllableClock
 from atlas.outbox.errors import RelayOwnershipError
 from atlas.outbox.fakes import ClockAdvancingProducer, FakeEventProducer
-from atlas.outbox.relay import OutboxRelay
+from atlas.outbox.relay import OutboxRelay, RelayRunOutcome
 from atlas.outbox.relay_lock import PostgresOutboxRelayLock
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.outbox import SqlAlchemyOutboxRepository
@@ -72,11 +72,12 @@ def test_relay_publishes_outside_claim_transaction(
         clock=clock,
     )
     try:
-        published = relay.run_once()
+        result = relay.run_once()
     finally:
         lock.release()
 
-    assert published == 1
+    assert result.outcome == RelayRunOutcome.PUBLISHED
+    assert result.published_count == 1
     assert len(producer.published) == 1
     assert producer.published[0].event_id == event.event_id
 
@@ -106,18 +107,76 @@ def test_relay_producer_failure_releases_claim(
         clock=clock,
     )
     try:
-        published = relay.run_once()
+        result = relay.run_once()
     finally:
         lock.release()
 
-    assert published == 0
+    assert result.outcome == RelayRunOutcome.RECOVERABLE_FAILURE
+    assert result.published_count == 0
     with session_scope(session_factory) as session:
         row = repo.get_by_event_id(session, event.event_id)
         assert row is not None
         assert row.published_at is None
         assert row.publish_claim_token is None
-        assert row.last_publish_error_class == "RuntimeError"
+        assert row.last_publish_error_class == "EventPublishError"
         assert row.publish_attempts == 1
+
+
+def test_relay_unexpected_producer_error_is_not_treated_as_recoverable(
+    engine: Engine,
+    session_factory: sessionmaker[Session],
+) -> None:
+    """A bare, untyped producer exception must fail closed, not recoverable.
+
+    Correction pass (Slice 13C1 review): only the typed ``EventPublishError``
+    / ``FatalEventPublishError`` hierarchy may be classified as recoverable
+    or fatal. Anything else -- e.g. a programming error -- is a distinct
+    ``UNEXPECTED_FAILURE`` outcome. The claim is still released (using only
+    the safe exception class name), but the caller must never treat this as
+    safe to keep polling.
+    """
+    repo = SqlAlchemyOutboxRepository()
+    events = [
+        build_research_job_created(research_job_id=f"job-unexpected-{i}", created_at=T0)
+        for i in range(2)
+    ]
+    with session_scope(session_factory) as session:
+        for event in events:
+            repo.enqueue(session, event)
+
+    clock = ControllableClock(T0)
+    producer = FakeEventProducer(
+        fail_on_event_ids={events[0].event_id},
+        failure_exc=RuntimeError("db password=hunter2"),
+    )
+    relay, lock = _relay(
+        engine=engine,
+        session_factory=session_factory,
+        producer=producer,
+        clock=clock,
+        batch_size=50,
+    )
+    try:
+        result = relay.run_once()
+    finally:
+        lock.release()
+
+    assert result.outcome == RelayRunOutcome.UNEXPECTED_FAILURE
+    assert result.published_count == 0
+    assert producer.attempts == [events[0]]
+    assert producer.published == []
+
+    with session_scope(session_factory) as session:
+        rows = [repo.get_by_event_id(session, event.event_id) for event in events]
+        assert rows[0] is not None and rows[1] is not None
+        assert rows[0].published_at is None
+        assert rows[0].publish_claim_token is None
+        # Only the safe exception class name is persisted; never raw text.
+        assert rows[0].last_publish_error_class == "RuntimeError"
+        # The later row was released without publishing, not leapfrogged.
+        assert rows[1].published_at is None
+        assert rows[1].publish_claim_token is None
+        assert rows[1].last_publish_error_class == "EarlierEventPublishFailure"
 
 
 def test_slow_producer_past_lease_cannot_mark_or_release(
@@ -144,11 +203,12 @@ def test_slow_producer_past_lease_cannot_mark_or_release(
         publish_lease_seconds=5.0,
     )
     try:
-        published = relay.run_once()
+        result = relay.run_once()
     finally:
         lock.release()
 
-    assert published == 0
+    assert result.outcome == RelayRunOutcome.OWNERSHIP_LOST
+    assert result.published_count == 0
     assert len(producer.published) == 1  # producer acked
     with session_scope(session_factory) as session:
         row = repo.get_by_event_id(session, event.event_id)
@@ -182,7 +242,9 @@ def test_stale_owner_cannot_overwrite_later_claimant(
         publish_lease_seconds=5.0,
     )
     try:
-        assert relay.run_once() == 0
+        result = relay.run_once()
+        assert result.outcome == RelayRunOutcome.OWNERSHIP_LOST
+        assert result.published_count == 0
     finally:
         lock.release()
 
@@ -242,11 +304,12 @@ def test_failure_stops_later_events_in_batch(
         batch_size=50,
     )
     try:
-        published = relay.run_once()
+        result = relay.run_once()
     finally:
         lock.release()
 
-    assert published == 0
+    assert result.outcome == RelayRunOutcome.RECOVERABLE_FAILURE
+    assert result.published_count == 0
     assert producer.attempts == [events[0]]
     assert producer.published == []
 
@@ -254,7 +317,7 @@ def test_failure_stops_later_events_in_batch(
         rows = [repo.get_by_event_id(session, event.event_id) for event in events]
         assert rows[0] is not None and rows[1] is not None and rows[2] is not None
         assert rows[0].published_at is None
-        assert rows[0].last_publish_error_class == "RuntimeError"
+        assert rows[0].last_publish_error_class == "EventPublishError"
         assert rows[0].publish_claim_token is None
         # Later claimed rows were released without publishing.
         assert rows[1].published_at is None
@@ -287,7 +350,9 @@ def test_ordered_recovery_after_earlier_failure(
         clock=clock,
     )
     try:
-        assert relay.run_once() == 0
+        result = relay.run_once()
+        assert result.outcome == RelayRunOutcome.RECOVERABLE_FAILURE
+        assert result.published_count == 0
     finally:
         lock.release()
 
@@ -301,11 +366,12 @@ def test_ordered_recovery_after_earlier_failure(
         clock=clock,
     )
     try:
-        published = relay.run_once()
+        result = relay.run_once()
     finally:
         lock.release()
 
-    assert published == 2
+    assert result.outcome == RelayRunOutcome.PUBLISHED
+    assert result.published_count == 2
     assert [event.event_id for event in succeeding.published] == [
         events[0].event_id,
         events[1].event_id,
@@ -349,11 +415,12 @@ def test_lost_mark_ownership_stops_later_events(
         publish_lease_seconds=5.0,
     )
     try:
-        published = relay.run_once()
+        result = relay.run_once()
     finally:
         lock.release()
 
-    assert published == 0
+    assert result.outcome == RelayRunOutcome.OWNERSHIP_LOST
+    assert result.published_count == 0
     # Only the first event was offered to the producer.
     assert len(producer.attempts) == 1
     assert producer.attempts[0].event_id == events[0].event_id
@@ -399,7 +466,9 @@ def test_recovery_after_lost_mark_preserves_order(
         publish_lease_seconds=5.0,
     )
     try:
-        assert relay.run_once() == 0
+        result = relay.run_once()
+        assert result.outcome == RelayRunOutcome.OWNERSHIP_LOST
+        assert result.published_count == 0
     finally:
         lock.release()
 
@@ -414,11 +483,12 @@ def test_recovery_after_lost_mark_preserves_order(
         publish_lease_seconds=30.0,
     )
     try:
-        published = relay.run_once()
+        result = relay.run_once()
     finally:
         lock.release()
 
-    assert published == 2
+    assert result.outcome == RelayRunOutcome.PUBLISHED
+    assert result.published_count == 2
     assert [event.event_id for event in fast.published] == [
         events[0].event_id,
         events[1].event_id,
@@ -483,11 +553,12 @@ def test_producer_success_missing_db_ack_republishes_after_lease(
         publish_lease_seconds=30.0,
     )
     try:
-        published = relay.run_once()
+        result = relay.run_once()
     finally:
         lock.release()
 
-    assert published == 1
+    assert result.outcome == RelayRunOutcome.PUBLISHED
+    assert result.published_count == 1
     assert len(producer.published) == 2
     assert (
         producer.published[0].event_id
@@ -588,7 +659,9 @@ def test_crash_recovery_head_of_line_blocks_until_lease_expires(
         publish_lease_seconds=30.0,
     )
     try:
-        assert relay_b.run_once() == 0
+        empty_result = relay_b.run_once()
+        assert empty_result.outcome == RelayRunOutcome.EMPTY
+        assert empty_result.published_count == 0
         assert producer_b.published == []
         assert producer_b.attempts == []
         with session_scope(session_factory) as session:
@@ -600,11 +673,12 @@ def test_crash_recovery_head_of_line_blocks_until_lease_expires(
 
         # After lease expiry, publish N, N+1, then N+2 in exact order.
         clock.set(lease_expires)
-        published = relay_b.run_once()
+        result = relay_b.run_once()
     finally:
         lock_b.release()
 
-    assert published == 3
+    assert result.outcome == RelayRunOutcome.PUBLISHED
+    assert result.published_count == 3
     assert [event.event_id for event in producer_b.published] == [
         events[0].event_id,
         events[1].event_id,

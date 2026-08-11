@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from atlas.eventing import build_research_job_created
-from atlas.outbox.errors import RelayNotOwnerError
+from atlas.outbox.errors import EventPublishError, RelayNotOwnerError
 from atlas.outbox.fakes import FakeEventProducer
 from atlas.outbox.relay import OutboxRelay
 from atlas.outbox.relay_lock import PostgresOutboxRelayLock
@@ -35,7 +35,7 @@ def test_fake_producer_failure() -> None:
         event_id=uuid4(),
     )
     producer = FakeEventProducer(fail_on_event_ids={event.event_id})
-    with pytest.raises(RuntimeError, match="FakeProducerFailure"):
+    with pytest.raises(EventPublishError, match="FakeProducerFailure"):
         producer.publish(event)
     assert producer.published == []
     assert producer.attempts == [event]

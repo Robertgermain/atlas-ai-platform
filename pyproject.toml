@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.19.1",
+    "confluent-kafka>=2.15.0,<3",
     "fastapi>=0.116.0",
     "fastmcp>=2.0",
     "httpx>=0.28.1",
@@ -57,3 +58,10 @@ strict = true
 mypy_path = "src"
 explicit_package_bases = true
 files = ["src", "tests"]
+
+# confluent-kafka ships inline types but does not mark its re-exports (e.g.
+# ``confluent_kafka.admin.NewTopic``) with explicit ``as`` aliases, which
+# --strict's implicit-reexport check would otherwise reject.
+[[tool.mypy.overrides]]
+module = "confluent_kafka.*"
+implicit_reexport = true

@@ -81,3 +81,39 @@ def cleanup_integration_tables(
 ) -> Iterator[None]:
     yield
     truncate_integration_tables(database_url=test_database_url, engine=engine)
+
+
+@pytest.fixture(scope="session")
+def kafka_bootstrap_servers() -> str:
+    """Reserved-topic-ready Kafka bootstrap string.
+
+    Kafka is a required dependency of the full Slice 13C1 integration suite
+    and CI (Slice 13C1 correction pass): broker unavailability, topic
+    creation/verification failure, or an unexpected partition count fail
+    every test that depends on this fixture rather than skipping it. The
+    isolated suite (``tests/integration`` excluded) is unaffected and needs
+    no Kafka broker.
+
+    Ensures the reserved topic exists (idempotent) and has exactly one
+    partition before any Kafka integration test runs, matching what Compose
+    (`kafka-topic-init`) / CI (AdminClient step) already do. Failure output
+    is sanitized: only a fixed message and the safe exception class name,
+    never raw broker addresses or librdkafka error text.
+    """
+    from atlas.outbox.errors import OutboxError
+    from atlas.outbox.topic_admin import ensure_topic_exists, verify_topic_partitioning
+    from tests.integration.kafka_support import test_kafka_bootstrap_servers
+
+    bootstrap = test_kafka_bootstrap_servers()
+    try:
+        ensure_topic_exists(bootstrap_servers=bootstrap, timeout_seconds=5.0)
+        verify_topic_partitioning(bootstrap_servers=bootstrap, timeout_seconds=5.0)
+    except OutboxError as exc:
+        pytest.fail(
+            "Kafka is a required dependency of the full integration suite "
+            "but was not usable (unreachable broker, topic creation "
+            "failure, or wrong partition count). error_class="
+            f"{exc.__class__.__name__}",
+            pytrace=False,
+        )
+    return bootstrap

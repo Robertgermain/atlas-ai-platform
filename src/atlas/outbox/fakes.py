@@ -9,10 +9,19 @@ from sqlalchemy.orm import Session
 
 from atlas.eventing.contracts import DomainEvent
 from atlas.outbox.clock import ControllableClock
+from atlas.outbox.errors import EventPublishError
 
 
 class FakeEventProducer:
-    """Records published envelopes and can be configured to fail."""
+    """Records published envelopes and can be configured to fail.
+
+    The default failure is a typed, recoverable :class:`EventPublishError`
+    (mirroring an ordinary Kafka publish failure) so relay tests exercise
+    ``RelayRunOutcome.RECOVERABLE_FAILURE`` by default. Pass an explicit
+    ``failure_exc`` (e.g. a plain ``RuntimeError``) to exercise the distinct
+    ``RelayRunOutcome.UNEXPECTED_FAILURE`` path for an untyped/unexpected
+    producer exception instead.
+    """
 
     def __init__(
         self,
@@ -26,7 +35,7 @@ class FakeEventProducer:
         self.attempts: list[DomainEvent] = []
         self._fail_on_event_ids = set(fail_on_event_ids or ())
         self._fail_next = fail_next
-        self._failure_exc = failure_exc or RuntimeError("FakeProducerFailure")
+        self._failure_exc = failure_exc or EventPublishError("FakeProducerFailure")
         self._on_before_publish = on_before_publish
 
     def publish(self, event: DomainEvent) -> None:

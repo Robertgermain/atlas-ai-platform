@@ -85,12 +85,46 @@ class Settings(BaseSettings):
     outbox_relay_batch_size: int = Field(default=50, ge=1, le=500)
     outbox_publish_lease_seconds: float = Field(default=30.0, gt=0)
 
+    # Real Kafka broker (Milestone 13 Slice 13C1). The executable
+    # ``python -m atlas.outbox`` requires Kafka unconditionally; there is no
+    # settings-driven fake-producer selection at runtime (fake remains
+    # test-only via direct construction). The reserved topic name is a fixed
+    # constant (``atlas.eventing.topic.RESEARCH_JOB_EVENTS_TOPIC_V1``), never
+    # settings-configurable, so no arbitrary runtime topic can be selected.
+    kafka_bootstrap_servers: str = Field(default="127.0.0.1:9094")
+    # Bounds one record's Kafka delivery-callback-confirmed publish() call.
+    # Must stay safely below outbox_publish_lease_seconds (validated below)
+    # so a claimed row cannot outlive its lease while still "in flight".
+    kafka_delivery_timeout_seconds: float = Field(default=10.0, gt=0)
+    # Shared bound for socket.timeout.ms and request.timeout.ms.
+    kafka_socket_timeout_seconds: float = Field(default=10.0, gt=0)
+    kafka_topic_verify_timeout_seconds: float = Field(default=10.0, gt=0)
+    # Kafka relay executable poll/backoff interval between claim attempts
+    # when the previous attempt claimed nothing or failed to publish.
+    outbox_relay_poll_interval_seconds: float = Field(default=1.0, gt=0)
+    # Explicit safety margin (seconds) that kafka_delivery_timeout_seconds
+    # must stay below outbox_publish_lease_seconds by. See
+    # _validate_kafka_delivery_timeout_margin below.
+    kafka_delivery_timeout_lease_margin_seconds: float = Field(default=5.0, ge=0)
+
     @model_validator(mode="after")
     def _validate_heartbeat_timing(self) -> Self:
         if self.heartbeat_ttl_seconds < (2 * self.heartbeat_interval_seconds):
             raise ValueError(
                 "heartbeat_ttl_seconds must be at least twice "
                 "heartbeat_interval_seconds"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_kafka_delivery_timeout_margin(self) -> Self:
+        margin = self.kafka_delivery_timeout_lease_margin_seconds
+        bounded = self.kafka_delivery_timeout_seconds + margin
+        if bounded > self.outbox_publish_lease_seconds:
+            raise ValueError(
+                "kafka_delivery_timeout_seconds plus "
+                "kafka_delivery_timeout_lease_margin_seconds must not exceed "
+                "outbox_publish_lease_seconds."
             )
         return self
 

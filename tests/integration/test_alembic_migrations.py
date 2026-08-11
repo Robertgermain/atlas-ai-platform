@@ -424,8 +424,12 @@ def test_upgrade_downgrade_0011_and_0010(
                 os.environ["ATLAS_DATABASE_URL"] = previous
 
 
-def test_migrations_0001_through_0010_unchanged_versus_main() -> None:
-    """Slice 13B must not modify migrations 0001–0010 relative to origin/main.
+def test_migrations_0001_through_0011_unchanged_versus_main() -> None:
+    """Slice 13C1 must not modify migrations 0001–0011 relative to origin/main.
+
+    Migration ``20260809_0011`` (the outbox table added in Slice 13B) is now
+    merged into ``origin/main`` through Pull Request #20, so the invariant
+    covers all eleven prior migrations, not just 0001–0010.
 
     Compares against the remote-tracking ref ``origin/main`` (not a local
     ``main`` branch) so GitHub Actions PR checkouts succeed when only remotes

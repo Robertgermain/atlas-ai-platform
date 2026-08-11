@@ -13,7 +13,14 @@ from atlas.persistence.models import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: the default (True) silently and
+    # permanently disables every logger that already exists in the process
+    # at the moment Alembic runs (e.g. any module-level `logging.getLogger`
+    # created by an already-imported application module or test module).
+    # Since Alembic migrations run repeatedly inside the same Pytest
+    # session, the default would otherwise disable application loggers for
+    # the rest of the test run the first time any test invokes Alembic.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
