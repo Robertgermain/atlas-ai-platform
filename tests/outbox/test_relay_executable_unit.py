@@ -338,6 +338,65 @@ def test_main_logs_are_sanitized_on_advisory_lock_contention(
     assert "RelayOwnershipError" in caplog.text
 
 
+class _UnexpectedFailingAcquireLock(_FakeLock):
+    """Simulates ``engine.connect()`` itself failing inside ``acquire()``.
+
+    ``PostgresOutboxRelayLock.acquire()`` only wraps its own advisory-lock
+    SQL, not the initial ``engine.connect()`` -- an unreachable/misconfigured
+    PostgreSQL surfaces as a raw SQLAlchemy/DBAPI exception here, never an
+    ``OutboxError``. This is the exact gap the startup-boundary catch in
+    ``main()`` was broadened (``OutboxError`` -> ``Exception``) to close.
+    """
+
+    def acquire(self) -> None:
+        raise RuntimeError(_SENSITIVE_MESSAGE)
+
+
+def test_main_exits_nonzero_on_unexpected_lock_acquisition_failure(
+    monkeypatch: pytest.MonkeyPatch, _patched_composition: Settings
+) -> None:
+    monkeypatch.setattr(outbox_main, "KafkaEventProducer", _FakeProducer)
+    monkeypatch.setattr(
+        outbox_main, "PostgresOutboxRelayLock", _UnexpectedFailingAcquireLock
+    )
+    assert outbox_main.main() == 1
+    assert _FakeProducer.instances[0].closed is True
+
+
+def test_main_logs_are_sanitized_on_unexpected_lock_acquisition_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    _patched_composition: Settings,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(outbox_main, "KafkaEventProducer", _FakeProducer)
+    monkeypatch.setattr(
+        outbox_main, "PostgresOutboxRelayLock", _UnexpectedFailingAcquireLock
+    )
+    with caplog.at_level(logging.INFO):
+        assert outbox_main.main() == 1
+    _assert_no_sensitive_fragments(caplog.text)
+    assert "RuntimeError" in caplog.text
+
+
+def test_main_producer_close_failure_after_lock_acquisition_failure_does_not_mask_it(
+    monkeypatch: pytest.MonkeyPatch,
+    _patched_composition: Settings,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(outbox_main, "KafkaEventProducer", _FakeProducer)
+    monkeypatch.setattr(
+        outbox_main, "PostgresOutboxRelayLock", _UnexpectedFailingAcquireLock
+    )
+    _FakeProducer.raise_on_close = RuntimeError(_SENSITIVE_MESSAGE)
+
+    with caplog.at_level(logging.INFO):
+        assert outbox_main.main() == 1
+    assert _FakeProducer.instances[0].closed is True
+    _assert_no_sensitive_fragments(caplog.text)
+    assert "Failed to acquire the outbox relay advisory lock" in caplog.text
+    assert "Kafka producer close failed during startup-failure cleanup" in caplog.text
+
+
 def test_main_exits_nonzero_when_topic_verification_fails(
     monkeypatch: pytest.MonkeyPatch, _patched_composition: Settings
 ) -> None:

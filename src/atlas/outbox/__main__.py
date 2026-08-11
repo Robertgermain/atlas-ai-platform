@@ -180,12 +180,30 @@ def main() -> int:
     lock = PostgresOutboxRelayLock(engine)
     try:
         lock.acquire()
-    except OutboxError as exc:
+    except Exception as exc:
+        # Broadened beyond OutboxError: PostgresOutboxRelayLock.acquire()
+        # itself only wraps its own advisory-lock SQL, not the initial
+        # engine.connect() -- an unreachable/misconfigured PostgreSQL
+        # surfaces as a raw SQLAlchemy/DBAPI exception here, not an
+        # OutboxError. Never log str(exc)/repr(exc): that raw exception can
+        # otherwise embed the configured host/port directly in its message.
+        # This is a narrow startup-boundary catch, not a change to
+        # PostgresOutboxRelayLock's own (unchanged) error contract.
         logger.error(
-            "Failed to acquire the outbox relay advisory lock. error_class=%s",
+            "Failed to acquire the outbox relay advisory lock; exiting. error_class=%s",
             exc.__class__.__name__,
         )
-        producer.close(timeout_seconds=settings.kafka_delivery_timeout_seconds)
+        try:
+            producer.close(timeout_seconds=settings.kafka_delivery_timeout_seconds)
+        except Exception as close_exc:
+            # A close failure here must never mask the original
+            # classification above -- it is logged separately, and this
+            # path still returns 1 for the original failure either way.
+            logger.error(
+                "Kafka producer close failed during startup-failure "
+                "cleanup. error_class=%s",
+                close_exc.__class__.__name__,
+            )
         return 1
 
     shutdown_requested = False

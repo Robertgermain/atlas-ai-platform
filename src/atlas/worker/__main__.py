@@ -29,7 +29,31 @@ def main() -> int:
     settings = get_settings()
     session_factory = get_session_factory()
     checkpoint_runtime = create_checkpoint_runtime(settings.database_url)
-    initialize_checkpointer_schema(checkpoint_runtime)
+    try:
+        initialize_checkpointer_schema(checkpoint_runtime)
+    except Exception as exc:
+        # No worker/signal-handler state exists yet -- the pool behind
+        # checkpoint_runtime is the only resource to release. Never log
+        # str(exc)/repr(exc): a PostgreSQL-driver connection failure can
+        # otherwise embed the configured host/port (or, for other
+        # exception types, arbitrary text) directly in its own message.
+        logger.error(
+            "Failed to initialize the LangGraph checkpoint schema; exiting. "
+            "error_class=%s",
+            exc.__class__.__name__,
+        )
+        try:
+            checkpoint_runtime.close()
+        except Exception as close_exc:
+            # A close failure here must never mask the original
+            # classification above -- it is logged separately, and the
+            # function still returns 1 for the original failure either way.
+            logger.error(
+                "Failed to close the checkpoint connection pool during "
+                "startup-failure cleanup. error_class=%s",
+                close_exc.__class__.__name__,
+            )
+        return 1
     processor = LangGraphResearchProcessor(
         checkpointer=checkpoint_runtime.checkpointer,
         session_factory=session_factory,
