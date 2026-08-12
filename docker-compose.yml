@@ -1,3 +1,20 @@
+x-atlas-backend-image: &atlas-backend-image "atlas-backend:${GIT_SHA:-dev}"
+
+# Shared hardening for every Atlas backend application/one-shot service
+# (Milestone 14 Slice 14B). Never applied to the third-party infrastructure
+# services below (postgres/redis/kafka), which are configured independently.
+# The image's own Tini ENTRYPOINT (Milestone 14 Slice 14A) is never
+# overridden here and Compose does not additionally set `init: true` --
+# doing so would add a second, redundant init boundary with no proven need.
+x-atlas-hardening: &atlas-hardening
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -6,7 +23,10 @@ services:
       POSTGRES_PASSWORD: atlas
       POSTGRES_DB: atlas
     ports:
-      # Localhost-only: do not publish Postgres on all interfaces.
+      # Localhost-only: do not publish Postgres on all interfaces. Also used
+      # directly by host-run processes/tests (unaffected by the Atlas
+      # backend services below, which reach Postgres through the internal
+      # `postgres:5432` Compose DNS name/port instead).
       - "127.0.0.1:5433:5432"
     volumes:
       - atlas_pg_data:/var/lib/postgresql/data
@@ -21,10 +41,12 @@ services:
     # Pinned exact version (no floating tags). Ephemeral coordination only
     # (rate limiting, worker heartbeats): never authoritative storage, so no
     # volume is mounted and data loss on restart is expected/acceptable.
-    # Local API/worker processes must explicitly opt in:
+    # Host-run API/worker processes must explicitly opt in:
     #   ATLAS_COORDINATION_PROVIDER=redis
     #   ATLAS_REDIS_URL=redis://127.0.0.1:6380/0
-    # (Settings still default to noop when those env vars are unset.)
+    # (Settings still default to noop when those env vars are unset.) The
+    # containerized `api`/`worker` services below instead reach Redis through
+    # the internal `redis:6379` Compose DNS name/port.
     image: redis:8.8.1
     ports:
       # Localhost-only, offset from the default 6379 so this container never
@@ -38,11 +60,14 @@ services:
 
   kafka:
     # Pinned exact version (no floating tags). Single-node KRaft mode:
-    # combined broker+controller, no ZooKeeper. Local API/worker/relay
-    # processes run on the host and must explicitly opt in:
+    # combined broker+controller, no ZooKeeper. Host-run API/worker/relay/
+    # consumer processes must explicitly opt in:
     #   ATLAS_KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9094
-    # The PLAINTEXT listener (kafka:9092) is for other Compose containers
-    # only (e.g. kafka-topic-init below); Atlas has no application image yet.
+    # The PLAINTEXT listener (kafka:9092) is for other Compose containers --
+    # kafka-topic-init below, plus (Milestone 14 Slice 14B) the containerized
+    # `outbox-relay`/`consumer` application services, which reach Kafka
+    # through the internal `kafka:9092` Compose DNS name/port, never through
+    # the host-published EXTERNAL listener.
     image: apache/kafka:4.3.1
     environment:
       KAFKA_NODE_ID: "1"
@@ -54,9 +79,9 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_LOG_DIRS: /var/lib/kafka/data
-      # Atlas topic administration always goes through the AdminClient
-      # helper (src/atlas/outbox/topic_admin.py) or kafka-topics.sh below;
-      # the broker never auto-creates topics.
+      # Atlas topic administration always goes through the typed AdminClient
+      # helper/executable (src/atlas/outbox/topic_admin.py, run below as the
+      # `kafka-topic-init` one-shot job); the broker never auto-creates topics.
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
       # Static, non-secret development KRaft cluster ID (generated once via
@@ -64,7 +89,8 @@ services:
       # this single-node local metadata log, not a credential.
       CLUSTER_ID: "gNvDlYfoQ-iLZBOSMUlr1w"
     ports:
-      # Localhost-only host access for API/worker/relay processes.
+      # Localhost-only host access for host-run API/worker/relay/consumer
+      # processes and developer Kafka CLI tools.
       - "127.0.0.1:9094:9094"
     volumes:
       - atlas_kafka_data:/var/lib/kafka/data
@@ -74,31 +100,182 @@ services:
       timeout: 5s
       retries: 10
 
+  # ---------------------------------------------------------------------------
+  # Atlas backend application services (Milestone 14 Slice 14B). All six
+  # services below share the exact same image (`atlas-backend:${GIT_SHA:-dev}`,
+  # built once here on `api`) and its Tini ENTRYPOINT; only `command:` (CMD)
+  # differs per role. Internal dependency addresses (postgres:5432,
+  # redis:6379, kafka:9092) are hardcoded literals, not `${...}` shell/`.env`
+  # interpolation, so a developer's host-oriented `.env` (ports 5433, 6380,
+  # 9094) can never override them. Build once, then bring up the stack:
+  #
+  #   GIT_SHA=$(git rev-parse HEAD) \
+  #   BUILD_DATE=$(git show -s --format=%cI "$(git rev-parse HEAD)") \
+  #   docker compose build api
+  #   docker compose up -d
+  # ---------------------------------------------------------------------------
+
+  db-migrate:
+    # No `build:` here -- `api` is the single service that declares the
+    # build (see the comment block above); `docker compose build api`
+    # populates the `atlas-backend:${GIT_SHA:-dev}` tag once, and every
+    # other service, including this one, only ever references that tag.
+    image: *atlas-backend-image
+    <<: *atlas-hardening
+    environment:
+      ATLAS_DATABASE_URL: postgresql+psycopg://atlas:atlas@postgres:5432/atlas
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
   kafka-topic-init:
-    # One-shot idempotent topic creation. Atlas has no application image
-    # yet, so this reuses the broker image's own kafka-topics.sh rather
-    # than pretending the Python AdminClient helper can run in Compose.
-    # Safe to rerun: exits 0 immediately if the topic already exists with
-    # exactly one partition, and fails nonzero otherwise.
-    image: apache/kafka:4.3.1
+    # Typed one-shot topic administration (Milestone 14 Slice 14B):
+    # `python -m atlas.outbox.topic_admin` delegates to the existing
+    # `ensure_topic_exists`/`verify_topic_partitioning` AdminClient helpers
+    # (src/atlas/outbox/topic_admin.py) -- no separate shell script and no
+    # duplicated topic-administration logic. Idempotent: exits 0 immediately
+    # if the reserved topic already exists with exactly one partition.
+    image: *atlas-backend-image
+    <<: *atlas-hardening
+    environment:
+      ATLAS_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     depends_on:
       kafka:
         condition: service_healthy
-    entrypoint: ["/bin/bash", "-c"]
-    command:
-      - |
-        set -euo pipefail
-        BOOTSTRAP="kafka:9092"
-        TOPIC="atlas.research-job-events.v1"
-        if ! /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BOOTSTRAP" --describe --topic "$$TOPIC" >/dev/null 2>&1; then
-          /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BOOTSTRAP" --create --topic "$$TOPIC" --partitions 1 --replication-factor 1
-        fi
-        PARTITION_COUNT=$$(/opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BOOTSTRAP" --describe --topic "$$TOPIC" | grep -c "Partition: ")
-        if [ "$$PARTITION_COUNT" -ne 1 ]; then
-          echo "atlas.research-job-events.v1 has $$PARTITION_COUNT partitions, expected 1" >&2
-          exit 1
-        fi
-        echo "Topic $$TOPIC verified with 1 partition."
+    command: ["python", "-m", "atlas.outbox.topic_admin"]
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-dev}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+    image: *atlas-backend-image
+    <<: *atlas-hardening
+    environment:
+      ATLAS_DATABASE_URL: postgresql+psycopg://atlas:atlas@postgres:5432/atlas
+      ATLAS_COORDINATION_PROVIDER: redis
+      ATLAS_REDIS_URL: redis://redis:6379/0
+      # Explicitly mapped, individually named optional credentials only --
+      # never `env_file: .env` (which would inject every key present in the
+      # host's `.env` file wholesale, including any unrelated secret added
+      # to it later). Each of these is empty unless the developer's shell/
+      # Compose `.env` sets it, and default Settings (fake providers) never
+      # read them.
+      ATLAS_OPENAI_API_KEY: ${ATLAS_OPENAI_API_KEY:-}
+      ATLAS_ANTHROPIC_API_KEY: ${ATLAS_ANTHROPIC_API_KEY:-}
+      ATLAS_TAVILY_API_KEY: ${ATLAS_TAVILY_API_KEY:-}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      # Compose startup-sequencing only -- `api` explicitly sets
+      # ATLAS_COORDINATION_PROVIDER=redis above, so it should not attempt
+      # its first request against a Redis that has not finished starting.
+      # This does not change Atlas's own runtime behavior: the rate
+      # limiter/heartbeat recorder still fail open on any Redis error at
+      # any later point, exactly as before this dependency was added.
+      redis:
+        condition: service_healthy
+    # API-only liveness signal for `docker compose ps`; not used by any
+    # `depends_on` condition above -- API readiness is never treated as
+    # proof that worker/outbox-relay/consumer are healthy (see below). No
+    # curl/wget exists in the minimal runtime image, so this uses the stdlib
+    # `urllib` already available on PATH.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Derived from the API's own default command (Dockerfile CMD), which
+    # explicitly bounds uvicorn's graceful-shutdown window at
+    # `--timeout-graceful-shutdown 10` (10s), plus 5s headroom for Tini's
+    # signal forwarding and container teardown. Kubernetes independently
+    # rederives its own termination budgets in Milestone 18; this value
+    # governs Compose only.
+    stop_grace_period: 15s
+
+  worker:
+    image: *atlas-backend-image
+    <<: *atlas-hardening
+    environment:
+      ATLAS_DATABASE_URL: postgresql+psycopg://atlas:atlas@postgres:5432/atlas
+      ATLAS_COORDINATION_PROVIDER: redis
+      ATLAS_REDIS_URL: redis://redis:6379/0
+      ATLAS_OPENAI_API_KEY: ${ATLAS_OPENAI_API_KEY:-}
+      ATLAS_ANTHROPIC_API_KEY: ${ATLAS_ANTHROPIC_API_KEY:-}
+      ATLAS_TAVILY_API_KEY: ${ATLAS_TAVILY_API_KEY:-}
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      # Compose startup-sequencing only, matching `api` above -- `worker`
+      # also explicitly sets ATLAS_COORDINATION_PROVIDER=redis (its
+      # heartbeat thread). Runtime behavior is unchanged: the heartbeat
+      # recorder still fails open on any later Redis error.
+      redis:
+        condition: service_healthy
+    command: ["python", "-m", "atlas.worker"]
+    # Derived from the worker's own default shutdown behavior:
+    # `worker_processing_timeout_seconds` defaults to 60s (the orchestration
+    # `Future.result` bound `ResearchJobWorker.request_shutdown()` waits for
+    # via `shutdown_grace_seconds`, which itself defaults to the processing
+    # timeout), plus 15s headroom for signal forwarding/process teardown
+    # before Compose escalates to SIGKILL. Kubernetes independently rederives
+    # its own termination budgets in Milestone 18.
+    stop_grace_period: 75s
+
+  outbox-relay:
+    image: *atlas-backend-image
+    <<: *atlas-hardening
+    environment:
+      ATLAS_DATABASE_URL: postgresql+psycopg://atlas:atlas@postgres:5432/atlas
+      ATLAS_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      kafka-topic-init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "atlas.outbox"]
+    # Derived from the relay's own bounded shutdown-path work, not from
+    # `outbox_publish_lease_seconds` (30s default): the lease is a
+    # fencing/crash-recovery constraint on how long a claimed row may sit
+    # unpublished before another relay instance may reclaim it -- it is
+    # not an additive step _during_ a graceful shutdown, and shutdown does
+    # not wait for it to expire. What Compose actually waits out here, in
+    # `_cleanup()` (see `src/atlas/outbox/__main__.py`), is: up to
+    # `kafka_delivery_timeout_seconds` (default 10s) for an in-flight
+    # record's publish to finish or time out, then up to that same
+    # `kafka_delivery_timeout_seconds` bound again for the producer's own
+    # `close()`/flush during cleanup, plus headroom for the advisory-lock
+    # release, signal-handler restoration, and process scheduling that
+    # follow. Kubernetes independently rederives its own termination
+    # budgets in Milestone 18.
+    stop_grace_period: 30s
+
+  consumer:
+    image: *atlas-backend-image
+    <<: *atlas-hardening
+    environment:
+      ATLAS_DATABASE_URL: postgresql+psycopg://atlas:atlas@postgres:5432/atlas
+      ATLAS_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      kafka-topic-init:
+        condition: service_completed_successfully
+    command: ["python", "-m", "atlas.consumer"]
+    # Derived directly from `consumer_max_poll_interval_seconds` (default
+    # 300s): the consumer's own bounded per-record retry/backoff is proven
+    # (Settings validation) to complete safely under that Kafka group-timeout
+    # ceiling, so 300s is the worst-case bound the process itself can still
+    # be legitimately mid-attempt at when a shutdown signal arrives.
+    # Kubernetes independently rederives its own termination budgets in
+    # Milestone 18.
+    stop_grace_period: 300s
 
 volumes:
   atlas_pg_data:

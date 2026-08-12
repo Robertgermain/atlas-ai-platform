@@ -1,0 +1,676 @@
+name: Containers
+
+# Milestone 14 Slice 14C: builds the shared Atlas backend image exactly once,
+# structurally inspects it, runs the full Docker Compose application topology
+# against it end to end (never rebuilding), generates a CycloneDX SBOM, and
+# scans the exact same image for vulnerabilities. This workflow is separate
+# from ci.yml (which never touches Docker) and does not replace it.
+#
+# Reproducibility note: pinned base-image digests, the frozen `uv.lock`, and
+# the exact commit's own source tree/build args make this build
+# functionally/content-equivalent on every run of the same commit -- this
+# workflow does not claim, and does not depend on, strict byte-for-byte image
+# digest reproducibility. BuildKit's `type=gha` cache below can only change
+# how long the build takes, never what it produces: a cache hit and a fully
+# cold cache miss both build from the same pinned inputs. Cache export uses
+# `ignore-error=true` so a transient GitHub Actions cache-service failure
+# degrades performance only (falls back to a fully cold build) and never
+# fails an otherwise valid build; cache import (`--cache-from`) has no such
+# flag because a failed/missing cache import already fails open to a cold
+# build by design.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: containers-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so `git show` below can always resolve the exact
+          # commit's own timestamp regardless of trigger type.
+          fetch-depth: 0
+
+      # -----------------------------------------------------------------
+      # Static, pre-build source checks (Dockerfile pinning). Cheap and do
+      # not require an image; run first so a bad pin fails fast.
+      # -----------------------------------------------------------------
+      - name: Check pinned base images in Dockerfile
+        run: |
+          set -euo pipefail
+          grep -q 'FROM python:3.12-slim-bookworm@sha256:' Dockerfile
+          grep -Eq 'FROM ghcr\.io/astral-sh/uv:[^ ]+@sha256:' Dockerfile
+          TINI_PINS="$(grep -c -- '--checksum=sha256:' Dockerfile)"
+          if [ "$TINI_PINS" -ne 2 ]; then
+            echo "Expected exactly 2 checksum-pinned Tini binaries (amd64+arm64), found $TINI_PINS." >&2
+            exit 1
+          fi
+          echo "Dockerfile base-image and Tini pinning checks passed."
+
+      - name: Resolve build metadata
+        run: |
+          set -euo pipefail
+          # Deliberately `git rev-parse HEAD` on the actual checked-out tree,
+          # not `github.event.pull_request.head.sha`/`github.sha`: for a
+          # pull_request trigger, actions/checkout's default ref is GitHub's
+          # own PR merge commit (the PR branch tip merged onto its base),
+          # which is not the same revision as `head.sha`. This workflow
+          # builds, tags, labels, and validates whatever tree is actually
+          # checked out -- the merge result on a pull_request trigger, or
+          # the pushed commit on a push trigger -- and identifies it by that
+          # exact revision everywhere (image tag, OCI revision label,
+          # BUILD_DATE, image-identity evidence, artifact names, and the
+          # E2E idempotency key), so every later assertion is provably about
+          # the commit this job actually built and ran.
+          GIT_SHA="$(git rev-parse HEAD)"
+          BUILD_DATE="$(git show -s --format=%cI "$GIT_SHA")"
+          echo "GIT_SHA=$GIT_SHA" >> "$GITHUB_ENV"
+          echo "BUILD_DATE=$BUILD_DATE" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=atlas-backend:$GIT_SHA" >> "$GITHUB_ENV"
+          echo "Resolved GIT_SHA=$GIT_SHA (the exact checked-out revision; BUILD_DATE derived from that revision's own commit timestamp, not wall-clock)."
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          version: v0.36.1
+
+      # -----------------------------------------------------------------
+      # The one and only build for this entire job. `--provenance=false
+      # --sbom=false` disables BuildKit's own auto-attached build
+      # attestations: this repo generates its own SBOM via Syft below as
+      # the single source of truth, and build-time attestations are not
+      # guaranteed compatible with `--load` on every runner's image-store
+      # configuration. No step after this one ever runs `docker compose
+      # build` or passes `--build`; every later command references
+      # $IMAGE_TAG, which already exists locally after this step.
+      # -----------------------------------------------------------------
+      - name: Build the shared backend image exactly once
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --load \
+            --provenance=false \
+            --sbom=false \
+            --tag "$IMAGE_TAG" \
+            --build-arg GIT_SHA="$GIT_SHA" \
+            --build-arg BUILD_DATE="$BUILD_DATE" \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max,ignore-error=true \
+            .
+
+      - name: Record built image identity
+        run: |
+          set -euo pipefail
+          IMAGE_ID="$(docker image inspect "$IMAGE_TAG" --format '{{.Id}}')"
+          if [ -z "$IMAGE_ID" ]; then
+            echo "Failed to resolve an image ID for $IMAGE_TAG immediately after build." >&2
+            exit 1
+          fi
+          echo "IMAGE_ID=$IMAGE_ID" >> "$GITHUB_ENV"
+          echo "Recorded local image identity for $IMAGE_TAG."
+
+      # -----------------------------------------------------------------
+      # Structural image checks. Each one runs against $IMAGE_TAG directly
+      # via `docker run`/`docker image inspect` -- no Compose involved yet.
+      # -----------------------------------------------------------------
+      - name: Verify image identity before structural checks
+        run: |
+          set -euo pipefail
+          CURRENT_ID="$(docker image inspect "$IMAGE_TAG" --format '{{.Id}}')"
+          if [ "$CURRENT_ID" != "$IMAGE_ID" ]; then
+            echo "Image identity drift detected before structural checks: $IMAGE_TAG no longer resolves to the image built earlier in this job." >&2
+            exit 1
+          fi
+
+      - name: Structural check -- Python version
+        run: |
+          set -euo pipefail
+          VERSION="$(docker run --rm "$IMAGE_TAG" python --version)"
+          case "$VERSION" in
+            "Python 3.12."*) echo "Python version OK: $VERSION" ;;
+            *) echo "Unexpected Python version: $VERSION" >&2; exit 1 ;;
+          esac
+
+      - name: Structural check -- package import
+        run: |
+          set -euo pipefail
+          docker run --rm "$IMAGE_TAG" python -c "
+          import atlas
+          import atlas.main
+          import atlas.worker
+          import atlas.outbox
+          import atlas.consumer
+          import atlas.outbox.topic_admin
+          print('atlas and all four role modules import successfully')
+          "
+
+      - name: Structural check -- non-root UID/GID
+        run: |
+          set -euo pipefail
+          OUT="$(docker run --rm "$IMAGE_TAG" id)"
+          case "$OUT" in
+            *"uid=10001(atlas) gid=10001(atlas)"*) echo "Non-root identity OK: $OUT" ;;
+            *) echo "Unexpected container identity: $OUT" >&2; exit 1 ;;
+          esac
+
+      - name: Structural check -- no development tools
+        run: |
+          set -euo pipefail
+          docker run --rm "$IMAGE_TAG" python -c "
+          import importlib.util as u
+          import sys
+          present = [m for m in ('pytest', 'mypy', 'ruff') if u.find_spec(m) is not None]
+          if present:
+              print('Unexpected development tools present:', present)
+              sys.exit(1)
+          print('pytest/mypy/ruff absent from the runtime image')
+          "
+
+      - name: Structural check -- no uv binary or source tree
+        run: |
+          set -euo pipefail
+          docker run --rm "$IMAGE_TAG" sh -c '
+            if command -v uv >/dev/null 2>&1; then
+              echo "uv binary unexpectedly present in the runtime image" >&2
+              exit 1
+            fi
+            if [ -d /app/src ]; then
+              echo "/app/src source tree unexpectedly present in the runtime image" >&2
+              exit 1
+            fi
+            echo "uv binary and source tree absent from the runtime image"
+          '
+
+      - name: Structural check -- OCI labels
+        run: |
+          set -euo pipefail
+          REVISION="$(docker image inspect "$IMAGE_TAG" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          if [ "$REVISION" != "$GIT_SHA" ]; then
+            echo "org.opencontainers.image.revision mismatch: got '$REVISION', expected '$GIT_SHA'." >&2
+            exit 1
+          fi
+          CREATED="$(docker image inspect "$IMAGE_TAG" --format '{{ index .Config.Labels "org.opencontainers.image.created" }}')"
+          if [ -z "$CREATED" ] || [ "$CREATED" = "unknown" ]; then
+            echo "org.opencontainers.image.created is missing or 'unknown': '$CREATED'." >&2
+            exit 1
+          fi
+          for KEY in title description source; do
+            VALUE="$(docker image inspect "$IMAGE_TAG" --format "{{ index .Config.Labels \"org.opencontainers.image.$KEY\" }}")"
+            if [ -z "$VALUE" ]; then
+              echo "org.opencontainers.image.$KEY is missing." >&2
+              exit 1
+            fi
+          done
+          echo "OCI labels OK (revision=$REVISION, created=$CREATED)."
+
+      - name: Structural check -- runtime OS/architecture
+        run: |
+          set -euo pipefail
+          OSARCH="$(docker image inspect "$IMAGE_TAG" --format '{{.Os}}/{{.Architecture}}')"
+          if [ "$OSARCH" != "linux/amd64" ]; then
+            echo "Unexpected image OS/architecture on this runner: $OSARCH (expected linux/amd64)." >&2
+            exit 1
+          fi
+          echo "Runtime OS/architecture OK: $OSARCH"
+
+      # -----------------------------------------------------------------
+      # Full Compose application topology against the exact same image.
+      # No `docker compose build` and no `--build` flag are used anywhere
+      # below -- every service already resolves $IMAGE_TAG, which exists
+      # locally from the single build above.
+      # -----------------------------------------------------------------
+      - name: Verify image identity before bringing up infrastructure
+        run: |
+          set -euo pipefail
+          CURRENT_ID="$(docker image inspect "$IMAGE_TAG" --format '{{.Id}}')"
+          if [ "$CURRENT_ID" != "$IMAGE_ID" ]; then
+            echo "Image identity drift detected before infrastructure startup." >&2
+            exit 1
+          fi
+
+      - name: Start infrastructure (PostgreSQL, Redis, Kafka)
+        run: docker compose up -d --wait --wait-timeout 60 postgres redis kafka
+
+      - name: Run database migrations
+        run: docker compose up db-migrate --exit-code-from db-migrate
+
+      - name: Verify db-migrate container resolved the exact built image
+        run: |
+          set -euo pipefail
+          CID="$(docker compose ps -a -q db-migrate)"
+          if [ -z "$CID" ]; then
+            echo "db-migrate container could not be found for image-identity verification." >&2
+            exit 1
+          fi
+          RESOLVED_ID="$(docker inspect "$CID" --format '{{.Image}}')"
+          if [ "$RESOLVED_ID" != "$IMAGE_ID" ]; then
+            echo "db-migrate's container did not resolve to the image built earlier in this job." >&2
+            exit 1
+          fi
+          echo "db-migrate container image identity verified."
+
+      - name: Run Kafka topic administration
+        run: docker compose up kafka-topic-init --exit-code-from kafka-topic-init
+
+      - name: Verify kafka-topic-init container resolved the exact built image
+        run: |
+          set -euo pipefail
+          CID="$(docker compose ps -a -q kafka-topic-init)"
+          if [ -z "$CID" ]; then
+            echo "kafka-topic-init container could not be found for image-identity verification." >&2
+            exit 1
+          fi
+          RESOLVED_ID="$(docker inspect "$CID" --format '{{.Image}}')"
+          if [ "$RESOLVED_ID" != "$IMAGE_ID" ]; then
+            echo "kafka-topic-init's container did not resolve to the image built earlier in this job." >&2
+            exit 1
+          fi
+          echo "kafka-topic-init container image identity verified."
+
+      - name: Verify image identity before starting application services
+        run: |
+          set -euo pipefail
+          CURRENT_ID="$(docker image inspect "$IMAGE_TAG" --format '{{.Id}}')"
+          if [ "$CURRENT_ID" != "$IMAGE_ID" ]; then
+            echo "Image identity drift detected before application services started." >&2
+            exit 1
+          fi
+
+      - name: Start API, worker, outbox relay, and consumer
+        run: docker compose up -d --wait --wait-timeout 60 api worker outbox-relay consumer
+
+      - name: Verify api/worker/outbox-relay/consumer containers resolved the exact built image
+        run: |
+          set -euo pipefail
+          for SERVICE in api worker outbox-relay consumer; do
+            CID="$(docker compose ps -q "$SERVICE")"
+            if [ -z "$CID" ]; then
+              echo "$SERVICE container could not be found for image-identity verification." >&2
+              exit 1
+            fi
+            RESOLVED_ID="$(docker inspect "$CID" --format '{{.Image}}')"
+            if [ "$RESOLVED_ID" != "$IMAGE_ID" ]; then
+              echo "$SERVICE's container did not resolve to the image built earlier in this job." >&2
+              exit 1
+            fi
+          done
+          echo "api/worker/outbox-relay/consumer container image identity all verified."
+
+      - name: Verify API health and readiness
+        run: |
+          set -euo pipefail
+          curl -sf --max-time 5 http://127.0.0.1:8000/health > /dev/null
+          curl -sf --max-time 5 http://127.0.0.1:8000/ready > /dev/null
+          echo "API /health and /ready both returned 200."
+
+      - name: Verify worker Redis heartbeat
+        run: |
+          set -euo pipefail
+          KEY="$(docker compose exec -T redis redis-cli KEYS 'atlas:heartbeat:v1:worker:*' | head -n1)"
+          if [ -z "$KEY" ]; then
+            echo "No worker heartbeat key found in Redis." >&2
+            exit 1
+          fi
+          TTL1="$(docker compose exec -T redis redis-cli TTL "$KEY" | tr -d '\r')"
+          sleep 6
+          TTL2="$(docker compose exec -T redis redis-cli TTL "$KEY" | tr -d '\r')"
+          if [ "$TTL2" -lt "$((TTL1 - 3))" ]; then
+            echo "Worker heartbeat TTL decayed without refreshing (TTL1=$TTL1, TTL2=$TTL2)." >&2
+            exit 1
+          fi
+          echo "Worker heartbeat present and refreshing (TTL1=$TTL1, TTL2=$TTL2)."
+
+      - name: Submit and complete one fake-provider research job
+        run: |
+          set -euo pipefail
+          IDEMPOTENCY_KEY="containers-ci-$GIT_SHA"
+          RESP="$(curl -sf --max-time 5 -X POST http://127.0.0.1:8000/v1/research-jobs \
+            -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: $IDEMPOTENCY_KEY" \
+            -d '{"question": "Container CI smoke test: what are the main risks of multi-agent research systems?"}')"
+          JOB_ID="$(printf '%s' "$RESP" | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')"
+          if [ -z "$JOB_ID" ]; then
+            echo "Failed to parse a job id from the create-job response." >&2
+            exit 1
+          fi
+          # Validated as a well-formed UUID before it is ever interpolated
+          # into SQL in later steps (defense in depth: the API's own id
+          # generation is already trusted, but no unvalidated response
+          # field is embedded in a query string on that trust alone).
+          if ! [[ "$JOB_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+            echo "Job id returned by the API is not a well-formed UUID; refusing to use it in later SQL queries." >&2
+            exit 1
+          fi
+          echo "JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
+          echo "IDEMPOTENCY_KEY=$IDEMPOTENCY_KEY" >> "$GITHUB_ENV"
+
+          STATUS=""
+          for _ in $(seq 1 30); do
+            STATUS="$(curl -sf --max-time 5 "http://127.0.0.1:8000/v1/research-jobs/$JOB_ID" \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin)["status"])')"
+            if [ "$STATUS" = "COMPLETED" ] || [ "$STATUS" = "FAILED" ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ "$STATUS" != "COMPLETED" ]; then
+            echo "Research job did not reach COMPLETED within the bounded poll deadline (last observed status: $STATUS)." >&2
+            exit 1
+          fi
+          echo "Research job $JOB_ID reached COMPLETED."
+
+      # -----------------------------------------------------------------
+      # Baseline database invariants for this job, recorded once here and
+      # re-checked unchanged after both replay attempts below. JOB_ID was
+      # already validated as a well-formed UUID before this step.
+      # -----------------------------------------------------------------
+      - name: Record and verify baseline research-job/outbox/inbox/projection invariants
+        run: |
+          set -euo pipefail
+          JOB_ROW_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(*) FROM research_jobs WHERE id = '$JOB_ID';" | tr -d '\r')"
+          # Explicit exactly-once checks for both expected lifecycle event
+          # types, rather than relying on a numeric lower bound alone: this
+          # is what actually rules out a vacuous `0 outbox == 0 inbox` pass
+          # below, since it forces OUTBOX_COUNT to be at least 2 by
+          # construction whenever this step does not already fail here.
+          CREATED_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(*) FROM outbox_events WHERE aggregate_id = '$JOB_ID' AND event_type = 'research_job.created' AND published_at IS NOT NULL;" | tr -d '\r')"
+          COMPLETED_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(*) FROM outbox_events WHERE aggregate_id = '$JOB_ID' AND event_type = 'research_job.completed' AND published_at IS NOT NULL;" | tr -d '\r')"
+          # The applicable published-event count for the inbox comparison
+          # below, computed with explicit distinct `event_id` semantics
+          # (outbox_events.event_id is already a primary key, so this is
+          # never a no-op simplification -- it is the actual, named
+          # invariant the inbox count is compared against).
+          OUTBOX_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(DISTINCT event_id) FROM outbox_events WHERE aggregate_id = '$JOB_ID' AND published_at IS NOT NULL;" | tr -d '\r')"
+          INBOX_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(DISTINCT ci.event_id) FROM consumer_inbox ci JOIN outbox_events oe ON ci.event_id = oe.event_id \
+             WHERE oe.aggregate_id = '$JOB_ID' AND ci.consumer_id = 'atlas.research-job-projection.v1';" | tr -d '\r')"
+          PROJECTION_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(*) FROM research_job_event_projection WHERE research_job_id = '$JOB_ID';" | tr -d '\r')"
+          DUP_INBOX_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(*) FROM (
+               SELECT ci.consumer_id, ci.event_id, count(*) AS c
+               FROM consumer_inbox ci
+               JOIN outbox_events oe ON ci.event_id = oe.event_id
+               WHERE oe.aggregate_id = '$JOB_ID' AND ci.consumer_id = 'atlas.research-job-projection.v1'
+               GROUP BY ci.consumer_id, ci.event_id
+               HAVING count(*) > 1
+             ) dup;" | tr -d '\r')"
+          LAST_EVENT_TYPE="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT last_event_type FROM research_job_event_projection WHERE research_job_id = '$JOB_ID';" | tr -d '\r')"
+
+          if [ "$JOB_ROW_COUNT" != "1" ]; then
+            echo "Expected exactly 1 research_jobs row for this job id, found $JOB_ROW_COUNT." >&2
+            exit 1
+          fi
+          if [ "$CREATED_COUNT" != "1" ]; then
+            echo "Expected exactly 1 published research_job.created outbox event for this job, found $CREATED_COUNT." >&2
+            exit 1
+          fi
+          if [ "$COMPLETED_COUNT" != "1" ]; then
+            echo "Expected exactly 1 published research_job.completed outbox event for this job, found $COMPLETED_COUNT." >&2
+            exit 1
+          fi
+          if [ "$OUTBOX_COUNT" -lt 2 ]; then
+            echo "Expected at least 2 distinct published outbox events for this job, found $OUTBOX_COUNT." >&2
+            exit 1
+          fi
+          if [ "$PROJECTION_COUNT" != "1" ]; then
+            echo "Expected exactly 1 lifecycle projection row for this job id, found $PROJECTION_COUNT." >&2
+            exit 1
+          fi
+          if [ "$DUP_INBOX_COUNT" != "0" ]; then
+            echo "Expected 0 duplicate consumer-inbox (consumer_id, event_id) keys, found $DUP_INBOX_COUNT." >&2
+            exit 1
+          fi
+          if [ "$INBOX_COUNT" != "$OUTBOX_COUNT" ]; then
+            echo "Expected the projection consumer's distinct inbox event count ($INBOX_COUNT) to equal the distinct published outbox-event count for this job ($OUTBOX_COUNT)." >&2
+            exit 1
+          fi
+          if [ "$LAST_EVENT_TYPE" != "research_job.completed" ]; then
+            echo "Expected lifecycle projection last_event_type='research_job.completed', got '$LAST_EVENT_TYPE'." >&2
+            exit 1
+          fi
+
+          echo "BASELINE_JOB_ROW_COUNT=$JOB_ROW_COUNT" >> "$GITHUB_ENV"
+          echo "BASELINE_CREATED_COUNT=$CREATED_COUNT" >> "$GITHUB_ENV"
+          echo "BASELINE_COMPLETED_COUNT=$COMPLETED_COUNT" >> "$GITHUB_ENV"
+          echo "BASELINE_OUTBOX_COUNT=$OUTBOX_COUNT" >> "$GITHUB_ENV"
+          echo "BASELINE_INBOX_COUNT=$INBOX_COUNT" >> "$GITHUB_ENV"
+          echo "BASELINE_PROJECTION_COUNT=$PROJECTION_COUNT" >> "$GITHUB_ENV"
+          echo "BASELINE_DUP_INBOX_COUNT=$DUP_INBOX_COUNT" >> "$GITHUB_ENV"
+          echo "Baseline invariants verified: job rows=$JOB_ROW_COUNT, created events=$CREATED_COUNT, completed events=$COMPLETED_COUNT, distinct published outbox events=$OUTBOX_COUNT, distinct deduplicated inbox events=$INBOX_COUNT, projection rows=$PROJECTION_COUNT, duplicate inbox keys=$DUP_INBOX_COUNT."
+
+      - name: Verify identical idempotent replay leaves all invariants unchanged
+        run: |
+          set -euo pipefail
+          RESP="$(curl -s -o /tmp/replay_resp.json -w '%{http_code}' --max-time 5 -X POST http://127.0.0.1:8000/v1/research-jobs \
+            -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: $IDEMPOTENCY_KEY" \
+            -d '{"question": "Container CI smoke test: what are the main risks of multi-agent research systems?"}')"
+          if [ "$RESP" != "202" ]; then
+            echo "Expected 202 on identical idempotent replay, got $RESP." >&2
+            exit 1
+          fi
+          REPLAY_JOB_ID="$(python3 -c 'import json; print(json.load(open("/tmp/replay_resp.json"))["id"])')"
+          rm -f /tmp/replay_resp.json
+          if [ "$REPLAY_JOB_ID" != "$JOB_ID" ]; then
+            echo "Identical idempotent replay returned a different job id than the original request." >&2
+            exit 1
+          fi
+
+          JOB_ROW_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(*) FROM research_jobs WHERE id = '$JOB_ID';" | tr -d '\r')"
+          OUTBOX_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(DISTINCT event_id) FROM outbox_events WHERE aggregate_id = '$JOB_ID' AND published_at IS NOT NULL;" | tr -d '\r')"
+          INBOX_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(DISTINCT ci.event_id) FROM consumer_inbox ci JOIN outbox_events oe ON ci.event_id = oe.event_id \
+             WHERE oe.aggregate_id = '$JOB_ID' AND ci.consumer_id = 'atlas.research-job-projection.v1';" | tr -d '\r')"
+          PROJECTION_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(*) FROM research_job_event_projection WHERE research_job_id = '$JOB_ID';" | tr -d '\r')"
+          DUP_INBOX_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(*) FROM (
+               SELECT ci.consumer_id, ci.event_id, count(*) AS c
+               FROM consumer_inbox ci
+               JOIN outbox_events oe ON ci.event_id = oe.event_id
+               WHERE oe.aggregate_id = '$JOB_ID' AND ci.consumer_id = 'atlas.research-job-projection.v1'
+               GROUP BY ci.consumer_id, ci.event_id
+               HAVING count(*) > 1
+             ) dup;" | tr -d '\r')"
+
+          # BASELINE_OUTBOX_COUNT/BASELINE_INBOX_COUNT were already proven
+          # >= 2 (not 0) by the exactly-once created/completed checks in the
+          # prior step, so this equality comparison cannot be satisfied by a
+          # vacuous `0 == 0`.
+          if [ "$JOB_ROW_COUNT" != "$BASELINE_JOB_ROW_COUNT" ] || [ "$OUTBOX_COUNT" != "$BASELINE_OUTBOX_COUNT" ] || \
+             [ "$INBOX_COUNT" != "$BASELINE_INBOX_COUNT" ] || [ "$PROJECTION_COUNT" != "$BASELINE_PROJECTION_COUNT" ] || \
+             [ "$DUP_INBOX_COUNT" != "$BASELINE_DUP_INBOX_COUNT" ]; then
+            echo "Database invariants changed after an identical idempotent replay (expected all counts unchanged)." >&2
+            exit 1
+          fi
+          echo "Identical idempotent replay: HTTP 202, same job id, all database counts unchanged, duplicate inbox keys still $DUP_INBOX_COUNT."
+
+      - name: Verify conflicting replay is rejected and invariants remain unchanged
+        run: |
+          set -euo pipefail
+          CONFLICT_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST http://127.0.0.1:8000/v1/research-jobs \
+            -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: $IDEMPOTENCY_KEY" \
+            -d '{"question": "A different question that must conflict with the same Idempotency-Key."}')"
+          if [ "$CONFLICT_CODE" != "409" ]; then
+            echo "Expected 409 on conflicting idempotent replay, got $CONFLICT_CODE." >&2
+            exit 1
+          fi
+
+          JOB_ROW_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(*) FROM research_jobs WHERE id = '$JOB_ID';" | tr -d '\r')"
+          OUTBOX_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(DISTINCT event_id) FROM outbox_events WHERE aggregate_id = '$JOB_ID' AND published_at IS NOT NULL;" | tr -d '\r')"
+          INBOX_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(DISTINCT ci.event_id) FROM consumer_inbox ci JOIN outbox_events oe ON ci.event_id = oe.event_id \
+             WHERE oe.aggregate_id = '$JOB_ID' AND ci.consumer_id = 'atlas.research-job-projection.v1';" | tr -d '\r')"
+          PROJECTION_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(*) FROM research_job_event_projection WHERE research_job_id = '$JOB_ID';" | tr -d '\r')"
+          DUP_INBOX_COUNT="$(docker compose exec -T postgres psql -U atlas -d atlas -tAc \
+            "SELECT count(*) FROM (
+               SELECT ci.consumer_id, ci.event_id, count(*) AS c
+               FROM consumer_inbox ci
+               JOIN outbox_events oe ON ci.event_id = oe.event_id
+               WHERE oe.aggregate_id = '$JOB_ID' AND ci.consumer_id = 'atlas.research-job-projection.v1'
+               GROUP BY ci.consumer_id, ci.event_id
+               HAVING count(*) > 1
+             ) dup;" | tr -d '\r')"
+
+          # BASELINE_OUTBOX_COUNT/BASELINE_INBOX_COUNT were already proven
+          # >= 2 (not 0) by the exactly-once created/completed checks two
+          # steps ago, so this equality comparison cannot be satisfied by a
+          # vacuous `0 == 0`.
+          if [ "$JOB_ROW_COUNT" != "$BASELINE_JOB_ROW_COUNT" ] || [ "$OUTBOX_COUNT" != "$BASELINE_OUTBOX_COUNT" ] || \
+             [ "$INBOX_COUNT" != "$BASELINE_INBOX_COUNT" ] || [ "$PROJECTION_COUNT" != "$BASELINE_PROJECTION_COUNT" ] || \
+             [ "$DUP_INBOX_COUNT" != "$BASELINE_DUP_INBOX_COUNT" ]; then
+            echo "Database invariants changed after a rejected conflicting replay (expected all counts unchanged)." >&2
+            exit 1
+          fi
+          echo "Conflicting replay: HTTP 409, all database counts unchanged, duplicate inbox keys still $DUP_INBOX_COUNT."
+
+      - name: Verify image identity before Syft/Trivy
+        run: |
+          set -euo pipefail
+          CURRENT_ID="$(docker image inspect "$IMAGE_TAG" --format '{{.Id}}')"
+          if [ "$CURRENT_ID" != "$IMAGE_ID" ]; then
+            echo "Image identity drift detected before Syft/Trivy." >&2
+            exit 1
+          fi
+
+      # -----------------------------------------------------------------
+      # Bounded idle shutdown for every long-running role. Each service's
+      # real Compose `stop_grace_period` (docker-compose.yml) still governs
+      # Compose's own internal SIGTERM -> wait -> SIGKILL escalation
+      # (`-t <grace>` below); the outer `timeout 20` is a CI-side
+      # observation deadline appropriate for an *idle* service (Slice 14B
+      # evidence: all four roles stopped idle in ~0-2s), not a re-derivation
+      # of each service's much larger busy-case grace period. If a service
+      # hangs, `timeout` fails this step (not the whole job) and execution
+      # still reaches the unconditional teardown step below.
+      # -----------------------------------------------------------------
+      - name: Stop API and verify bounded idle shutdown
+        run: |
+          set -euo pipefail
+          if ! timeout 20 docker compose stop -t 15 api; then
+            echo "api did not stop within the 20s CI observation deadline (configured stop_grace_period: 15s)." >&2
+            exit 1
+          fi
+          echo "api stopped within its configured grace period."
+
+      - name: Stop worker and verify bounded idle shutdown
+        run: |
+          set -euo pipefail
+          if ! timeout 20 docker compose stop -t 75 worker; then
+            echo "worker did not stop within the 20s CI observation deadline (configured stop_grace_period: 75s)." >&2
+            exit 1
+          fi
+          echo "worker stopped within its configured grace period."
+
+      - name: Stop outbox relay and verify bounded idle shutdown
+        run: |
+          set -euo pipefail
+          if ! timeout 20 docker compose stop -t 30 outbox-relay; then
+            echo "outbox-relay did not stop within the 20s CI observation deadline (configured stop_grace_period: 30s)." >&2
+            exit 1
+          fi
+          echo "outbox-relay stopped within its configured grace period."
+
+      - name: Stop consumer and verify bounded idle shutdown
+        run: |
+          set -euo pipefail
+          if ! timeout 20 docker compose stop -t 300 consumer; then
+            echo "consumer did not stop within the 20s CI observation deadline (configured stop_grace_period: 300s)." >&2
+            exit 1
+          fi
+          echo "consumer stopped within its configured grace period."
+
+      # -----------------------------------------------------------------
+      # Software supply-chain evidence, against the exact same local image.
+      # -----------------------------------------------------------------
+      - name: Generate CycloneDX SBOM with Syft
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.IMAGE_TAG }}
+          syft-version: v1.42.3
+          format: cyclonedx-json
+          output-file: sbom.cyclonedx.json
+          upload-artifact: true
+          artifact-name: sbom-${{ env.GIT_SHA }}.cyclonedx.json
+          upload-artifact-retention: 30
+
+      - name: Scan the exact image for vulnerabilities (readable log)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_TAG }}
+          version: v0.70.0
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          format: table
+          exit-code: "0"
+
+      - name: Scan the exact image for vulnerabilities (retained evidence)
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_TAG }}
+          version: v0.70.0
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          format: json
+          output: trivy-results.json
+          exit-code: "0"
+
+      - name: Upload Trivy JSON evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trivy-results-${{ env.GIT_SHA }}.json
+          path: trivy-results.json
+          retention-days: 30
+
+      # The actual fail-the-build gate. Table/JSON scans above always
+      # exit 0 (informational + evidence-capture only) so the JSON
+      # artifact is guaranteed to upload via `if: always()` even when this
+      # step fails; this step alone enforces the HIGH/CRITICAL fixable
+      # vulnerability policy. `ignore-unfixed: true` is the one, explicit,
+      # documented command option used for unfixed findings -- there is no
+      # `.trivyignore` file and no broader suppression anywhere.
+      - name: Fail on fixable HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_TAG }}
+          version: v0.70.0
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: "1"
+
+      - name: Tear down Compose containers and volumes
+        if: always()
+        run: docker compose down -v --remove-orphans

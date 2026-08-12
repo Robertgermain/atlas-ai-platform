@@ -5,18 +5,31 @@ operates on the constant ``RESEARCH_JOB_EVENTS_TOPIC_V1`` only. The broker
 disables ``auto.create.topics.enable``, so this is the only supported way
 Atlas creates or verifies the topic; nothing here silently relies on
 broker-side auto-creation.
+
+Also executable directly as a one-shot administration job:
+``python -m atlas.outbox.topic_admin`` (Milestone 14 Slice 14B). ``main()``
+below is a thin startup-boundary wrapper -- it loads settings and calls the
+three functions above in order; it does not duplicate any topic-creation or
+verification logic.
 """
 
 from __future__ import annotations
 
+import logging
+import sys
+
 from confluent_kafka import KafkaError, KafkaException
 from confluent_kafka.admin import AdminClient, NewTopic
 
+from atlas.config import get_settings
 from atlas.eventing.topic import RESEARCH_JOB_EVENTS_TOPIC_V1
 from atlas.outbox.errors import (
     KafkaProducerConfigurationError,
     KafkaTopicVerificationError,
+    OutboxError,
 )
+
+logger = logging.getLogger(__name__)
 
 REQUIRED_PARTITION_COUNT = 1
 REQUIRED_REPLICATION_FACTOR = 1
@@ -129,3 +142,77 @@ def _verify_topic_partitioning(
     partition_count = len(topic_metadata.partitions)
     if partition_count != REQUIRED_PARTITION_COUNT:
         raise KafkaTopicVerificationError("UnexpectedPartitionCount")
+
+
+def main() -> int:
+    """One-shot Kafka topic administration: ``python -m atlas.outbox.topic_admin``.
+
+    Startup order (fails closed, nonzero exit, on any step):
+
+    1. Load and validate settings.
+    2. Verify broker connectivity.
+    3. Idempotently create the fixed reserved topic if it does not exist.
+    4. Verify the fixed reserved topic exists with exactly one partition.
+
+    This delegates to :func:`verify_broker_connectivity`,
+    :func:`ensure_topic_exists`, and :func:`verify_topic_partitioning` only
+    -- it does not implement any Kafka admin logic of its own. Intended as a
+    Docker Compose one-shot job (Milestone 14 Slice 14B): other services can
+    depend on this container's successful (zero) exit code rather than the
+    broker's own auto-create behavior, which stays disabled.
+
+    Logging discipline matches ``python -m atlas.outbox``/``atlas.consumer``:
+    every log call uses only a fixed, sanitized message and, where useful,
+    ``exc.__class__.__name__``. Never ``str(exc)``, ``repr(exc)``, or any
+    value derived from settings (Kafka broker addresses, configuration
+    values).
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    try:
+        settings = get_settings()
+    except Exception as exc:
+        logger.error(
+            "Failed to load settings; exiting. error_class=%s",
+            exc.__class__.__name__,
+        )
+        return 1
+
+    try:
+        verify_broker_connectivity(
+            bootstrap_servers=settings.kafka_bootstrap_servers,
+            timeout_seconds=settings.kafka_topic_verify_timeout_seconds,
+        )
+        ensure_topic_exists(
+            bootstrap_servers=settings.kafka_bootstrap_servers,
+            timeout_seconds=settings.kafka_topic_verify_timeout_seconds,
+        )
+        verify_topic_partitioning(
+            bootstrap_servers=settings.kafka_bootstrap_servers,
+            timeout_seconds=settings.kafka_topic_verify_timeout_seconds,
+        )
+    except OutboxError as exc:
+        logger.error(
+            "Kafka topic administration failed; exiting. error_class=%s",
+            exc.__class__.__name__,
+        )
+        return 1
+    except Exception as exc:
+        logger.error(
+            "Unexpected error during Kafka topic administration; exiting. "
+            "error_class=%s",
+            exc.__class__.__name__,
+        )
+        return 1
+
+    logger.info(
+        "Kafka topic administration succeeded: reserved topic created/"
+        "verified with the required partition count."
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
