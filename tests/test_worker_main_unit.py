@@ -18,6 +18,7 @@ import pytest
 import atlas.worker.__main__ as worker_main
 from atlas.config.settings import Settings
 from atlas.observability.events import Event
+from atlas.observability.metrics.exposition import MetricsServerHandle
 from atlas.observability.testing import CapturedLogs, capture_logs
 
 # Fake sensitive content that must never reach a log line: a credential and
@@ -62,6 +63,25 @@ def _reset_fakes() -> None:
     _FakeCheckpointRuntime.raise_on_close = None
 
 
+class _RecordingMetricsServerHandle(MetricsServerHandle):
+    """An unbound handle (no real socket) that records ``close()`` calls."""
+
+    def __init__(self) -> None:
+        super().__init__(None, None)
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        super().close()
+
+
+#: Populated by ``_patched_composition`` each test run; read by tests that
+#: need to assert on the fake metrics-server handle/requested port without
+#: real socket binding (avoids CI port-conflict flakiness).
+_metrics_ports_requested: list[int] = []
+_metrics_handle = _RecordingMetricsServerHandle()
+
+
 @pytest.fixture
 def _patched_composition(monkeypatch: pytest.MonkeyPatch) -> Settings:
     settings = Settings()
@@ -73,6 +93,16 @@ def _patched_composition(monkeypatch: pytest.MonkeyPatch) -> Settings:
         lambda _database_url: _FakeCheckpointRuntime(),
     )
     monkeypatch.setattr(signal, "signal", lambda *_args, **_kwargs: None)
+    _metrics_ports_requested.clear()
+    global _metrics_handle
+    _metrics_handle = _RecordingMetricsServerHandle()
+
+    def _fake_start(*, port: int, metrics: object | None = None) -> MetricsServerHandle:
+        del metrics
+        _metrics_ports_requested.append(port)
+        return _metrics_handle
+
+    monkeypatch.setattr(worker_main, "start_metrics_http_server", _fake_start)
     return settings
 
 
@@ -163,3 +193,17 @@ def test_main_does_not_call_initialize_checkpointer_schema_twice(
 
     assert worker_main.main() == 1
     assert calls["n"] == 1
+
+
+def test_main_starts_and_closes_metrics_server_on_startup_failure(
+    monkeypatch: pytest.MonkeyPatch, _patched_composition: Settings
+) -> None:
+    def _fail_init(_runtime: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(worker_main, "initialize_checkpointer_schema", _fail_init)
+
+    assert worker_main.main() == 1
+
+    assert _metrics_ports_requested == [_patched_composition.metrics_port]
+    assert _metrics_handle.close_calls == 1

@@ -13,10 +13,13 @@ import signal
 from collections.abc import Iterator
 
 import pytest
+from prometheus_client import CollectorRegistry
 
 import atlas.outbox.__main__ as outbox_main
 from atlas.config.settings import Settings
 from atlas.observability.events import Event
+from atlas.observability.metrics.catalog import AtlasMetrics
+from atlas.observability.metrics.exposition import MetricsServerHandle
 from atlas.observability.testing import CapturedLogs, capture_logs
 from atlas.outbox.errors import (
     KafkaProducerConfigurationError,
@@ -174,6 +177,50 @@ def test_poll_loop_backs_off_and_continues_on_recoverable_failure() -> None:
     assert relay.calls == 2
 
 
+def test_poll_loop_observes_relay_runs_and_published_events_distinctly() -> None:
+    """``atlas_outbox_relay_runs_total`` counts completed ``run_once()`` calls
+    by outcome; ``atlas_outbox_published_events_total`` counts the actual
+    number of individually published events -- these must differ whenever a
+    single run publishes more than one event (Slice 15A2 correction)."""
+    relay = _FakeRelay(
+        [
+            RelayBatchResult(outcome=RelayRunOutcome.PUBLISHED, published_count=3),
+            RelayBatchResult(outcome=RelayRunOutcome.EMPTY, published_count=0),
+        ]
+    )
+    settings = Settings(outbox_relay_poll_interval_seconds=0.001)
+    metrics = AtlasMetrics(CollectorRegistry())
+    calls = {"n": 0}
+
+    def _shutdown() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    exit_code = outbox_main._run_poll_loop(
+        relay,  # type: ignore[arg-type]
+        settings,
+        _shutdown,
+        metrics=metrics,
+    )
+
+    assert exit_code == 0
+    assert relay.calls == 2
+
+    def _sample(metric_name: str, **labels: str) -> float:
+        total = 0.0
+        for family in metrics.registry.collect():
+            for sample in family.samples:
+                if sample.name != metric_name:
+                    continue
+                if all(sample.labels.get(k) == v for k, v in labels.items()):
+                    total += sample.value
+        return total
+
+    assert _sample("atlas_outbox_relay_runs_total", outcome="published") == 1
+    assert _sample("atlas_outbox_relay_runs_total", outcome="empty") == 1
+    assert _sample("atlas_outbox_published_events_total") == 3
+
+
 def test_poll_loop_terminates_nonzero_on_unexpected_database_error() -> None:
     """A DB/session error not classified as an OutboxError still terminates."""
     relay = _RaisingRelay(RuntimeError("connection lost"))
@@ -243,7 +290,7 @@ class _FakeLock:
     instances: list[_FakeLock] = []
     raise_on_release: Exception | None = None
 
-    def __init__(self, _engine: object) -> None:
+    def __init__(self, _engine: object, **_kwargs: object) -> None:
         self.acquired = False
         self.released = False
         _FakeLock.instances.append(self)
@@ -285,6 +332,13 @@ def _patched_composition(monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setattr(outbox_main, "get_engine", lambda _url: object())
     monkeypatch.setattr(outbox_main, "get_session_factory", lambda _engine: object())
     monkeypatch.setattr(outbox_main, "SqlAlchemyOutboxRepository", lambda: object())
+    # Unbound handle (no real socket): avoids CI port-conflict flakiness
+    # across this file's many sequential main() invocations.
+    monkeypatch.setattr(
+        outbox_main,
+        "start_metrics_http_server",
+        lambda **_kwargs: MetricsServerHandle(None, None),
+    )
     return settings
 
 
@@ -477,7 +531,7 @@ def test_main_runs_poll_loop_and_cleans_up_on_graceful_shutdown(
     monkeypatch.setattr(
         outbox_main,
         "_run_poll_loop",
-        lambda relay, settings, shutdown_requested: 0,
+        lambda relay, settings, shutdown_requested, **_kwargs: 0,
     )
 
     assert outbox_main.main() == 0
@@ -501,7 +555,7 @@ def test_main_exits_nonzero_and_cleans_up_on_fatal_poll_loop_result(
     monkeypatch.setattr(
         outbox_main,
         "_run_poll_loop",
-        lambda relay, settings, shutdown_requested: 1,
+        lambda relay, settings, shutdown_requested, **_kwargs: 1,
     )
 
     assert outbox_main.main() == 1
@@ -525,7 +579,7 @@ def _patch_for_cleanup_test(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         outbox_main,
         "_run_poll_loop",
-        lambda relay, settings, shutdown_requested: 0,
+        lambda relay, settings, shutdown_requested, **_kwargs: 0,
     )
 
 

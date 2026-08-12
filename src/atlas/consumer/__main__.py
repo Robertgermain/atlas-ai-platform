@@ -123,6 +123,11 @@ from atlas.observability.logging import (
     log_event,
     log_exception_boundary,
 )
+from atlas.observability.metrics import (
+    AtlasMetrics,
+    default_metrics,
+    start_metrics_http_server,
+)
 from atlas.outbox.errors import KafkaTopicVerificationError
 from atlas.outbox.topic_admin import (
     verify_broker_connectivity,
@@ -199,6 +204,7 @@ def _run_poll_loop(
     shutdown_requested: Callable[[], bool],
     wait: Waiter,
     kafka_retry_backoff_seconds: float,
+    metrics: AtlasMetrics | None = None,
 ) -> int:
     """Poll until shutdown or an error. Returns the exit code.
 
@@ -219,14 +225,16 @@ def _run_poll_loop(
     mid-backoff inside ``runner.run_once()``) is a clean stop, not a
     failure.
     """
+    active_metrics = metrics or default_metrics()
     outage_warning = _OutageWarningTracker()
     while not shutdown_requested():
         try:
-            runner.run_once()
+            outcome = runner.run_once()
         except ConsumerShutdownRequestedError:
             log_event(logger, Event.POLL_LOOP_SHUTDOWN_DURING_BACKOFF)
             return 0
         except TransientKafkaError as exc:
+            active_metrics.observe_consumer_message(outcome="poll_recoverable_error")
             if outage_warning.should_warn():
                 log_exception_boundary(
                     logger,
@@ -237,12 +245,15 @@ def _run_poll_loop(
             if wait(kafka_retry_backoff_seconds):
                 return 0
         except ConsumerError as exc:
+            active_metrics.observe_consumer_message(outcome="terminal_error")
             log_exception_boundary(logger, Event.POLL_LOOP_TERMINAL_ERROR, exc)
             return 1
         except Exception as exc:
+            active_metrics.observe_consumer_message(outcome="terminal_error")
             log_exception_boundary(logger, Event.POLL_LOOP_TERMINAL_ERROR, exc)
             return 1
         else:
+            active_metrics.observe_consumer_message(outcome=outcome.value)
             outage_warning.reset()
     return 0
 
@@ -313,9 +324,11 @@ def _cleanup(
 def main() -> int:
     """Run the research-job projection consumer until interrupted or an error occurs."""
     configure_logging(service_role="consumer")
+    metrics_server = None
 
     try:
         settings = get_settings()
+        metrics_server = start_metrics_http_server(port=settings.metrics_port)
         engine = build_consumer_engine(
             settings.database_url,
             connect_timeout_seconds=settings.consumer_db_connect_timeout_seconds,
@@ -329,6 +342,8 @@ def main() -> int:
         # invalid environment-derived value in its own message, so only the
         # sanitized exception class name is ever logged here.
         log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
+        if metrics_server is not None:
+            metrics_server.close()
         return 1
 
     try:
@@ -343,6 +358,7 @@ def main() -> int:
         # ``KafkaEventConsumer``'s own subscribe-failure close path) or fully
         # succeeded; there is no partially-constructed consumer to close here.
         log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
+        metrics_server.close()
         return 1
 
     # From this point on the consumer exists and must always be closed.
@@ -364,6 +380,7 @@ def main() -> int:
             consumer.close()
         except Exception as close_exc:
             log_exception_boundary(logger, Event.SHUTDOWN_CLEANUP_FAILED, close_exc)
+        metrics_server.close()
         return 1
 
     exit_code = 1
@@ -393,6 +410,7 @@ def main() -> int:
             max_poll_interval_seconds=settings.consumer_max_poll_interval_seconds,
             timing_params=_timing_params_from_settings(settings),
             wait=wait,
+            metrics=default_metrics(),
         )
         log_event(logger, Event.PROCESS_STARTED)
         exit_code = _run_poll_loop(
@@ -400,12 +418,14 @@ def main() -> int:
             shutdown_requested=lambda: shutdown_requested,
             wait=wait,
             kafka_retry_backoff_seconds=settings.consumer_poll_timeout_seconds,
+            metrics=default_metrics(),
         )
     finally:
         cleanup_ok = _cleanup(
             consumer=consumer,
             previous_handlers=installed_handlers,
         )
+        metrics_server.close()
 
     if not cleanup_ok:
         exit_code = 1

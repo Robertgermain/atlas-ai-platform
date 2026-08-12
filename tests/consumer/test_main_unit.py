@@ -20,7 +20,32 @@ import atlas.consumer.__main__ as consumer_main
 from atlas.config.settings import Settings
 from atlas.consumer.errors import ConsumerConfigurationError
 from atlas.observability.events import Event
+from atlas.observability.metrics.exposition import MetricsServerHandle
 from atlas.observability.testing import CapturedLogs, capture_logs
+
+
+def _fake_start_metrics_http_server(**_kwargs: object) -> MetricsServerHandle:
+    """Unbound handle (no real socket): avoids CI port-conflict flakiness."""
+    return MetricsServerHandle(None, None)
+
+
+class _RecordingMetricsServerHandle(MetricsServerHandle):
+    """An unbound handle (no real socket) that records ``close()`` calls."""
+
+    def __init__(self) -> None:
+        super().__init__(None, None)
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        super().close()
+
+
+#: Populated by ``_patched_composition`` each test run; read by tests that
+#: need to assert on the fake metrics-server handle/requested port without
+#: real socket binding (avoids CI port-conflict flakiness).
+_metrics_ports_requested: list[int] = []
+_metrics_handle = _RecordingMetricsServerHandle()
 
 # Fake sensitive content that must never reach a log line: a credential, a
 # broker address, a database URL, and an environment-derived value. Used
@@ -125,6 +150,19 @@ def _fake_build_consumer_engine(
     return object()
 
 
+def _fake_clean_poll_loop(
+    runner: object,
+    *,
+    shutdown_requested: object,
+    wait: object,
+    kafka_retry_backoff_seconds: object,
+    **_kwargs: object,
+) -> int:
+    """Stands in for ``_run_poll_loop`` when a test only cares about startup/cleanup."""
+    del runner, shutdown_requested, wait, kafka_retry_backoff_seconds
+    return 0
+
+
 @pytest.fixture
 def _patched_composition(monkeypatch: pytest.MonkeyPatch) -> Settings:
     """Patch every dependency past settings/engine construction with a working fake.
@@ -133,6 +171,16 @@ def _patched_composition(monkeypatch: pytest.MonkeyPatch) -> Settings:
     """
     settings = Settings(kafka_bootstrap_servers="unit-test-broker:9092")
     monkeypatch.setattr(consumer_main, "get_settings", lambda: settings)
+    _metrics_ports_requested.clear()
+    global _metrics_handle
+    _metrics_handle = _RecordingMetricsServerHandle()
+
+    def _fake_start(*, port: int, metrics: object | None = None) -> MetricsServerHandle:
+        del metrics
+        _metrics_ports_requested.append(port)
+        return _metrics_handle
+
+    monkeypatch.setattr(consumer_main, "start_metrics_http_server", _fake_start)
     monkeypatch.setattr(
         consumer_main, "build_consumer_engine", _fake_build_consumer_engine
     )
@@ -150,11 +198,7 @@ def _patched_composition(monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setattr(
         consumer_main, "verify_topic_partitioning", lambda **_kwargs: None
     )
-    monkeypatch.setattr(
-        consumer_main,
-        "_run_poll_loop",
-        lambda runner, *, shutdown_requested, wait, kafka_retry_backoff_seconds: 0,
-    )
+    monkeypatch.setattr(consumer_main, "_run_poll_loop", _fake_clean_poll_loop)
     return settings
 
 
@@ -195,6 +239,9 @@ def test_main_exits_nonzero_when_database_engine_construction_fails(
 ) -> None:
     settings = Settings(kafka_bootstrap_servers="unit-test-broker:9092")
     monkeypatch.setattr(consumer_main, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        consumer_main, "start_metrics_http_server", _fake_start_metrics_http_server
+    )
 
     def _fail_build_consumer_engine(_url: str, **_kwargs: object) -> object:
         raise RuntimeError("synthetic-engine-failure")
@@ -212,6 +259,9 @@ def test_main_logs_are_sanitized_when_database_engine_construction_fails(
 ) -> None:
     settings = Settings(kafka_bootstrap_servers="unit-test-broker:9092")
     monkeypatch.setattr(consumer_main, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        consumer_main, "start_metrics_http_server", _fake_start_metrics_http_server
+    )
 
     def _fail_build_consumer_engine(_url: str, **_kwargs: object) -> object:
         raise RuntimeError(_SENSITIVE_MESSAGE)
@@ -240,6 +290,9 @@ def test_main_builds_the_consumer_engine_with_the_settings_derived_bounds(
         consumer_db_statement_timeout_seconds=3.5,
     )
     monkeypatch.setattr(consumer_main, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        consumer_main, "start_metrics_http_server", _fake_start_metrics_http_server
+    )
     captured: dict[str, object] = {}
 
     def _capturing_build_consumer_engine(url: str, **kwargs: object) -> object:
@@ -266,11 +319,7 @@ def test_main_builds_the_consumer_engine_with_the_settings_derived_bounds(
     monkeypatch.setattr(
         consumer_main, "verify_topic_partitioning", lambda **_kwargs: None
     )
-    monkeypatch.setattr(
-        consumer_main,
-        "_run_poll_loop",
-        lambda runner, *, shutdown_requested, wait, kafka_retry_backoff_seconds: 0,
-    )
+    monkeypatch.setattr(consumer_main, "_run_poll_loop", _fake_clean_poll_loop)
 
     assert consumer_main.main() == 0
     assert captured["url"] == settings.database_url
@@ -523,3 +572,30 @@ def test_main_runs_poll_loop_and_cleans_up_on_graceful_shutdown(
 
     assert consumer_main.main() == 0
     assert _FakeKafkaEventConsumer.instances[0].closed is True
+
+
+# --- metrics server lifecycle (Slice 15A2) --------------------------------
+
+
+def test_main_starts_and_closes_metrics_server_on_graceful_shutdown(
+    monkeypatch: pytest.MonkeyPatch, _patched_composition: Settings
+) -> None:
+    monkeypatch.setattr(consumer_main, "KafkaEventConsumer", _FakeKafkaEventConsumer)
+    monkeypatch.setattr(signal, "signal", lambda *_args, **_kwargs: None)
+
+    assert consumer_main.main() == 0
+
+    assert _metrics_ports_requested == [_patched_composition.metrics_port]
+    assert _metrics_handle.close_calls == 1
+
+
+def test_main_starts_and_closes_metrics_server_on_kafka_construction_failure(
+    monkeypatch: pytest.MonkeyPatch, _patched_composition: Settings
+) -> None:
+    _FakeKafkaEventConsumer.raise_on_construct = RuntimeError("unexpected")
+    monkeypatch.setattr(consumer_main, "KafkaEventConsumer", _FakeKafkaEventConsumer)
+
+    assert consumer_main.main() == 1
+
+    assert _metrics_ports_requested == [_patched_composition.metrics_port]
+    assert _metrics_handle.close_calls == 1

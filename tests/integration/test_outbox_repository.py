@@ -397,3 +397,49 @@ def test_locked_head_row_cannot_leapfrog_later_positions(
             assert row.publish_claim_token is None
             assert row.published_at is None
             assert row.publish_attempts == 0
+
+
+def test_backlog_stats_empty_table_reports_zero_and_no_age(
+    session_factory: sessionmaker[Session],
+) -> None:
+    repo = SqlAlchemyOutboxRepository()
+    with session_scope(session_factory) as session:
+        count, oldest_age_seconds = repo.backlog_stats(session, now=T0)
+    assert count == 0
+    assert oldest_age_seconds is None
+
+
+def test_backlog_stats_counts_only_unpublished_rows_and_ages_the_oldest(
+    session_factory: sessionmaker[Session],
+) -> None:
+    repo = SqlAlchemyOutboxRepository()
+    e1 = build_research_job_created(research_job_id="job-backlog-1", created_at=T0)
+    e2 = build_research_job_created(research_job_id="job-backlog-2", created_at=T1)
+    e3 = build_research_job_created(research_job_id="job-backlog-3", created_at=T2)
+    with session_scope(session_factory) as session:
+        repo.enqueue(session, e1)
+        repo.enqueue(session, e2)
+        repo.enqueue(session, e3)
+        claimed = repo.claim_batch(
+            session,
+            claimant_token="c" * 64,
+            at=T2,
+            lease_expires_at=LEASE,
+            batch_size=1,
+        )
+        assert claimed[0].event_id == e1.event_id
+        assert repo.mark_published(
+            session,
+            event_id=claimed[0].event_id,
+            claimant_token="c" * 64,
+            at=T2,
+        )
+
+    now = T0 + timedelta(hours=1)
+    with session_scope(session_factory) as session:
+        count, oldest_age_seconds = repo.backlog_stats(session, now=now)
+
+    assert count == 2
+    assert oldest_age_seconds is not None
+    # Oldest remaining unpublished row is e2 (created_at=T1); e1 was published.
+    assert oldest_age_seconds == pytest.approx((now - T1).total_seconds())

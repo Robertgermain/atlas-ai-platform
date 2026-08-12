@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import UTC, datetime, timedelta
@@ -30,6 +31,7 @@ from atlas.eventing.builders import (
 )
 from atlas.observability.events import Event
 from atlas.observability.logging import log_event, log_exception_boundary
+from atlas.observability.metrics import AtlasMetrics, default_metrics
 from atlas.outbox.ports import OutboxEnqueuer
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.outbox import SqlAlchemyOutboxRepository
@@ -84,11 +86,13 @@ class ResearchJobWorker:
         heartbeat_interval_seconds: float = 5.0,
         worker_id: str | None = None,
         outbox: OutboxEnqueuer | None = None,
+        metrics: AtlasMetrics | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = repository
         self._processor = processor
         self._outbox = outbox or SqlAlchemyOutboxRepository()
+        self._metrics = metrics or default_metrics()
         self._poll_interval_seconds = poll_interval_seconds
         self._processing_timeout_seconds = processing_timeout_seconds
         self._lease_seconds = lease_seconds
@@ -165,8 +169,10 @@ class ResearchJobWorker:
 
         claimed = self._claim_next()
         if claimed is None:
+            self._metrics.observe_worker_claim(outcome="empty")
             return False
 
+        self._metrics.observe_worker_claim(outcome="claimed")
         self._process_claimed(claimed)
         return True
 
@@ -195,6 +201,7 @@ class ResearchJobWorker:
             )
 
     def _process_claimed(self, claimed: ClaimedResearchJob) -> None:
+        started_at = time.perf_counter()
         future: Future[ProcessingOutcome] = self._executor.submit(
             partial(
                 self._processor,
@@ -213,6 +220,7 @@ class ResearchJobWorker:
                 claimed,
                 reason=PROCESSING_TIMEOUT_REASON,
                 reason_class=PROCESSING_TIMEOUT_REASON_CLASS,
+                duration_seconds=time.perf_counter() - started_at,
             )
             self._abandoned_future = future
             self._inflight_future = None
@@ -229,6 +237,7 @@ class ResearchJobWorker:
                 claimed,
                 reason="Claim ownership lost during processing.",
                 reason_class=CLAIM_OWNERSHIP_LOST_REASON_CLASS,
+                duration_seconds=time.perf_counter() - started_at,
             )
             self._inflight_future = None
             self._ignore_late_result(future)
@@ -238,6 +247,7 @@ class ResearchJobWorker:
                 claimed,
                 reason=f"Processing failed: {exc.__class__.__name__}",
                 reason_class=exc.__class__.__name__,
+                duration_seconds=time.perf_counter() - started_at,
             )
             self._inflight_future = None
             self._ignore_late_result(future)
@@ -247,18 +257,27 @@ class ResearchJobWorker:
         # Outcome finalization (including outbox insert) is outside the
         # processor-exception handler so an outbox failure cannot recurse into
         # finalize_failure.
-        self._handle_outcome(claimed, outcome)
+        self._handle_outcome(
+            claimed, outcome, duration_seconds=time.perf_counter() - started_at
+        )
 
     def _handle_outcome(
-        self, claimed: ClaimedResearchJob, outcome: ProcessingOutcome
+        self,
+        claimed: ClaimedResearchJob,
+        outcome: ProcessingOutcome,
+        *,
+        duration_seconds: float,
     ) -> None:
         if isinstance(outcome, CompletedProcessing):
-            self._finalize_completion(claimed, result=outcome.result)
+            self._finalize_completion(
+                claimed, result=outcome.result, duration_seconds=duration_seconds
+            )
         elif isinstance(outcome, TerminalFailed):
             self._finalize_failure(
                 claimed,
                 reason=f"Terminal: {outcome.reason_code}",
                 reason_class=outcome.reason_code,
+                duration_seconds=duration_seconds,
             )
         elif isinstance(outcome, (PausedForReview, RetryScheduled)):
             log_event(
@@ -267,14 +286,25 @@ class ResearchJobWorker:
                 research_job_id=claimed.job.id,
                 outcome=type(outcome).__name__,
             )
+            deferred_outcome = (
+                "paused_for_review"
+                if isinstance(outcome, PausedForReview)
+                else "retry_scheduled"
+            )
+            self._metrics.observe_worker_processing(
+                outcome=deferred_outcome, duration_seconds=duration_seconds
+            )
         else:
             self._finalize_failure(
                 claimed,
                 reason="Processing returned unrecognized outcome",
                 reason_class=UNRECOGNIZED_OUTCOME_REASON_CLASS,
+                duration_seconds=duration_seconds,
             )
 
-    def _finalize_completion(self, claimed: ClaimedResearchJob, *, result: str) -> bool:
+    def _finalize_completion(
+        self, claimed: ClaimedResearchJob, *, result: str, duration_seconds: float
+    ) -> bool:
         at = datetime.now(UTC)
         owned = False
         try:
@@ -303,14 +333,25 @@ class ResearchJobWorker:
                 research_job_id=claimed.job.id,
                 outcome="completion",
             )
+            self._metrics.observe_worker_processing(
+                outcome="finalization_failed", duration_seconds=duration_seconds
+            )
             raise
-        if not owned:
+        if owned:
+            self._metrics.observe_worker_processing(
+                outcome="completed", duration_seconds=duration_seconds
+            )
+            self._metrics.observe_research_job_terminal(status="completed")
+        else:
             log_event(
                 logger,
                 Event.CLAIM_OWNERSHIP_LOST,
                 level=logging.WARNING,
                 research_job_id=claimed.job.id,
                 outcome="completion",
+            )
+            self._metrics.observe_worker_processing(
+                outcome="claim_ownership_lost", duration_seconds=duration_seconds
             )
         return owned
 
@@ -320,6 +361,7 @@ class ResearchJobWorker:
         *,
         reason: str,
         reason_class: str,
+        duration_seconds: float,
     ) -> bool:
         at = datetime.now(UTC)
         owned = False
@@ -351,14 +393,25 @@ class ResearchJobWorker:
                 research_job_id=claimed.job.id,
                 outcome="failure",
             )
+            self._metrics.observe_worker_processing(
+                outcome="finalization_failed", duration_seconds=duration_seconds
+            )
             raise
-        if not owned:
+        if owned:
+            self._metrics.observe_worker_processing(
+                outcome="failed", duration_seconds=duration_seconds
+            )
+            self._metrics.observe_research_job_terminal(status="failed")
+        else:
             log_event(
                 logger,
                 Event.CLAIM_OWNERSHIP_LOST,
                 level=logging.WARNING,
                 research_job_id=claimed.job.id,
                 outcome="failure",
+            )
+            self._metrics.observe_worker_processing(
+                outcome="claim_ownership_lost", duration_seconds=duration_seconds
             )
         return owned
 

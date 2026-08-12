@@ -171,6 +171,44 @@ class Event(StrEnum):
     #: ``"embedding_rate_limited"``, ``"embedding_provider_failed"``).
     API_DEPENDENCY_UNAVAILABLE = "api_dependency_unavailable"
 
+    #: A process's internal-only Prometheus metrics HTTP server (worker,
+    #: outbox relay, or Kafka consumer -- the API instead serves ``/metrics``
+    #: on its own existing port) failed to bind its configured port at
+    #: startup. Fail-open: the process continues without a metrics endpoint.
+    #: ``error_class`` the exception class.
+    METRICS_SERVER_BIND_FAILED = "metrics_server_bind_failed"
+
+    #: A Prometheus metric observation itself raised (e.g. a label value
+    #: rejected by the underlying client library). Contained at the
+    #: observation boundary so a metrics failure can never affect the
+    #: business operation being observed. ``outcome`` names the observer
+    #: boundary (e.g. ``"http_request"``, ``"worker_processing"``),
+    #: ``error_class`` the exception class.
+    METRIC_OBSERVATION_FAILED = "metric_observation_failed"
+
+    #: The outbox relay's periodic backlog-gauge collection query failed;
+    #: the previous gauge values are left unchanged (never a misleading
+    #: fresh value) and the separate collection-success timestamp gauge is
+    #: not advanced, making the staleness visible to a scraper.
+    #: ``error_class`` the exception class.
+    OUTBOX_BACKLOG_COLLECTION_FAILED = "outbox_backlog_collection_failed"
+
+    #: A Prometheus scrape's ``generate_latest()`` call itself raised (e.g.
+    #: a corrupted collector registered elsewhere in the process). The
+    #: caller (the API's ``/metrics`` route, or a role's internal metrics
+    #: HTTP server) returns a sanitized ``503`` instead of propagating a
+    #: raw traceback; the internal server itself remains alive for a later
+    #: scrape. ``error_class`` the exception class.
+    METRIC_EXPOSITION_FAILED = "metric_exposition_failed"
+
+    #: A role's internal-only Prometheus metrics HTTP server's shutdown
+    #: itself raised or did not complete within its documented bound while
+    #: closing (``MetricsServerHandle.close()``). Best-effort: the socket is
+    #: still closed and the underlying thread is still joined with a bounded
+    #: timeout regardless of this outcome. ``error_class`` the exception
+    #: class, when one was raised.
+    METRICS_SERVER_SHUTDOWN_FAILED = "metrics_server_shutdown_failed"
+
     #: A log record arrived from a logger Atlas does not control (a
     #: third-party dependency) or from an Atlas call site not yet converted
     #: to :func:`atlas.observability.logging.log_event`. Atlas records only

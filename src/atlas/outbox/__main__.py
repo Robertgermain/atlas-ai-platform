@@ -50,6 +50,7 @@ import sys
 import time
 from collections.abc import Callable
 from types import FrameType
+from typing import TYPE_CHECKING
 
 from atlas.config import get_settings
 from atlas.config.settings import Settings
@@ -58,6 +59,11 @@ from atlas.observability.logging import (
     configure_logging,
     log_event,
     log_exception_boundary,
+)
+from atlas.observability.metrics import (
+    AtlasMetrics,
+    default_metrics,
+    start_metrics_http_server,
 )
 from atlas.outbox.errors import KafkaTopicVerificationError, OutboxError
 from atlas.outbox.kafka_producer import KafkaEventProducer
@@ -69,6 +75,9 @@ from atlas.outbox.topic_admin import (
 )
 from atlas.persistence.db import get_engine, get_session_factory
 from atlas.persistence.repositories.outbox import SqlAlchemyOutboxRepository
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session, sessionmaker
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +98,53 @@ _TERMINAL_OUTCOMES = frozenset(
 SignalHandler = Callable[[int, FrameType | None], object] | int | None
 
 
+def _observe_backlog(
+    *,
+    repository: SqlAlchemyOutboxRepository,
+    session_factory: sessionmaker[Session],
+    metrics: AtlasMetrics,
+) -> None:
+    """Sample unpublished backlog size/age; called only when the relay is idle.
+
+    A collection failure leaves the previous gauge values unchanged (never a
+    misleading fresh value) and never advances the separate collection-success
+    timestamp gauge, making the staleness visible to a scraper (Slice 15A2).
+    Never allowed to affect poll-loop control flow or exit code.
+    """
+    from datetime import UTC, datetime
+
+    from atlas.observability.events import Event as ObservabilityEvent
+    from atlas.persistence.db import session_scope
+
+    try:
+        now = datetime.now(UTC)
+        with session_scope(session_factory) as session:
+            size, oldest_age_seconds = repository.backlog_stats(session, now=now)
+        metrics.set_outbox_backlog(size=size, oldest_age_seconds=oldest_age_seconds)
+        metrics.mark_outbox_backlog_collection_success(at_epoch_seconds=now.timestamp())
+    except Exception as exc:
+        log_exception_boundary(
+            logger, ObservabilityEvent.OUTBOX_BACKLOG_COLLECTION_FAILED, exc
+        )
+
+
 def _run_poll_loop(
     relay: OutboxRelay,
     settings: Settings,
     shutdown_requested: Callable[[], bool],
+    *,
+    repository: SqlAlchemyOutboxRepository | None = None,
+    session_factory: sessionmaker[Session] | None = None,
+    metrics: AtlasMetrics | None = None,
 ) -> int:
-    """Poll until shutdown or a terminal/unexpected error. Returns the exit code."""
+    """Poll until shutdown or a terminal/unexpected error. Returns the exit code.
+
+    ``repository``/``session_factory`` are optional so existing callers that
+    only exercise poll-loop termination rules (no real repository) are
+    unaffected; when both are supplied, backlog gauges are sampled once per
+    backoff/idle iteration (never on the hot publish path).
+    """
+    active_metrics = metrics or default_metrics()
     while not shutdown_requested():
         try:
             result = relay.run_once()
@@ -105,6 +155,9 @@ def _run_poll_loop(
             log_exception_boundary(logger, Event.POLL_LOOP_TERMINAL_ERROR, exc)
             return 1
 
+        active_metrics.observe_outbox_relay_run(outcome=result.outcome.value)
+        active_metrics.observe_outbox_published_events(count=result.published_count)
+
         if result.outcome in _TERMINAL_OUTCOMES:
             log_event(
                 logger,
@@ -114,6 +167,12 @@ def _run_poll_loop(
             )
             return 1
         if result.outcome in _BACKOFF_OUTCOMES:
+            if repository is not None and session_factory is not None:
+                _observe_backlog(
+                    repository=repository,
+                    session_factory=session_factory,
+                    metrics=active_metrics,
+                )
             time.sleep(settings.outbox_relay_poll_interval_seconds)
     return 0
 
@@ -156,6 +215,7 @@ def main() -> int:
     """Run the Kafka outbox relay until interrupted or a terminal error occurs."""
     configure_logging(service_role="outbox-relay")
     settings = get_settings()
+    metrics_server = start_metrics_http_server(port=settings.metrics_port)
     engine = get_engine(settings.database_url)
     session_factory = get_session_factory(engine)
 
@@ -167,9 +227,10 @@ def main() -> int:
         )
     except OutboxError as exc:
         log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
+        metrics_server.close()
         return 1
 
-    lock = PostgresOutboxRelayLock(engine)
+    lock = PostgresOutboxRelayLock(engine, metrics=default_metrics())
     try:
         lock.acquire()
     except Exception as exc:
@@ -189,6 +250,7 @@ def main() -> int:
             # classification above -- it is logged separately, and this
             # path still returns 1 for the original failure either way.
             log_exception_boundary(logger, Event.SHUTDOWN_CLEANUP_FAILED, close_exc)
+        metrics_server.close()
         return 1
 
     shutdown_requested = False
@@ -216,16 +278,24 @@ def main() -> int:
             log_exception_boundary(logger, Event.STARTUP_VERIFICATION_FAILED, exc)
             return 1
 
+        outbox_repository = SqlAlchemyOutboxRepository()
         relay = OutboxRelay(
             session_factory=session_factory,
-            repository=SqlAlchemyOutboxRepository(),
+            repository=outbox_repository,
             producer=producer,
             lock=lock,
             batch_size=1,
             publish_lease_seconds=settings.outbox_publish_lease_seconds,
         )
         log_event(logger, Event.PROCESS_STARTED)
-        exit_code = _run_poll_loop(relay, settings, lambda: shutdown_requested)
+        exit_code = _run_poll_loop(
+            relay,
+            settings,
+            lambda: shutdown_requested,
+            repository=outbox_repository,
+            session_factory=session_factory,
+            metrics=default_metrics(),
+        )
     finally:
         cleanup_ok = _cleanup(
             producer=producer,
@@ -234,6 +304,7 @@ def main() -> int:
             previous_sigint=previous_sigint,
             previous_sigterm=previous_sigterm,
         )
+        metrics_server.close()
 
     if not cleanup_ok:
         exit_code = 1

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 import redis
 
 from atlas.coordination.outage_log import OncePerOutageLogger
 from atlas.observability.events import Event
+from atlas.observability.metrics import AtlasMetrics, default_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +25,16 @@ class RedisHeartbeatRecorder:
     an observability/liveness signal only.
     """
 
-    def __init__(self, *, client: redis.Redis, ttl_seconds: int) -> None:
+    def __init__(
+        self,
+        *,
+        client: redis.Redis,
+        ttl_seconds: int,
+        metrics: AtlasMetrics | None = None,
+    ) -> None:
         self._client = client
         self._ttl_seconds = ttl_seconds
+        self._metrics = metrics or default_metrics()
         self._outage_log = OncePerOutageLogger(
             logger,
             event=Event.DEPENDENCY_OPERATION_FAILED_OPEN,
@@ -38,5 +47,10 @@ class RedisHeartbeatRecorder:
             self._client.set(key, "1", ex=self._ttl_seconds)
         except redis.RedisError:
             self._outage_log.note_failure()
+            self._metrics.observe_heartbeat_write(outcome="failure")
             return
         self._outage_log.note_success()
+        self._metrics.observe_heartbeat_write(outcome="success")
+        self._metrics.mark_heartbeat_last_success(
+            at_epoch_seconds=datetime.now(UTC).timestamp()
+        )

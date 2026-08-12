@@ -151,6 +151,15 @@ class Settings(BaseSettings):
     consumer_max_db_round_trips_per_attempt: int = Field(default=8, ge=1)
     consumer_replay_lease_seconds: float = Field(default=90.0, gt=0)
 
+    # Prometheus metrics (Milestone 15 Slice 15A2). The API exposes ``/metrics``
+    # on its own existing HTTP port; the worker, outbox relay, and Kafka
+    # consumer each bind a minimal internal-only HTTP server on this fixed
+    # port to serve their own process-local registry. Never published to the
+    # host by docker-compose.yml -- see docs/TECHNICAL_DESIGN.md. A bind
+    # failure is fail-open (the process continues without a metrics
+    # endpoint); metrics are operational telemetry, never authoritative.
+    metrics_port: int = Field(default=9464, ge=1, le=65535)
+
     @model_validator(mode="after")
     def _validate_heartbeat_timing(self) -> Self:
         if self.heartbeat_ttl_seconds < (2 * self.heartbeat_interval_seconds):

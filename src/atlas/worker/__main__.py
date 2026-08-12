@@ -15,6 +15,7 @@ from atlas.observability.logging import (
     log_event,
     log_exception_boundary,
 )
+from atlas.observability.metrics import start_metrics_http_server
 from atlas.persistence.db import get_session_factory
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
 from atlas.workflow import (
@@ -30,6 +31,7 @@ def main() -> int:
     """Run the research-job worker until interrupted."""
     configure_logging(service_role="worker")
     settings = get_settings()
+    metrics_server = start_metrics_http_server(port=settings.metrics_port)
     session_factory = get_session_factory()
     checkpoint_runtime = create_checkpoint_runtime(settings.database_url)
     try:
@@ -48,6 +50,7 @@ def main() -> int:
             # classification above -- it is logged separately, and the
             # function still returns 1 for the original failure either way.
             log_exception_boundary(logger, Event.SHUTDOWN_CLEANUP_FAILED, close_exc)
+        metrics_server.close()
         return 1
     processor = LangGraphResearchProcessor(
         checkpointer=checkpoint_runtime.checkpointer,
@@ -77,6 +80,7 @@ def main() -> int:
         worker.run_forever()
     finally:
         checkpoint_runtime.close()
+        metrics_server.close()
     log_event(logger, Event.PROCESS_STOPPED)
     return 0
 

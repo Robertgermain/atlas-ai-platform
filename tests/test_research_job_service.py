@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from prometheus_client import CollectorRegistry
 from sqlalchemy.orm import Session
 
 from atlas.application.exceptions import (
@@ -14,9 +15,20 @@ from atlas.application.exceptions import (
 from atlas.application.ports import ResearchJobIdempotencyRecord
 from atlas.application.research_jobs import ResearchJobService
 from atlas.domain import ResearchJob
+from atlas.observability.metrics.catalog import AtlasMetrics
 from atlas.outbox.errors import OutboxEnqueueError
 from atlas.outbox.fakes import RecordingOutbox
 from atlas.persistence.exceptions import IdempotencyKeyConflictError
+
+
+def _sample_count(metrics: AtlasMetrics, metric_name: str) -> float:
+    return sum(
+        sample.value
+        for family in metrics.registry.collect()
+        for sample in family.samples
+        if sample.name == metric_name
+    )
+
 
 T0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
 
@@ -201,6 +213,65 @@ def test_get_returns_job() -> None:
 
     loaded = service.get("job-1")
     assert loaded.id == "job-1"
+
+
+def test_submit_new_job_increments_submission_metric() -> None:
+    metrics = AtlasMetrics(CollectorRegistry())
+    repo = _FakeRepository()
+    service = ResearchJobService(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        outbox=RecordingOutbox(),
+        id_factory=lambda: "job-fixed",
+        metrics=metrics,
+    )
+
+    service.submit("What is Atlas?", idempotency_key="key-1")
+
+    assert _sample_count(metrics, "atlas_research_job_submissions_total") == 1
+
+
+def test_submit_idempotent_replay_does_not_double_count_submission_metric() -> None:
+    metrics = AtlasMetrics(CollectorRegistry())
+    repo = _FakeRepository()
+    outbox = RecordingOutbox()
+    service = ResearchJobService(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        outbox=outbox,
+        id_factory=lambda: "job-1",
+        metrics=metrics,
+    )
+    service.submit("same question", idempotency_key="key-1")
+    service_again = ResearchJobService(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        outbox=outbox,
+        id_factory=lambda: "job-2",
+        metrics=metrics,
+    )
+
+    service_again.submit("same question", idempotency_key="key-1")
+
+    assert _sample_count(metrics, "atlas_research_job_submissions_total") == 1
+
+
+def test_submit_outbox_failure_does_not_count_submission_metric() -> None:
+    metrics = AtlasMetrics(CollectorRegistry())
+    repo = _FakeRepository()
+    outbox = RecordingOutbox(fail_enqueue=True)
+    service = ResearchJobService(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        outbox=outbox,
+        id_factory=lambda: "job-1",
+        metrics=metrics,
+    )
+
+    with pytest.raises(OutboxEnqueueError):
+        service.submit("question", idempotency_key="key-1")
+
+    assert _sample_count(metrics, "atlas_research_job_submissions_total") == 0
 
 
 def test_get_missing_raises() -> None:

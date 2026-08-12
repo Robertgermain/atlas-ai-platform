@@ -21,6 +21,7 @@ import redis
 from atlas.coordination.contracts import RateLimitDecision
 from atlas.coordination.outage_log import OncePerOutageLogger
 from atlas.observability.events import Event
+from atlas.observability.metrics import AtlasMetrics, default_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ class RedisFixedWindowRateLimiter:
         max_requests: int,
         window_seconds: int,
         key_prefix: str = _KEY_PREFIX,
+        metrics: AtlasMetrics | None = None,
     ) -> None:
         self._client = client
         self._max_requests = max_requests
@@ -67,6 +69,7 @@ class RedisFixedWindowRateLimiter:
         self._window_ms = window_seconds * 1000
         self._key_prefix = key_prefix
         self._script = client.register_script(_SCRIPT)
+        self._metrics = metrics or default_metrics()
         self._outage_log = OncePerOutageLogger(
             logger,
             event=Event.DEPENDENCY_OPERATION_FAILED_OPEN,
@@ -79,14 +82,17 @@ class RedisFixedWindowRateLimiter:
             raw_result = self._script(keys=[key], args=[self._window_ms])
         except redis.RedisError:
             self._outage_log.note_failure()
+            self._metrics.observe_redis_rate_limit_decision(outcome="failed_open")
             return RateLimitDecision(allowed=True, retry_after_seconds=0)
 
         self._outage_log.note_success()
         current = int(raw_result[0])
         ttl_ms = int(raw_result[1])
         if current <= self._max_requests:
+            self._metrics.observe_redis_rate_limit_decision(outcome="allowed")
             return RateLimitDecision(allowed=True, retry_after_seconds=0)
         retry_after = retry_after_seconds_from_ttl_ms(
             ttl_ms, window_seconds=self._window_seconds
         )
+        self._metrics.observe_redis_rate_limit_decision(outcome="denied")
         return RateLimitDecision(allowed=False, retry_after_seconds=retry_after)

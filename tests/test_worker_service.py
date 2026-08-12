@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from threading import Event as ThreadingEvent
 
 import pytest
+from prometheus_client import CollectorRegistry
 from sqlalchemy.orm import Session
 
 from atlas.application.exceptions import ClaimOwnershipError
@@ -22,10 +23,20 @@ from atlas.application.ports import ClaimedResearchJob
 from atlas.application.worker import PROCESSING_TIMEOUT_REASON, ResearchJobWorker
 from atlas.domain import ResearchJob, ResearchJobStatus
 from atlas.observability.events import Event
+from atlas.observability.metrics.catalog import AtlasMetrics
 from atlas.observability.testing import capture_logs
 from atlas.outbox.fakes import RecordingOutbox
 
 T0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
+
+
+def _label_values(metrics: AtlasMetrics, metric_name: str, label: str) -> list[str]:
+    return [
+        sample.labels[label]
+        for family in metrics.registry.collect()
+        for sample in family.samples
+        if sample.name == metric_name
+    ]
 
 
 class _FakeSession:
@@ -786,5 +797,250 @@ def test_invalid_outcome_finalizes_failure() -> None:
         loaded = repo.jobs["job-invalid"]
         assert loaded.status is ResearchJobStatus.FAILED
         assert "unrecognized" in (loaded.failure_reason or "").lower()
+    finally:
+        worker.close()
+
+
+def test_run_once_completed_job_observes_claim_and_processing_metrics() -> None:
+    metrics = AtlasMetrics(CollectorRegistry())
+    repo = _FakeRepository()
+    repo.seed_pending(ResearchJob.create("job-metrics-ok", "q", at=T0))
+    worker = ResearchJobWorker(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        processor=_echo_processor,
+        poll_interval_seconds=0.01,
+        processing_timeout_seconds=1.0,
+        lease_seconds=1.0,
+        outbox=RecordingOutbox(),
+        metrics=metrics,
+    )
+    try:
+        assert worker.run_once() is True
+        assert _label_values(metrics, "atlas_worker_claims_total", "outcome") == [
+            "claimed"
+        ]
+        assert _label_values(
+            metrics, "atlas_worker_processing_outcomes_total", "outcome"
+        ) == ["completed"]
+        assert _label_values(
+            metrics, "atlas_research_job_terminal_total", "status"
+        ) == ["completed"]
+    finally:
+        worker.close()
+
+
+def test_run_once_empty_queue_observes_claim_empty_metric() -> None:
+    metrics = AtlasMetrics(CollectorRegistry())
+    repo = _FakeRepository()
+    worker = ResearchJobWorker(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        processor=_echo_processor,
+        poll_interval_seconds=0.01,
+        processing_timeout_seconds=1.0,
+        lease_seconds=1.0,
+        outbox=RecordingOutbox(),
+        metrics=metrics,
+    )
+    try:
+        assert worker.run_once() is False
+        assert _label_values(metrics, "atlas_worker_claims_total", "outcome") == [
+            "empty"
+        ]
+    finally:
+        worker.close()
+
+
+def test_terminal_failed_observes_failed_processing_and_terminal_metrics() -> None:
+    metrics = AtlasMetrics(CollectorRegistry())
+    repo = _FakeRepository()
+    repo.seed_pending(ResearchJob.create("job-metrics-fail", "fatal fail", at=T0))
+
+    def terminal_processor(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del question, claim_token, continuation_mode, active_workflow_execution_id
+        return TerminalFailed(
+            reason_code="HARD_QUALITY_FAIL",
+            workflow_execution_id="exec-terminal",
+        )
+
+    worker = ResearchJobWorker(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        processor=terminal_processor,
+        poll_interval_seconds=0.01,
+        processing_timeout_seconds=1.0,
+        lease_seconds=1.0,
+        outbox=RecordingOutbox(),
+        metrics=metrics,
+    )
+    try:
+        assert worker.run_once() is True
+        assert _label_values(
+            metrics, "atlas_worker_processing_outcomes_total", "outcome"
+        ) == ["failed"]
+        assert _label_values(
+            metrics, "atlas_research_job_terminal_total", "status"
+        ) == ["failed"]
+    finally:
+        worker.close()
+
+
+def test_paused_for_review_observes_deferred_processing_metric_only() -> None:
+    metrics = AtlasMetrics(CollectorRegistry())
+    repo = _FakeRepository()
+    repo.seed_pending(ResearchJob.create("job-metrics-review", "need review", at=T0))
+
+    def review_processor(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del question, claim_token, continuation_mode, active_workflow_execution_id
+        return PausedForReview(workflow_execution_id="exec-review")
+
+    worker = ResearchJobWorker(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        processor=review_processor,
+        poll_interval_seconds=0.01,
+        processing_timeout_seconds=1.0,
+        lease_seconds=1.0,
+        outbox=RecordingOutbox(),
+        metrics=metrics,
+    )
+    try:
+        assert worker.run_once() is True
+        assert _label_values(
+            metrics, "atlas_worker_processing_outcomes_total", "outcome"
+        ) == ["paused_for_review"]
+        assert (
+            _label_values(metrics, "atlas_research_job_terminal_total", "status") == []
+        )
+    finally:
+        worker.close()
+
+
+def test_claim_ownership_lost_during_processing_observes_processing_metric() -> None:
+    metrics = AtlasMetrics(CollectorRegistry())
+    repo = _FakeRepository()
+    repo.seed_pending(ResearchJob.create("job-metrics-lost-claim", "q", at=T0))
+
+    def racing_processor(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del question, claim_token, continuation_mode, active_workflow_execution_id
+        raise ClaimOwnershipError("lost")
+
+    worker = ResearchJobWorker(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        processor=racing_processor,
+        poll_interval_seconds=0.01,
+        processing_timeout_seconds=1.0,
+        lease_seconds=1.0,
+        outbox=RecordingOutbox(),
+        metrics=metrics,
+    )
+    try:
+        assert worker.run_once() is True
+        assert _label_values(
+            metrics, "atlas_worker_processing_outcomes_total", "outcome"
+        ) == ["failed"]
+    finally:
+        worker.close()
+
+
+def test_finalize_completion_lost_ownership_observes_claim_ownership_lost_metric() -> (
+    None
+):
+    metrics = AtlasMetrics(CollectorRegistry())
+    repo = _FakeRepository()
+    repo.seed_pending(ResearchJob.create("job-metrics-reclaimed", "q", at=T0))
+
+    def hijacking_processor(
+        question: str,
+        *,
+        job_id: str,
+        claim_token: str,
+        continuation_mode: str = "NONE",
+        active_workflow_execution_id: str | None = None,
+    ) -> ProcessingOutcome:
+        del question, claim_token, continuation_mode, active_workflow_execution_id
+        repo.tokens[job_id] = "someone-elses-token"
+        return CompletedProcessing(result="late", workflow_execution_id="test-exec")
+
+    worker = ResearchJobWorker(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        processor=hijacking_processor,
+        poll_interval_seconds=0.01,
+        processing_timeout_seconds=1.0,
+        lease_seconds=1.0,
+        outbox=RecordingOutbox(),
+        metrics=metrics,
+    )
+    try:
+        assert worker.run_once() is True
+        assert _label_values(
+            metrics, "atlas_worker_processing_outcomes_total", "outcome"
+        ) == ["claim_ownership_lost"]
+        assert (
+            _label_values(metrics, "atlas_research_job_terminal_total", "status") == []
+        )
+    finally:
+        worker.close()
+
+
+def test_finalize_completion_failure_observes_finalization_failed_metric() -> None:
+    class _RaisingFinalizeRepository(_FakeRepository):
+        def finalize_completion(
+            self,
+            session: Session,
+            *,
+            job_id: str,
+            claim_token: str,
+            result: str,
+            at: datetime,
+        ) -> bool:
+            raise RuntimeError("db unavailable")
+
+    metrics = AtlasMetrics(CollectorRegistry())
+    repo = _RaisingFinalizeRepository()
+    repo.seed_pending(ResearchJob.create("job-metrics-finalize-boom", "q", at=T0))
+    worker = ResearchJobWorker(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        processor=_echo_processor,
+        poll_interval_seconds=0.01,
+        processing_timeout_seconds=1.0,
+        lease_seconds=1.0,
+        outbox=RecordingOutbox(),
+        metrics=metrics,
+    )
+    try:
+        with pytest.raises(RuntimeError):
+            worker.run_once()
+        assert _label_values(
+            metrics, "atlas_worker_processing_outcomes_total", "outcome"
+        ) == ["finalization_failed"]
+        assert (
+            _label_values(metrics, "atlas_research_job_terminal_total", "status") == []
+        )
     finally:
         worker.close()

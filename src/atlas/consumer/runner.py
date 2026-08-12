@@ -65,6 +65,7 @@ from atlas.consumer.timing import (
 )
 from atlas.consumer.wait import Waiter, build_shutdown_aware_waiter
 from atlas.eventing.contracts import DomainEvent
+from atlas.observability.metrics import AtlasMetrics, default_metrics
 from atlas.outbox.clock import Clock, utc_now
 from atlas.outbox.kafka_errors import KafkaErrorClass, classify_kafka_error
 from atlas.persistence.db import session_scope
@@ -130,6 +131,7 @@ class ConsumerRunner:
         timing_params: RetryTimingParameters | None = None,
         clock: Clock = utc_now,
         wait: Waiter | None = None,
+        metrics: AtlasMetrics | None = None,
     ) -> None:
         self._consumer = consumer
         self._session_factory = session_factory
@@ -139,6 +141,7 @@ class ConsumerRunner:
         self._consumer_id = consumer_id
         self._poll_timeout_seconds = poll_timeout_seconds
         self._max_poll_interval_seconds = max_poll_interval_seconds
+        self._metrics = metrics or default_metrics()
         self._timing_params = timing_params or RetryTimingParameters(
             max_attempts=3,
             base_seconds=1.0,
@@ -254,6 +257,7 @@ class ConsumerRunner:
                     now=self._clock(), backoff_seconds=backoff
                 ):
                     raise ProcessingDeadlineExceededError() from exc
+                self._metrics.observe_consumer_retry_attempt(stage="apply")
                 if self._wait(backoff):
                     raise ConsumerShutdownRequestedError() from exc
                 continue
@@ -279,12 +283,17 @@ class ConsumerRunner:
         while True:
             attempt_index += 1
             if not deadline.can_start_attempt(now=self._clock()):
+                self._metrics.observe_consumer_offset_commit(
+                    outcome="deadline_exceeded"
+                )
                 raise ProcessingDeadlineExceededError()
             try:
                 self._consumer.commit_message(message)
+                self._metrics.observe_consumer_offset_commit(outcome="success")
                 return
             except TransientKafkaError:
                 if attempt_index >= self._timing_params.max_attempts:
+                    self._metrics.observe_consumer_offset_commit(outcome="failure")
                     raise
                 backoff = backoff_delay_seconds(
                     self._timing_params, attempt_index=attempt_index - 1
@@ -292,8 +301,15 @@ class ConsumerRunner:
                 if not deadline.can_afford_backoff(
                     now=self._clock(), backoff_seconds=backoff
                 ):
+                    self._metrics.observe_consumer_offset_commit(
+                        outcome="deadline_exceeded"
+                    )
                     raise ProcessingDeadlineExceededError() from None
+                self._metrics.observe_consumer_retry_attempt(stage="commit")
                 if self._wait(backoff):
+                    self._metrics.observe_consumer_offset_commit(
+                        outcome="shutdown_requested"
+                    )
                     raise ConsumerShutdownRequestedError() from None
                 continue
 
@@ -352,9 +368,19 @@ class ConsumerRunner:
                     now=self._clock(), backoff_seconds=backoff
                 ):
                     raise ProcessingDeadlineExceededError() from db_exc
+                self._metrics.observe_consumer_retry_attempt(stage="dead_letter_upsert")
                 if self._wait(backoff):
                     raise ConsumerShutdownRequestedError() from db_exc
                 continue
+
+        # Emitted only after the dead-letter upsert above has durably
+        # committed (the ``while`` loop above only exits via ``break`` once
+        # ``session_scope`` has committed, or by raising) -- a redelivered
+        # poison record after restart reuses the same row via the upsert's
+        # own uniqueness boundary rather than creating a second one, but is
+        # still counted again here since it is still a genuine dead-letter
+        # occurrence from this consumer's perspective (Slice 15A2).
+        self._metrics.observe_consumer_dead_letter(failure_code=failure_code)
 
         try:
             self._commit_with_retry(message, deadline=deadline)

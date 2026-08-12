@@ -60,7 +60,9 @@ every one of these keys; any field the caller (or the ambient correlation
 context -- see :mod:`atlas.observability.context`) did not supply is
 present with a JSON ``null`` value rather than omitted, so the schema is
 identical on every line. ``trace_id``/``span_id`` are always ``null`` in
-this slice -- Slice 15A2 is what populates them. A legacy/third-party line
+this slice and remain ``null`` through Slice 15A2 (Prometheus metric
+production, a separate concern) -- Slice 15A3/OpenTelemetry is what
+populates them, once it exists. A legacy/third-party line
 never carries any of these fields at all (they would all be meaningless
 ``null`` noise on a line that is not describing an Atlas-structured
 event) -- its own fixed shape is documented next.

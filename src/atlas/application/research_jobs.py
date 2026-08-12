@@ -16,6 +16,7 @@ from atlas.application.exceptions import (
 from atlas.application.ports import ResearchJobRepository
 from atlas.domain import ResearchJob
 from atlas.eventing.builders import build_research_job_created
+from atlas.observability.metrics import AtlasMetrics, default_metrics
 from atlas.outbox.ports import OutboxEnqueuer
 from atlas.persistence.db import session_scope
 from atlas.persistence.exceptions import IdempotencyKeyConflictError
@@ -42,11 +43,13 @@ class ResearchJobService:
         repository: ResearchJobRepository,
         outbox: OutboxEnqueuer | None = None,
         id_factory: Callable[[], str] | None = None,
+        metrics: AtlasMetrics | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = repository
         self._outbox = outbox or SqlAlchemyOutboxRepository()
         self._id_factory = id_factory or (lambda: str(uuid.uuid4()))
+        self._metrics = metrics or default_metrics()
 
     def submit(self, question: str, *, idempotency_key: str) -> ResearchJob:
         """Persist a PENDING research job or replay a matching idempotent request.
@@ -80,6 +83,7 @@ class ResearchJobService:
                 request_fingerprint=fingerprint,
             )
 
+        self._metrics.observe_research_job_submitted()
         return job
 
     def get(self, job_id: str) -> ResearchJob:

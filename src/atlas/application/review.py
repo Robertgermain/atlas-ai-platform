@@ -11,6 +11,7 @@ from uuid import uuid4
 from langchain_core.runnables import RunnableConfig
 
 from atlas.evaluation.service import EvaluationService
+from atlas.observability.metrics import AtlasMetrics, default_metrics
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.recovery import SqlAlchemyRecoveryRepository
 from atlas.persistence.repositories.research_job import (
@@ -48,6 +49,7 @@ class ReviewService:
         recovery_repo: SqlAlchemyRecoveryRepository | None = None,
         workflow_repo: SqlAlchemyWorkflowRepository | None = None,
         evaluation_service: EvaluationService | None = None,
+        metrics: AtlasMetrics | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._database_url = database_url
@@ -57,6 +59,7 @@ class ReviewService:
         self._evaluation_service = evaluation_service or EvaluationService(
             session_factory=session_factory,
         )
+        self._metrics = metrics or default_metrics()
 
     def submit_decision(
         self,
@@ -241,7 +244,14 @@ class ReviewService:
                         "fail_from_review failed (state conflict)"
                     )
 
-            return (decision_id, "created")
+        # Emitted only after the ``session_scope`` above has committed: a
+        # commit failure raises out of the ``with`` block and this line
+        # never runs, so a durable decision metric can never precede its
+        # own durable commit (Slice 15A2 correction). The two idempotent
+        # "replayed" returns above are both inside that same block and
+        # never reach here, so a replay never emits a second metric.
+        self._metrics.observe_human_review_decision(decision=decision)
+        return (decision_id, "created")
 
     def _checkpoint_ready_for_complete(self, execution_id: str) -> bool:
         """Return True when durable checkpoint next is exactly ('complete',)."""

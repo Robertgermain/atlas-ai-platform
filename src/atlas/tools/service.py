@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
 
+from atlas.observability.metrics import AtlasMetrics, default_metrics
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.tool_invocation import (
     SqlAlchemyToolInvocationRepository,
@@ -163,6 +164,7 @@ class ToolInvocationService:
         repository: SqlAlchemyToolInvocationRepository | None = None,
         max_attempts_per_call: int = 2,
         attempt_timeout_seconds: float = 8.0,
+        metrics: AtlasMetrics | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._registry = registry
@@ -172,6 +174,7 @@ class ToolInvocationService:
         self._repository = repository or SqlAlchemyToolInvocationRepository()
         self._max_attempts_per_call = max_attempts_per_call
         self._attempt_timeout_seconds = attempt_timeout_seconds
+        self._metrics = metrics or default_metrics()
 
     def invoke(
         self,
@@ -375,10 +378,12 @@ class ToolInvocationService:
             except IntegrityError as exc:
                 raise ToolInvocationInProgressError() from exc
 
+        attempt_started_at = time.perf_counter()
         try:
             result = tool.invoke(raw_input, context=context)
         except ToolError as exc:
             finished = datetime.now(UTC)
+            duration_seconds = time.perf_counter() - attempt_started_at
             with session_scope(self._session_factory) as session:
                 if not self._repository.fail_attempt(
                     session,
@@ -387,6 +392,9 @@ class ToolInvocationService:
                     retry_class=exc.retry_class.value,
                     at=finished,
                 ):
+                    # Ownership already reclaimed by a newer attempt (Slice
+                    # 15A2 approval #8): never observe a metric for this
+                    # superseded attempt.
                     raise ToolAttemptOwnershipLostError() from exc
                 if not self._repository.mark_invocation_failed_for_attempt(
                     session,
@@ -397,10 +405,21 @@ class ToolInvocationService:
                     at=finished,
                 ):
                     raise ToolAttemptOwnershipLostError() from exc
+            self._metrics.observe_tool_attempt(
+                tool_id=tool_id.value,
+                provider=provider.value,
+                outcome="failed",
+                retry_class=exc.retry_class.value,
+                duration_seconds=duration_seconds,
+            )
+            self._metrics.observe_tool_invocation(
+                tool_id=tool_id.value, provider=provider.value, outcome="failed"
+            )
             raise
         except Exception as exc:
             wrapped = ToolUnknownError("tool adapter failed")
             finished = datetime.now(UTC)
+            duration_seconds = time.perf_counter() - attempt_started_at
             with session_scope(self._session_factory) as session:
                 if not self._repository.fail_attempt(
                     session,
@@ -419,9 +438,20 @@ class ToolInvocationService:
                     at=finished,
                 ):
                     raise ToolAttemptOwnershipLostError() from exc
+            self._metrics.observe_tool_attempt(
+                tool_id=tool_id.value,
+                provider=provider.value,
+                outcome="failed",
+                retry_class=wrapped.retry_class.value,
+                duration_seconds=duration_seconds,
+            )
+            self._metrics.observe_tool_invocation(
+                tool_id=tool_id.value, provider=provider.value, outcome="failed"
+            )
             raise wrapped from exc
 
         finished = datetime.now(UTC)
+        duration_seconds = time.perf_counter() - attempt_started_at
         summary = {
             "output": result.output,
             "finding_text": result.finding_text,
@@ -445,6 +475,16 @@ class ToolInvocationService:
                 at=finished,
             ):
                 raise ToolAttemptOwnershipLostError()
+        self._metrics.observe_tool_attempt(
+            tool_id=tool_id.value,
+            provider=provider.value,
+            outcome="succeeded",
+            retry_class="none",
+            duration_seconds=duration_seconds,
+        )
+        self._metrics.observe_tool_invocation(
+            tool_id=tool_id.value, provider=provider.value, outcome="succeeded"
+        )
         return result.model_copy(update={"invocation_id": invocation_id})
 
     def _build_key(
