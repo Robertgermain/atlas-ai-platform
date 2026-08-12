@@ -32,11 +32,14 @@ Runtime behavior:
   either step makes the process exit nonzero.
 - No HTTP server.
 
-Logging discipline: every log call below uses only a fixed, sanitized
-message and -- where useful -- ``exc.__class__.__name__``. Never ``str(exc)``,
-``repr(exc)``, ``exc.args``, ``exc_info``/``logger.exception()``, or any
-value derived from settings (SQL, database URLs, Kafka broker addresses,
-configuration values).
+Logging discipline (Slice 15A1): every log call below goes through
+``atlas.observability.logging.log_event``/``log_exception_boundary``,
+which only ever accept a fixed :class:`~atlas.observability.events.Event`
+name and the approved structured fields -- never a free-text message,
+``str(exc)``, ``repr(exc)``, ``exc.args``, ``exc_info``, ``stack_info``, or
+any value derived from settings (SQL, database URLs, Kafka broker
+addresses, configuration values). Only ``exc.__class__.__name__`` may
+represent an exception, via ``log_exception_boundary``.
 """
 
 from __future__ import annotations
@@ -50,6 +53,12 @@ from types import FrameType
 
 from atlas.config import get_settings
 from atlas.config.settings import Settings
+from atlas.observability.events import Event
+from atlas.observability.logging import (
+    configure_logging,
+    log_event,
+    log_exception_boundary,
+)
 from atlas.outbox.errors import KafkaTopicVerificationError, OutboxError
 from atlas.outbox.kafka_producer import KafkaEventProducer
 from atlas.outbox.relay import OutboxRelay, RelayRunOutcome
@@ -90,23 +99,18 @@ def _run_poll_loop(
         try:
             result = relay.run_once()
         except OutboxError as exc:
-            logger.error(
-                "Unexpected outbox error; terminating relay. error_class=%s",
-                exc.__class__.__name__,
-            )
+            log_exception_boundary(logger, Event.POLL_LOOP_TERMINAL_ERROR, exc)
             return 1
         except Exception as exc:
-            logger.error(
-                "Unexpected PostgreSQL/session error; terminating relay. "
-                "error_class=%s",
-                exc.__class__.__name__,
-            )
+            log_exception_boundary(logger, Event.POLL_LOOP_TERMINAL_ERROR, exc)
             return 1
 
         if result.outcome in _TERMINAL_OUTCOMES:
-            logger.error(
-                "Relay reported a terminal outcome; terminating. outcome=%s",
-                result.outcome,
+            log_event(
+                logger,
+                Event.POLL_LOOP_TERMINAL_ERROR,
+                level=logging.ERROR,
+                outcome=result.outcome.value,
             )
             return 1
         if result.outcome in _BACKOFF_OUTCOMES:
@@ -134,19 +138,13 @@ def _cleanup(
     try:
         producer.close(timeout_seconds=close_timeout_seconds)
     except Exception as exc:
-        logger.error(
-            "Kafka producer close failed during shutdown. error_class=%s",
-            exc.__class__.__name__,
-        )
+        log_exception_boundary(logger, Event.SHUTDOWN_CLEANUP_FAILED, exc)
         cleanup_ok = False
 
     try:
         lock.release()
     except Exception as exc:
-        logger.error(
-            "Advisory lock release failed during shutdown. error_class=%s",
-            exc.__class__.__name__,
-        )
+        log_exception_boundary(logger, Event.SHUTDOWN_CLEANUP_FAILED, exc)
         cleanup_ok = False
 
     signal.signal(signal.SIGINT, previous_sigint)
@@ -156,10 +154,7 @@ def _cleanup(
 
 def main() -> int:
     """Run the Kafka outbox relay until interrupted or a terminal error occurs."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging(service_role="outbox-relay")
     settings = get_settings()
     engine = get_engine(settings.database_url)
     session_factory = get_session_factory(engine)
@@ -171,10 +166,7 @@ def main() -> int:
             socket_timeout_seconds=settings.kafka_socket_timeout_seconds,
         )
     except OutboxError as exc:
-        logger.error(
-            "Failed to construct the Kafka producer; exiting. error_class=%s",
-            exc.__class__.__name__,
-        )
+        log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
         return 1
 
     lock = PostgresOutboxRelayLock(engine)
@@ -189,28 +181,21 @@ def main() -> int:
         # otherwise embed the configured host/port directly in its message.
         # This is a narrow startup-boundary catch, not a change to
         # PostgresOutboxRelayLock's own (unchanged) error contract.
-        logger.error(
-            "Failed to acquire the outbox relay advisory lock; exiting. error_class=%s",
-            exc.__class__.__name__,
-        )
+        log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
         try:
             producer.close(timeout_seconds=settings.kafka_delivery_timeout_seconds)
         except Exception as close_exc:
             # A close failure here must never mask the original
             # classification above -- it is logged separately, and this
             # path still returns 1 for the original failure either way.
-            logger.error(
-                "Kafka producer close failed during startup-failure "
-                "cleanup. error_class=%s",
-                close_exc.__class__.__name__,
-            )
+            log_exception_boundary(logger, Event.SHUTDOWN_CLEANUP_FAILED, close_exc)
         return 1
 
     shutdown_requested = False
 
     def _handle_signal(signum: int, _frame: FrameType | None) -> None:
         nonlocal shutdown_requested
-        logger.info("Received signal %s; stopping after the current record.", signum)
+        log_event(logger, Event.SIGNAL_RECEIVED)
         shutdown_requested = True
 
     previous_sigint = signal.signal(signal.SIGINT, _handle_signal)
@@ -228,10 +213,7 @@ def main() -> int:
                 timeout_seconds=settings.kafka_topic_verify_timeout_seconds,
             )
         except KafkaTopicVerificationError as exc:
-            logger.error(
-                "Kafka startup verification failed; exiting. error_class=%s",
-                exc.__class__.__name__,
-            )
+            log_exception_boundary(logger, Event.STARTUP_VERIFICATION_FAILED, exc)
             return 1
 
         relay = OutboxRelay(
@@ -242,14 +224,7 @@ def main() -> int:
             batch_size=1,
             publish_lease_seconds=settings.outbox_publish_lease_seconds,
         )
-        logger.info(
-            "Starting Kafka outbox relay (delivery_timeout=%ss "
-            "socket_timeout=%ss publish_lease=%ss poll_interval=%ss)",
-            settings.kafka_delivery_timeout_seconds,
-            settings.kafka_socket_timeout_seconds,
-            settings.outbox_publish_lease_seconds,
-            settings.outbox_relay_poll_interval_seconds,
-        )
+        log_event(logger, Event.PROCESS_STARTED)
         exit_code = _run_poll_loop(relay, settings, lambda: shutdown_requested)
     finally:
         cleanup_ok = _cleanup(
@@ -262,7 +237,7 @@ def main() -> int:
 
     if not cleanup_ok:
         exit_code = 1
-    logger.info("Kafka outbox relay stopped (exit_code=%s)", exit_code)
+    log_event(logger, Event.PROCESS_STOPPED, outcome=str(exit_code))
     return exit_code
 
 

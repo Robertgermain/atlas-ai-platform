@@ -11,7 +11,6 @@ message. No real PostgreSQL or Kafka connection is made in this file.
 
 from __future__ import annotations
 
-import logging
 import signal
 from collections.abc import Callable, Iterator
 
@@ -20,6 +19,8 @@ import pytest
 import atlas.consumer.__main__ as consumer_main
 from atlas.config.settings import Settings
 from atlas.consumer.errors import ConsumerConfigurationError
+from atlas.observability.events import Event
+from atlas.observability.testing import CapturedLogs, capture_logs
 
 # Fake sensitive content that must never reach a log line: a credential, a
 # broker address, a database URL, and an environment-derived value. Used
@@ -42,6 +43,14 @@ _SENSITIVE_FRAGMENTS = (
 def _assert_no_sensitive_fragments(text: str) -> None:
     for fragment in _SENSITIVE_FRAGMENTS:
         assert fragment not in text
+
+
+def _rendered(captured: CapturedLogs) -> str:
+    return captured.text
+
+
+def _events(captured: CapturedLogs) -> list[str | None]:
+    return captured.events
 
 
 def _make_fake_signal(
@@ -167,17 +176,18 @@ def test_main_exits_nonzero_when_settings_load_fails(
 
 
 def test_main_logs_are_sanitized_when_settings_load_fails(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _fail_get_settings() -> Settings:
         raise RuntimeError(_SENSITIVE_MESSAGE)
 
     monkeypatch.setattr(consumer_main, "get_settings", _fail_get_settings)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.consumer.__main__") as captured:
         assert consumer_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "RuntimeError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert "RuntimeError" in rendered
 
 
 def test_main_exits_nonzero_when_database_engine_construction_fails(
@@ -198,7 +208,7 @@ def test_main_exits_nonzero_when_database_engine_construction_fails(
 
 
 def test_main_logs_are_sanitized_when_database_engine_construction_fails(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = Settings(kafka_bootstrap_servers="unit-test-broker:9092")
     monkeypatch.setattr(consumer_main, "get_settings", lambda: settings)
@@ -210,10 +220,11 @@ def test_main_logs_are_sanitized_when_database_engine_construction_fails(
         consumer_main, "build_consumer_engine", _fail_build_consumer_engine
     )
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.consumer.__main__") as captured:
         assert consumer_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "RuntimeError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert "RuntimeError" in rendered
 
 
 def test_main_builds_the_consumer_engine_with_the_settings_derived_bounds(
@@ -287,17 +298,17 @@ def test_main_exits_nonzero_when_kafka_consumer_construction_fails(
 def test_main_logs_are_sanitized_when_kafka_consumer_construction_fails(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     _FakeKafkaEventConsumer.raise_on_construct = ConsumerConfigurationError(
         _SENSITIVE_MESSAGE
     )
     monkeypatch.setattr(consumer_main, "KafkaEventConsumer", _FakeKafkaEventConsumer)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.consumer.__main__") as captured:
         assert consumer_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "ConsumerConfigurationError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert "ConsumerConfigurationError" in rendered
 
 
 def test_main_exits_nonzero_on_unexpected_kafka_consumer_construction_error(
@@ -334,7 +345,6 @@ def test_signal_handler_installation_failure_closes_consumer_and_exits_nonzero(
 def test_signal_handler_installation_failure_logs_are_sanitized(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(consumer_main, "KafkaEventConsumer", _FakeKafkaEventConsumer)
 
@@ -343,16 +353,16 @@ def test_signal_handler_installation_failure_logs_are_sanitized(
 
     monkeypatch.setattr(signal, "signal", _fail_signal)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.consumer.__main__") as captured:
         assert consumer_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "RuntimeError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert "RuntimeError" in rendered
 
 
 def test_signal_handler_installation_failure_close_failure_is_also_sanitized(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Even if the best-effort close during this path also fails, both
     failures must be logged, sanitized, and the process must still exit 1."""
@@ -364,10 +374,11 @@ def test_signal_handler_installation_failure_close_failure_is_also_sanitized(
 
     monkeypatch.setattr(signal, "signal", _fail_signal)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.consumer.__main__") as captured:
         assert consumer_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "RuntimeError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert "RuntimeError" in rendered
     assert _FakeKafkaEventConsumer.close_call_count == 1
 
 
@@ -398,23 +409,22 @@ def test_partial_signal_install_failure_restores_the_already_installed_handler(
 def test_partial_signal_install_failure_logs_are_sanitized(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(consumer_main, "KafkaEventConsumer", _FakeKafkaEventConsumer)
     fake_signal, _calls = _make_fake_signal(fail_at_indices={1})
     monkeypatch.setattr(signal, "signal", fake_signal)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.consumer.__main__") as captured:
         assert consumer_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "Failed to install shutdown signal handlers" in caplog.text
-    assert "RuntimeError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert Event.STARTUP_FAILED.value in _events(captured)
+    assert "RuntimeError" in rendered
 
 
 def test_partial_signal_install_failure_with_close_failure_preserves_classification(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Even if the best-effort consumer close during this path also fails,
     restoration of the already-installed SIGINT handler must still be
@@ -425,11 +435,15 @@ def test_partial_signal_install_failure_with_close_failure_preserves_classificat
     fake_signal, calls = _make_fake_signal(fail_at_indices={1})
     monkeypatch.setattr(signal, "signal", fake_signal)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.consumer.__main__") as captured:
         assert consumer_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "Failed to install shutdown signal handlers" in caplog.text
-    assert "Kafka consumer close failed during shutdown" in caplog.text
+    _assert_no_sensitive_fragments(_rendered(captured))
+    # Both the signal-install failure and the startup-failure cleanup's own
+    # consumer-close failure were logged as separate, distinct lines --
+    # neither masks the other.
+    events = _events(captured)
+    assert events.count(Event.STARTUP_FAILED.value) == 1
+    assert events.count(Event.SHUTDOWN_CLEANUP_FAILED.value) == 1
     # Restoration of the already-installed SIGINT handler still happened.
     assert calls[-1] == (signal.SIGINT, f"previous-handler-for-{signal.SIGINT}")
     assert _FakeKafkaEventConsumer.close_call_count == 1
@@ -441,17 +455,16 @@ def test_partial_signal_install_failure_with_close_failure_preserves_classificat
 def test_cleanup_sigint_restoration_failure_still_attempts_sigterm_restoration(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(consumer_main, "KafkaEventConsumer", _FakeKafkaEventConsumer)
     # Calls 0-1 install successfully; call 2 (SIGINT restore) fails.
     fake_signal, calls = _make_fake_signal(fail_at_indices={2})
     monkeypatch.setattr(signal, "signal", fake_signal)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.consumer.__main__") as captured:
         assert consumer_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "Failed to restore a shutdown signal handler" in caplog.text
+    _assert_no_sensitive_fragments(_rendered(captured))
+    assert _events(captured).count(Event.SHUTDOWN_CLEANUP_FAILED.value) == 1
     # SIGTERM restoration (call 3) was still attempted despite the SIGINT
     # restoration (call 2) failing first.
     assert len(calls) == 4
@@ -463,7 +476,6 @@ def test_cleanup_sigint_restoration_failure_still_attempts_sigterm_restoration(
 def test_cleanup_sigterm_restoration_failure_is_sanitized(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(consumer_main, "KafkaEventConsumer", _FakeKafkaEventConsumer)
     # Calls 0-1 install successfully; call 2 (SIGINT restore) succeeds;
@@ -471,10 +483,10 @@ def test_cleanup_sigterm_restoration_failure_is_sanitized(
     fake_signal, calls = _make_fake_signal(fail_at_indices={3})
     monkeypatch.setattr(signal, "signal", fake_signal)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.consumer.__main__") as captured:
         assert consumer_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "Failed to restore a shutdown signal handler" in caplog.text
+    _assert_no_sensitive_fragments(_rendered(captured))
+    assert _events(captured).count(Event.SHUTDOWN_CLEANUP_FAILED.value) == 1
     assert len(calls) == 4
     assert calls[2] == (signal.SIGINT, f"previous-handler-for-{signal.SIGINT}")
     assert calls[3][0] == signal.SIGTERM
@@ -483,17 +495,16 @@ def test_cleanup_sigterm_restoration_failure_is_sanitized(
 def test_cleanup_consumer_close_failure_still_attempts_both_signal_restorations(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     _FakeKafkaEventConsumer.raise_on_close = RuntimeError(_SENSITIVE_MESSAGE)
     monkeypatch.setattr(consumer_main, "KafkaEventConsumer", _FakeKafkaEventConsumer)
     fake_signal, calls = _make_fake_signal()
     monkeypatch.setattr(signal, "signal", fake_signal)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.consumer.__main__") as captured:
         assert consumer_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "Kafka consumer close failed during shutdown" in caplog.text
+    _assert_no_sensitive_fragments(_rendered(captured))
+    assert _events(captured).count(Event.SHUTDOWN_CLEANUP_FAILED.value) == 1
     # Both restorations still happened despite the close failure.
     assert len(calls) == 4
     assert calls[2] == (signal.SIGINT, f"previous-handler-for-{signal.SIGINT}")

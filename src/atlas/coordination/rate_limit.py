@@ -20,6 +20,7 @@ import redis
 
 from atlas.coordination.contracts import RateLimitDecision
 from atlas.coordination.outage_log import OncePerOutageLogger
+from atlas.observability.events import Event
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +69,8 @@ class RedisFixedWindowRateLimiter:
         self._script = client.register_script(_SCRIPT)
         self._outage_log = OncePerOutageLogger(
             logger,
-            warning_message=(
-                "Redis rate-limit check failed; failing open (allowing request)."
-            ),
+            event=Event.DEPENDENCY_OPERATION_FAILED_OPEN,
+            outcome="redis_rate_limit_check",
         )
 
     def check(self, *, identity: str) -> RateLimitDecision:

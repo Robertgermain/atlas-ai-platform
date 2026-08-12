@@ -8,7 +8,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from threading import Event
+from threading import Event as ThreadingEvent
 from typing import TYPE_CHECKING
 
 from atlas.application.exceptions import ClaimOwnershipError
@@ -28,6 +28,8 @@ from atlas.eventing.builders import (
     build_research_job_completed,
     build_research_job_failed,
 )
+from atlas.observability.events import Event
+from atlas.observability.logging import log_event, log_exception_boundary
 from atlas.outbox.ports import OutboxEnqueuer
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.outbox import SqlAlchemyOutboxRepository
@@ -77,7 +79,7 @@ class ResearchJobWorker:
         processing_timeout_seconds: float = 60.0,
         lease_seconds: float = 90.0,
         shutdown_grace_seconds: float | None = None,
-        shutdown_event: Event | None = None,
+        shutdown_event: ThreadingEvent | None = None,
         heartbeat_recorder: HeartbeatRecorder | None = None,
         heartbeat_interval_seconds: float = 5.0,
         worker_id: str | None = None,
@@ -95,7 +97,7 @@ class ResearchJobWorker:
             if shutdown_grace_seconds is None
             else shutdown_grace_seconds
         )
-        self._shutdown_event = shutdown_event or Event()
+        self._shutdown_event = shutdown_event or ThreadingEvent()
         self._executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="atlas-job-processor",
@@ -216,10 +218,12 @@ class ResearchJobWorker:
             self._inflight_future = None
             return
         except ClaimOwnershipError:
-            logger.warning(
-                "Claim ownership lost during processing of job %s; "
-                "finalize_failure will no-op if claim is gone.",
-                claimed.job.id,
+            log_event(
+                logger,
+                Event.CLAIM_OWNERSHIP_LOST,
+                level=logging.WARNING,
+                research_job_id=claimed.job.id,
+                outcome="processing",
             )
             self._finalize_failure(
                 claimed,
@@ -257,10 +261,11 @@ class ResearchJobWorker:
                 reason_class=outcome.reason_code,
             )
         elif isinstance(outcome, (PausedForReview, RetryScheduled)):
-            logger.info(
-                "Processor returned %s for job %s; no worker finalization.",
-                type(outcome).__name__,
-                claimed.job.id,
+            log_event(
+                logger,
+                Event.PROCESSOR_OUTCOME_DEFERRED,
+                research_job_id=claimed.job.id,
+                outcome=type(outcome).__name__,
             )
         else:
             self._finalize_failure(
@@ -290,17 +295,22 @@ class ResearchJobWorker:
                         ),
                     )
         except Exception as exc:
-            logger.warning(
-                "Completion finalization failed for job %s (%s); "
-                "transaction rolled back; not marking terminal.",
-                claimed.job.id,
-                exc.__class__.__name__,
+            log_exception_boundary(
+                logger,
+                Event.FINALIZATION_FAILED,
+                exc,
+                level=logging.WARNING,
+                research_job_id=claimed.job.id,
+                outcome="completion",
             )
             raise
         if not owned:
-            logger.warning(
-                "Lost claim ownership while completing research job %s",
-                claimed.job.id,
+            log_event(
+                logger,
+                Event.CLAIM_OWNERSHIP_LOST,
+                level=logging.WARNING,
+                research_job_id=claimed.job.id,
+                outcome="completion",
             )
         return owned
 
@@ -333,17 +343,22 @@ class ResearchJobWorker:
                     )
         except Exception as exc:
             # Never recurse into finalize_failure when this path itself failed.
-            logger.warning(
-                "Failure finalization failed for job %s (%s); "
-                "transaction rolled back; not marking terminal.",
-                claimed.job.id,
-                exc.__class__.__name__,
+            log_exception_boundary(
+                logger,
+                Event.FINALIZATION_FAILED,
+                exc,
+                level=logging.WARNING,
+                research_job_id=claimed.job.id,
+                outcome="failure",
             )
             raise
         if not owned:
-            logger.warning(
-                "Lost claim ownership while failing research job %s",
-                claimed.job.id,
+            log_event(
+                logger,
+                Event.CLAIM_OWNERSHIP_LOST,
+                level=logging.WARNING,
+                research_job_id=claimed.job.id,
+                outcome="failure",
             )
         return owned
 
@@ -359,14 +374,14 @@ class ResearchJobWorker:
         except FuturesTimeoutError:
             self._processor_wait_abandoned = True
             self._abandoned_future = future
-            logger.warning(
-                "Processor still running after %.3fs shutdown grace; "
-                "abandoning wait without killing the thread. Claim fencing "
-                "prevents stale finalization. The process may remain alive "
-                "until the thread finishes or is force-killed. Hard "
-                "termination of arbitrary LLM/tool/graph work requires process "
-                "isolation or an external worker system.",
-                timeout,
+            # Claim fencing (not this log line) is what prevents stale
+            # finalization; see the class docstring's shutdown guarantee.
+            log_event(
+                logger,
+                Event.SHUTDOWN_WAIT_ABANDONED,
+                level=logging.WARNING,
+                outcome="processor",
+                duration_ms=timeout * 1000,
             )
         except Exception:
             # Late processor failure is ignored permanently.

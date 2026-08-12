@@ -14,6 +14,8 @@ import threading
 
 from atlas.coordination.contracts import HeartbeatRecorder
 from atlas.coordination.outage_log import OncePerOutageLogger
+from atlas.observability.events import Event
+from atlas.observability.logging import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +39,15 @@ class HeartbeatThread:
             name="atlas-worker-heartbeat",
             daemon=True,
         )
+        # Gating only (via begin_outage_if_new()/note_success() below): the
+        # actual warning is logged manually in _run() so it can also carry
+        # error_class, which OncePerOutageLogger.note_failure() does not
+        # support -- this instance's own event/outcome are never used by
+        # note_failure() itself since it is never called here.
         self._unexpected_outage_log = OncePerOutageLogger(
             logger,
-            warning_message="Heartbeat recorder raised unexpectedly; continuing.",
+            event=Event.HEARTBEAT_RECORDER_UNEXPECTED_ERROR,
+            outcome="heartbeat_recorder",
         )
 
     def start(self) -> None:
@@ -58,9 +66,12 @@ class HeartbeatThread:
         self._stop_event.set()
         self._thread.join(timeout=join_timeout_seconds)
         if self._thread.is_alive():
-            logger.warning(
-                "Heartbeat thread did not stop within %.1fs; abandoning wait.",
-                join_timeout_seconds,
+            log_event(
+                logger,
+                Event.SHUTDOWN_WAIT_ABANDONED,
+                level=logging.WARNING,
+                outcome="heartbeat_thread",
+                duration_ms=join_timeout_seconds * 1000,
             )
 
     def _run(self) -> None:
@@ -72,9 +83,11 @@ class HeartbeatThread:
             except Exception as exc:
                 # Bound + sanitize: exception class only, no raw text / traceback.
                 if self._unexpected_outage_log.begin_outage_if_new():
-                    logger.warning(
-                        "Heartbeat recorder raised unexpectedly (%s); continuing.",
-                        type(exc).__name__,
+                    log_event(
+                        logger,
+                        Event.HEARTBEAT_RECORDER_UNEXPECTED_ERROR,
+                        level=logging.WARNING,
+                        error_class=type(exc).__name__,
                     )
             else:
                 self._unexpected_outage_log.note_success()

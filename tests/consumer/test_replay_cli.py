@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from uuid import UUID, uuid4
 
 import pytest
@@ -14,6 +13,8 @@ from atlas.consumer.replay_errors import (
     ReplayNotFoundError,
     ReplayOwnershipLostError,
 )
+from atlas.observability.events import Event
+from atlas.observability.testing import capture_logs
 from atlas.persistence.repositories.consumer_dead_letter import (
     ReplayOutcome,
     ReplayResult,
@@ -58,22 +59,21 @@ def _install_service(
 # --- argument validation -----------------------------------------------------
 
 
-def test_invalid_dead_letter_id_is_rejected_without_a_traceback(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level(logging.ERROR)
-    exit_code = main(
-        [
-            "--dead-letter-id",
-            "not-a-uuid",
-            "--actor-id",
-            "operator-1",
-            "--reason",
-            "testing",
-        ]
-    )
+def test_invalid_dead_letter_id_is_rejected_without_a_traceback() -> None:
+    with capture_logs("atlas.consumer.replay") as captured:
+        exit_code = main(
+            [
+                "--dead-letter-id",
+                "not-a-uuid",
+                "--actor-id",
+                "operator-1",
+                "--reason",
+                "testing",
+            ]
+        )
     assert exit_code == 1
-    assert "Invalid --dead-letter-id" in caplog.text
+    assert captured.events == [Event.REPLAY_INPUT_REJECTED.value]
+    assert captured.json(0)["outcome"] == "--dead-letter-id"
 
 
 def test_empty_actor_id_is_rejected() -> None:
@@ -211,76 +211,80 @@ def test_non_success_outcomes_exit_nonzero(
 )
 def test_replay_errors_exit_nonzero_with_sanitized_logs(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
     error: Exception,
 ) -> None:
-    caplog.set_level(logging.ERROR)
     service = _StubReplayService(error=error)
     _install_service(monkeypatch, service)
-    exit_code = main(
-        [
-            "--dead-letter-id",
-            str(uuid4()),
-            "--actor-id",
-            "operator-1",
-            "--reason",
-            "testing",
-        ]
-    )
+    with capture_logs("atlas.consumer.replay") as captured:
+        exit_code = main(
+            [
+                "--dead-letter-id",
+                str(uuid4()),
+                "--actor-id",
+                "operator-1",
+                "--reason",
+                "testing",
+            ]
+        )
     assert exit_code == 1
-    assert "Replay rejected" in caplog.text
-    assert error.__class__.__name__ in caplog.text
+    assert captured.events == [Event.REPLAY_ATTEMPT_FAILED.value]
+    record = captured.json(0)
+    assert record["outcome"] == "rejected"
+    assert record["error_class"] == error.__class__.__name__
 
 
 def test_unexpected_exception_is_sanitized_and_exits_nonzero(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    caplog.set_level(logging.ERROR)
-
     class _SensitiveError(RuntimeError):
         def __str__(self) -> str:
             return "database_url=postgresql://atlas:hunter2@10.0.0.5/atlas"
 
     service = _StubReplayService(error=_SensitiveError("boom"))
     _install_service(monkeypatch, service)
-    exit_code = main(
-        [
-            "--dead-letter-id",
-            str(uuid4()),
-            "--actor-id",
-            "operator-1",
-            "--reason",
-            "testing",
-        ]
-    )
+    with capture_logs("atlas.consumer.replay") as captured:
+        exit_code = main(
+            [
+                "--dead-letter-id",
+                str(uuid4()),
+                "--actor-id",
+                "operator-1",
+                "--reason",
+                "testing",
+            ]
+        )
     assert exit_code == 1
-    assert "hunter2" not in caplog.text
-    assert "10.0.0.5" not in caplog.text
-    assert "_SensitiveError" in caplog.text
+    assert "hunter2" not in captured.text
+    assert "10.0.0.5" not in captured.text
+    assert captured.events == [Event.REPLAY_ATTEMPT_FAILED.value]
+    record = captured.json(0)
+    assert record["outcome"] == "unexpected_error"
+    assert record["error_class"] == "_SensitiveError"
 
 
 def test_settings_or_engine_construction_failure_is_sanitized(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    caplog.set_level(logging.ERROR)
-
     def _raise_settings() -> None:
         raise RuntimeError("postgresql://atlas:hunter2@10.0.0.5/atlas")
 
     monkeypatch.setattr(replay_module, "get_settings", _raise_settings)
-    exit_code = main(
-        [
-            "--dead-letter-id",
-            str(uuid4()),
-            "--actor-id",
-            "operator-1",
-            "--reason",
-            "testing",
-        ]
-    )
+    with capture_logs("atlas.consumer.replay") as captured:
+        exit_code = main(
+            [
+                "--dead-letter-id",
+                str(uuid4()),
+                "--actor-id",
+                "operator-1",
+                "--reason",
+                "testing",
+            ]
+        )
     assert exit_code == 1
-    assert "hunter2" not in caplog.text
-    assert "10.0.0.5" not in caplog.text
+    assert "hunter2" not in captured.text
+    assert "10.0.0.5" not in captured.text
+    assert captured.events == [Event.STARTUP_FAILED.value]
+    assert captured.json(0)["error_class"] == "RuntimeError"
 
 
 # --- idempotency key / fingerprint behavior ---------------------------------

@@ -38,6 +38,8 @@ from atlas.evidence.errors import (
     ReportArtifactConflictError,
     UrlCanonicalizationError,
 )
+from atlas.observability.events import Event
+from atlas.observability.logging import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +129,12 @@ def register_exception_handlers(app: FastAPI) -> None:
         _request: Request,
         _exc: OperationalError,
     ) -> JSONResponse:
-        logger.warning("Research-job API database unavailable")
+        log_event(
+            logger,
+            Event.API_DEPENDENCY_UNAVAILABLE,
+            level=logging.WARNING,
+            outcome="database",
+        )
         return error_response(
             status_code=503,
             code="service_unavailable",
@@ -242,7 +249,12 @@ def register_exception_handlers(app: FastAPI) -> None:
         _request: Request,
         _exc: EmbeddingAuthConfigError,
     ) -> JSONResponse:
-        logger.warning("Embedding provider authentication or configuration failed")
+        log_event(
+            logger,
+            Event.API_DEPENDENCY_UNAVAILABLE,
+            level=logging.WARNING,
+            outcome="embedding_auth_config",
+        )
         return error_response(
             status_code=503,
             code="embedding_auth_config",
@@ -254,7 +266,12 @@ def register_exception_handlers(app: FastAPI) -> None:
         _request: Request,
         _exc: EmbeddingTimeoutError,
     ) -> JSONResponse:
-        logger.warning("Embedding provider timed out")
+        log_event(
+            logger,
+            Event.API_DEPENDENCY_UNAVAILABLE,
+            level=logging.WARNING,
+            outcome="embedding_timeout",
+        )
         return error_response(
             status_code=503,
             code="embedding_timeout",
@@ -266,7 +283,12 @@ def register_exception_handlers(app: FastAPI) -> None:
         _request: Request,
         _exc: EmbeddingRateLimitedError,
     ) -> JSONResponse:
-        logger.warning("Embedding provider rate limited")
+        log_event(
+            logger,
+            Event.API_DEPENDENCY_UNAVAILABLE,
+            level=logging.WARNING,
+            outcome="embedding_rate_limited",
+        )
         return error_response(
             status_code=503,
             code="embedding_rate_limited",
@@ -278,7 +300,12 @@ def register_exception_handlers(app: FastAPI) -> None:
         _request: Request,
         _exc: EmbeddingProviderError,
     ) -> JSONResponse:
-        logger.warning("Embedding provider failed")
+        log_event(
+            logger,
+            Event.API_DEPENDENCY_UNAVAILABLE,
+            level=logging.WARNING,
+            outcome="embedding_provider_failed",
+        )
         return error_response(
             status_code=503,
             code="embedding_provider_failed",

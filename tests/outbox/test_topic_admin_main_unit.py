@@ -9,12 +9,11 @@ this file never touches the network.
 
 from __future__ import annotations
 
-import logging
-
 import pytest
 
 import atlas.outbox.topic_admin as topic_admin
 from atlas.config.settings import Settings
+from atlas.observability.testing import CapturedLogs, capture_logs
 from atlas.outbox.errors import (
     KafkaProducerConfigurationError,
     KafkaTopicVerificationError,
@@ -25,6 +24,10 @@ from atlas.outbox.errors import (
 # a real secret.
 _SENSITIVE_MESSAGE = "kafka bootstrap 203.0.113.9:9094 is unreachable"
 _SENSITIVE_FRAGMENT = "203.0.113.9"
+
+
+def _rendered(captured: CapturedLogs) -> str:
+    return captured.text
 
 
 @pytest.fixture(autouse=True)
@@ -79,18 +82,18 @@ def test_main_returns_nonzero_when_settings_fail_to_load(
 
 def test_main_logs_are_sanitized_when_settings_fail_to_load(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     def _raise_settings() -> Settings:
         raise ValueError(_SENSITIVE_MESSAGE)
 
     monkeypatch.setattr(topic_admin, "get_settings", _raise_settings)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.outbox.topic_admin") as captured:
         topic_admin.main()
 
-    assert _SENSITIVE_FRAGMENT not in caplog.text
-    assert "ValueError" in caplog.text
+    rendered = _rendered(captured)
+    assert _SENSITIVE_FRAGMENT not in rendered
+    assert "ValueError" in rendered
 
 
 def test_main_returns_nonzero_when_broker_unreachable(
@@ -114,18 +117,18 @@ def test_main_returns_nonzero_when_broker_unreachable(
 
 def test_main_logs_are_sanitized_when_broker_unreachable(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     def _raise_broker(**_kwargs: object) -> None:
         raise KafkaTopicVerificationError(_SENSITIVE_MESSAGE)
 
     monkeypatch.setattr(topic_admin, "verify_broker_connectivity", _raise_broker)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.outbox.topic_admin") as captured:
         topic_admin.main()
 
-    assert _SENSITIVE_FRAGMENT not in caplog.text
-    assert "KafkaTopicVerificationError" in caplog.text
+    rendered = _rendered(captured)
+    assert _SENSITIVE_FRAGMENT not in rendered
+    assert "KafkaTopicVerificationError" in rendered
 
 
 def test_main_returns_nonzero_when_topic_creation_fails(
@@ -180,18 +183,18 @@ def test_main_returns_nonzero_on_unexpected_exception(
 
 def test_main_logs_are_sanitized_on_unexpected_exception(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     def _raise_unexpected(**_kwargs: object) -> None:
         raise RuntimeError(_SENSITIVE_MESSAGE)
 
     monkeypatch.setattr(topic_admin, "verify_broker_connectivity", _raise_unexpected)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.outbox.topic_admin") as captured:
         topic_admin.main()
 
-    assert _SENSITIVE_FRAGMENT not in caplog.text
-    assert "RuntimeError" in caplog.text
+    rendered = _rendered(captured)
+    assert _SENSITIVE_FRAGMENT not in rendered
+    assert "RuntimeError" in rendered
 
 
 def test_main_passes_settings_derived_arguments(

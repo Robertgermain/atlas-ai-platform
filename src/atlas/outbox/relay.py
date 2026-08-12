@@ -24,6 +24,8 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from atlas.observability.events import Event
+from atlas.observability.logging import log_event
 from atlas.outbox.clock import Clock, utc_now
 from atlas.outbox.errors import (
     EventPublishError,
@@ -180,10 +182,12 @@ class OutboxRelay:
 
             # Ownership lost (lease expired / reclaimed). Do not overwrite the
             # new owner. Stop so later positions cannot leapfrog.
-            logger.warning(
-                "Outbox mark_published lost ownership for event %s; "
-                "stopping batch to preserve outbox_position order.",
-                record.event_id,
+            log_event(
+                logger,
+                Event.OUTBOX_OWNERSHIP_LOST,
+                level=logging.WARNING,
+                outbox_event_id=str(record.event_id),
+                outcome="mark_published",
             )
             self._release_remaining(
                 claimed[index + 1 :],
@@ -217,9 +221,12 @@ class OutboxRelay:
                 error_class=error_class,
             )
         if not released:
-            logger.warning(
-                "Outbox release_failed_claim lost ownership for event %s.",
-                event_id,
+            log_event(
+                logger,
+                Event.OUTBOX_OWNERSHIP_LOST,
+                level=logging.WARNING,
+                outbox_event_id=str(event_id),
+                outcome="release_failed_claim",
             )
 
     def _release_remaining(

@@ -9,6 +9,12 @@ import sys
 from atlas.application.worker import ResearchJobWorker
 from atlas.config import get_settings
 from atlas.coordination.composition import build_heartbeat_recorder
+from atlas.observability.events import Event
+from atlas.observability.logging import (
+    configure_logging,
+    log_event,
+    log_exception_boundary,
+)
 from atlas.persistence.db import get_session_factory
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
 from atlas.workflow import (
@@ -22,10 +28,7 @@ logger = logging.getLogger(__name__)
 
 def main() -> int:
     """Run the research-job worker until interrupted."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging(service_role="worker")
     settings = get_settings()
     session_factory = get_session_factory()
     checkpoint_runtime = create_checkpoint_runtime(settings.database_url)
@@ -37,22 +40,14 @@ def main() -> int:
         # str(exc)/repr(exc): a PostgreSQL-driver connection failure can
         # otherwise embed the configured host/port (or, for other
         # exception types, arbitrary text) directly in its own message.
-        logger.error(
-            "Failed to initialize the LangGraph checkpoint schema; exiting. "
-            "error_class=%s",
-            exc.__class__.__name__,
-        )
+        log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
         try:
             checkpoint_runtime.close()
         except Exception as close_exc:
             # A close failure here must never mask the original
             # classification above -- it is logged separately, and the
             # function still returns 1 for the original failure either way.
-            logger.error(
-                "Failed to close the checkpoint connection pool during "
-                "startup-failure cleanup. error_class=%s",
-                close_exc.__class__.__name__,
-            )
+            log_exception_boundary(logger, Event.SHUTDOWN_CLEANUP_FAILED, close_exc)
         return 1
     processor = LangGraphResearchProcessor(
         checkpointer=checkpoint_runtime.checkpointer,
@@ -71,27 +66,18 @@ def main() -> int:
     )
 
     def _handle_signal(signum: int, _frame: object) -> None:
-        logger.info("Received signal %s; requesting worker shutdown", signum)
+        log_event(logger, Event.SIGNAL_RECEIVED)
         worker.request_shutdown()
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    logger.info(
-        "Starting research-job worker %s (poll=%ss timeout=%ss lease=%ss "
-        "coordination_provider=%s heartbeat_interval=%ss)",
-        worker.worker_id,
-        settings.worker_poll_interval_seconds,
-        settings.worker_processing_timeout_seconds,
-        settings.worker_lease_seconds,
-        settings.coordination_provider,
-        settings.heartbeat_interval_seconds,
-    )
+    log_event(logger, Event.PROCESS_STARTED)
     try:
         worker.run_forever()
     finally:
         checkpoint_runtime.close()
-    logger.info("Research-job worker stopped")
+    log_event(logger, Event.PROCESS_STOPPED)
     return 0
 
 

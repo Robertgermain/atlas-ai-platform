@@ -21,6 +21,21 @@ from atlas.consumer.errors import (
     TransientKafkaError,
 )
 from atlas.consumer.runner import ProcessOutcome
+from atlas.observability.events import Event
+from atlas.observability.logging import AtlasJSONFormatter
+
+
+def _rendered(caplog: pytest.LogCaptureFixture) -> str:
+    """Render every captured record through Atlas's own JSON formatter.
+
+    ``caplog.text`` uses pytest's own default plain-text formatter, which
+    only ever shows ``record.getMessage()`` -- empty for every
+    ``log_event``/``log_exception_boundary`` call (Slice 15A1), since their
+    content lives in structured ``extra`` fields instead. This renders
+    what actually reaches stdout in production.
+    """
+    formatter = AtlasJSONFormatter()
+    return "\n".join(formatter.format(record) for record in caplog.records)
 
 
 class _FakeRunner:
@@ -159,7 +174,10 @@ def test_one_warning_across_repeated_transient_poll_failures(
     assert runner.calls == 5
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
-    assert "Transient Kafka error" in warnings[0].message
+    assert (
+        getattr(warnings[0], "event", None) == Event.POLL_LOOP_RECOVERABLE_ERROR.value
+    )
+    assert getattr(warnings[0], "error_class", None) == "TransientKafkaError"
 
 
 def test_recovery_resets_the_outage_episode(caplog: pytest.LogCaptureFixture) -> None:
@@ -254,9 +272,10 @@ def test_outage_warning_logs_remain_sanitized(
             wait=_wait_stub(),
             kafka_retry_backoff_seconds=0.001,
         )
-    assert "TransientKafkaError" in caplog.text
+    rendered = _rendered(caplog)
+    assert "TransientKafkaError" in rendered
     # Only the sanitized exception class name is logged, never str(exc).
-    assert "PollTimeout" not in caplog.text
+    assert "PollTimeout" not in rendered
 
 
 # --- _OutageWarningTracker itself -------------------------------------------

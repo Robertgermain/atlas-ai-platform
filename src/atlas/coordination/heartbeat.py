@@ -7,6 +7,7 @@ import logging
 import redis
 
 from atlas.coordination.outage_log import OncePerOutageLogger
+from atlas.observability.events import Event
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,8 @@ class RedisHeartbeatRecorder:
         self._ttl_seconds = ttl_seconds
         self._outage_log = OncePerOutageLogger(
             logger,
-            warning_message="Redis heartbeat write failed; continuing (fail-open).",
+            event=Event.DEPENDENCY_OPERATION_FAILED_OPEN,
+            outcome="redis_heartbeat_write",
         )
 
     def beat(self, *, worker_id: str) -> None:
