@@ -11,13 +11,15 @@ are monkeypatched.
 
 from __future__ import annotations
 
-import logging
 import signal
 
 import pytest
 
 import atlas.worker.__main__ as worker_main
 from atlas.config.settings import Settings
+from atlas.observability.events import Event
+from atlas.observability.metrics.exposition import MetricsServerHandle
+from atlas.observability.testing import CapturedLogs, capture_logs
 
 # Fake sensitive content that must never reach a log line: a credential and
 # a host:port. Used only to prove log sanitization; not a real secret.
@@ -31,6 +33,14 @@ _SENSITIVE_FRAGMENTS = ("hunter2", "10.0.0.5", "password authentication")
 def _assert_no_sensitive_fragments(text: str) -> None:
     for fragment in _SENSITIVE_FRAGMENTS:
         assert fragment not in text
+
+
+def _rendered(captured: CapturedLogs) -> str:
+    return captured.text
+
+
+def _events(captured: CapturedLogs) -> list[str | None]:
+    return captured.events
 
 
 class _FakeCheckpointRuntime:
@@ -53,6 +63,25 @@ def _reset_fakes() -> None:
     _FakeCheckpointRuntime.raise_on_close = None
 
 
+class _RecordingMetricsServerHandle(MetricsServerHandle):
+    """An unbound handle (no real socket) that records ``close()`` calls."""
+
+    def __init__(self) -> None:
+        super().__init__(None, None)
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        super().close()
+
+
+#: Populated by ``_patched_composition`` each test run; read by tests that
+#: need to assert on the fake metrics-server handle/requested port without
+#: real socket binding (avoids CI port-conflict flakiness).
+_metrics_ports_requested: list[int] = []
+_metrics_handle = _RecordingMetricsServerHandle()
+
+
 @pytest.fixture
 def _patched_composition(monkeypatch: pytest.MonkeyPatch) -> Settings:
     settings = Settings()
@@ -64,6 +93,16 @@ def _patched_composition(monkeypatch: pytest.MonkeyPatch) -> Settings:
         lambda _database_url: _FakeCheckpointRuntime(),
     )
     monkeypatch.setattr(signal, "signal", lambda *_args, **_kwargs: None)
+    _metrics_ports_requested.clear()
+    global _metrics_handle
+    _metrics_handle = _RecordingMetricsServerHandle()
+
+    def _fake_start(*, port: int, metrics: object | None = None) -> MetricsServerHandle:
+        del metrics
+        _metrics_ports_requested.append(port)
+        return _metrics_handle
+
+    monkeypatch.setattr(worker_main, "start_metrics_http_server", _fake_start)
     return settings
 
 
@@ -82,17 +121,17 @@ def test_main_exits_nonzero_when_checkpoint_schema_init_fails(
 def test_main_logs_are_sanitized_when_checkpoint_schema_init_fails(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     def _fail_init(_runtime: object) -> None:
         raise RuntimeError(_SENSITIVE_MESSAGE)
 
     monkeypatch.setattr(worker_main, "initialize_checkpointer_schema", _fail_init)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.worker.__main__") as captured:
         assert worker_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "RuntimeError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert "RuntimeError" in rendered
 
 
 def test_main_exits_nonzero_on_checkpoint_schema_init_failure_of_any_class(
@@ -117,7 +156,6 @@ def test_main_exits_nonzero_on_checkpoint_schema_init_failure_of_any_class(
 def test_cleanup_close_failure_does_not_mask_original_failure_or_crash(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A close() failure during startup-failure cleanup must still return 1
 
@@ -131,11 +169,15 @@ def test_cleanup_close_failure_does_not_mask_original_failure_or_crash(
     monkeypatch.setattr(worker_main, "initialize_checkpointer_schema", _fail_init)
     _FakeCheckpointRuntime.raise_on_close = RuntimeError(_SENSITIVE_MESSAGE)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.worker.__main__") as captured:
         assert worker_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "Failed to initialize the LangGraph checkpoint schema" in caplog.text
-    assert "Failed to close the checkpoint connection pool" in caplog.text
+    _assert_no_sensitive_fragments(_rendered(captured))
+    # Both the original checkpoint-schema-init failure and the
+    # startup-failure cleanup's own pool-close failure were logged as
+    # separate, distinct lines -- neither masks the other.
+    events = _events(captured)
+    assert events.count(Event.STARTUP_FAILED.value) == 1
+    assert events.count(Event.SHUTDOWN_CLEANUP_FAILED.value) == 1
 
 
 def test_main_does_not_call_initialize_checkpointer_schema_twice(
@@ -151,3 +193,17 @@ def test_main_does_not_call_initialize_checkpointer_schema_twice(
 
     assert worker_main.main() == 1
     assert calls["n"] == 1
+
+
+def test_main_starts_and_closes_metrics_server_on_startup_failure(
+    monkeypatch: pytest.MonkeyPatch, _patched_composition: Settings
+) -> None:
+    def _fail_init(_runtime: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(worker_main, "initialize_checkpointer_schema", _fail_init)
+
+    assert worker_main.main() == 1
+
+    assert _metrics_ports_requested == [_patched_composition.metrics_port]
+    assert _metrics_handle.close_calls == 1

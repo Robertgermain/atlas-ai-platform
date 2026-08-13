@@ -39,10 +39,31 @@ def _event() -> ResearchJobCreatedEvent:
 def test_decode_message_round_trips_a_valid_record() -> None:
     event = _event()
     message = build_kafka_message_for_event(event, partition=0, offset=7)
-    decoded = decode_message(message)
+    decoded, traceparent = decode_message(message)
     assert decoded.event_id == event.event_id
     assert decoded.event_type == event.event_type
     assert decoded.aggregate_id == event.aggregate_id
+    assert traceparent is None
+
+
+def test_decode_message_extracts_an_optional_traceparent_header() -> None:
+    event = _event()
+    message = build_kafka_message_for_event(event, partition=0, offset=8)
+    assert message.raw_headers is not None
+    stored = "00-" + "aa" * 16 + "-" + "bb" * 8 + "-01"
+    message.raw_headers.append(("traceparent", stored.encode("utf-8")))
+    _decoded, traceparent = decode_message(message)
+    assert traceparent == stored
+
+
+def test_decode_message_never_raises_on_a_malformed_traceparent_header() -> None:
+    event = _event()
+    message = build_kafka_message_for_event(event, partition=0, offset=9)
+    assert message.raw_headers is not None
+    message.raw_headers.append(("traceparent", b"not-a-valid-traceparent"))
+    decoded, traceparent = decode_message(message)
+    assert decoded.event_id == event.event_id
+    assert traceparent == "not-a-valid-traceparent"
 
 
 def test_missing_headers_is_rejected() -> None:

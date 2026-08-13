@@ -13,10 +13,21 @@ from collections.abc import Iterator
 
 import pytest
 import redis
+from prometheus_client import CollectorRegistry
 
 from atlas.coordination.heartbeat import RedisHeartbeatRecorder
 from atlas.coordination.heartbeat_thread import HeartbeatThread
+from atlas.observability.metrics.catalog import AtlasMetrics
 from tests.integration.redis_support import build_test_redis_client, cleanup_atlas_keys
+
+
+def _label_values(metrics: AtlasMetrics, metric_name: str, label: str) -> list[str]:
+    return [
+        sample.labels[label]
+        for metric in metrics.registry.collect()
+        for sample in metric.samples
+        if sample.name == metric_name
+    ]
 
 
 @pytest.fixture(scope="module")
@@ -101,3 +112,28 @@ def test_beat_fails_open_when_redis_is_unreachable() -> None:
     elapsed = time.monotonic() - started
 
     assert elapsed < 1.0
+
+
+def test_beat_observes_success_and_failure_metric_outcomes(
+    redis_client: redis.Redis,
+) -> None:
+    metrics = AtlasMetrics(CollectorRegistry())
+    recorder = RedisHeartbeatRecorder(
+        client=redis_client, ttl_seconds=15, metrics=metrics
+    )
+    recorder.beat(worker_id=_unique_worker_id())
+
+    unreachable_client: redis.Redis = redis.Redis.from_url(
+        "redis://127.0.0.1:6399/0",
+        socket_connect_timeout=0.2,
+        socket_timeout=0.2,
+    )
+    unreachable_recorder = RedisHeartbeatRecorder(
+        client=unreachable_client, ttl_seconds=15, metrics=metrics
+    )
+    unreachable_recorder.beat(worker_id=_unique_worker_id())
+
+    assert _label_values(metrics, "atlas_worker_heartbeat_writes_total", "outcome") == [
+        "success",
+        "failure",
+    ]

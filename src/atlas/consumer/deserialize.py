@@ -38,6 +38,15 @@ from atlas.eventing.errors import DomainEventError
 MAX_MESSAGE_VALUE_BYTES = 32 * 1024
 
 _EXPECTED_HEADER_KEYS = frozenset({"event_type", "event_version", "aggregate_type"})
+#: Optional (Slice 15A3): a W3C ``traceparent`` header, when the outbox
+#: relay's own ``outbox.publish`` span was bound at the time it published
+#: this record. Deliberately not in ``_EXPECTED_HEADER_KEYS`` and never
+#: validated for shape/decodability here -- see ``_headers_as_mapping``'s
+#: own docstring for exactly why a malformed value is always discarded
+#: rather than raised. Strict W3C-shape parsing itself is
+#: ``atlas.observability.tracing.propagation.parse_traceparent``'s job, not
+#: this module's.
+_HEADER_TRACEPARENT = "traceparent"
 
 
 class _KafkaMessageLike(Protocol):
@@ -55,7 +64,38 @@ class _KafkaMessageLike(Protocol):
     def headers(self) -> object: ...
 
 
-def _headers_as_mapping(message: _KafkaMessageLike) -> dict[str, str]:
+def _best_effort_header_text(value: object) -> str | None:
+    """Best-effort decode for the optional ``traceparent`` header only.
+
+    Never raises: a ``None``, undecodable-bytes, or otherwise-typed value
+    simply yields ``None`` (treated identically to a missing header) --
+    this is the mechanism that keeps malformed optional telemetry from
+    ever dead-lettering an otherwise valid business event. Full W3C-shape
+    validation happens later, in
+    ``atlas.observability.tracing.propagation.parse_traceparent``, which is
+    equally forgiving (returns ``None`` rather than raising).
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    return None
+
+
+def _headers_as_mapping(
+    message: _KafkaMessageLike,
+) -> tuple[dict[str, str], str | None]:
+    """Return ``(required_headers, traceparent_or_None)``.
+
+    The three required headers keep their exact prior fail-closed
+    validation (missing/duplicate/undecodable/unexpected-type/unexpected-
+    keys all still raise). The optional ``traceparent`` header is handled
+    entirely separately and can never itself cause any exception from this
+    function -- see :func:`_best_effort_header_text`.
+    """
     raw_headers = message.headers()
     if raw_headers is None:
         raise MissingHeadersError()
@@ -72,11 +112,17 @@ def _headers_as_mapping(message: _KafkaMessageLike) -> dict[str, str]:
         raise UnexpectedHeadersShapeError()
 
     mapping: dict[str, str] = {}
+    traceparent: str | None = None
+    seen_keys: set[str] = set()
     for key, value in pairs:
         if not isinstance(key, str):
             raise UnexpectedHeaderKeyTypeError()
-        if key in mapping:
+        if key in seen_keys:
             raise DuplicateHeaderKeyError()
+        seen_keys.add(key)
+        if key == _HEADER_TRACEPARENT:
+            traceparent = _best_effort_header_text(value)
+            continue
         if value is None:
             raise NullHeaderValueError()
         if isinstance(value, bytes):
@@ -90,20 +136,27 @@ def _headers_as_mapping(message: _KafkaMessageLike) -> dict[str, str]:
             raise UnexpectedHeaderValueTypeError()
     if set(mapping) != _EXPECTED_HEADER_KEYS:
         raise UnexpectedHeaderKeysError()
-    return mapping
+    return mapping, traceparent
 
 
-def decode_message(message: _KafkaMessageLike) -> DomainEvent:
+def decode_message(message: _KafkaMessageLike) -> tuple[DomainEvent, str | None]:
     """Strictly decode and validate one Kafka record into a typed ``DomainEvent``.
 
+    Returns ``(event, traceparent)`` -- ``traceparent`` (Slice 15A3) is the
+    optional header's best-effort-decoded raw text (not yet strictly W3C
+    validated; see ``atlas.observability.tracing.propagation.
+    parse_traceparent`` for that), or ``None`` when absent or malformed.
+    Its presence/absence/malformedness never affects this function's
+    fail-closed behavior for the three required headers below.
+
     Fails closed (raises) on: missing/duplicate/undecodable/unexpected
-    headers, a missing/oversized/undecodable value, malformed JSON, a
-    value that is not a JSON object, a payload that fails the typed
+    required headers, a missing/oversized/undecodable value, malformed
+    JSON, a value that is not a JSON object, a payload that fails the typed
     research-job event catalog's own validation (unsupported version,
-    unknown event type, schema violation), or a header that disagrees with
-    the decoded envelope.
+    unknown event type, schema violation), or a required header that
+    disagrees with the decoded envelope.
     """
-    headers = _headers_as_mapping(message)
+    headers, traceparent = _headers_as_mapping(message)
 
     value = message.value()
     if value is None:
@@ -133,4 +186,4 @@ def decode_message(message: _KafkaMessageLike) -> DomainEvent:
     if headers["aggregate_type"] != event.aggregate_type:
         raise AggregateTypeHeaderMismatchError()
 
-    return event
+    return event, traceparent

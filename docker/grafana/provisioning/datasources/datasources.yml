@@ -1,0 +1,23 @@
+# File-provisioned, immutable Grafana datasources (Slice 15A3).
+#
+# `editable: false` prevents any anonymous Viewer (or any other user, since
+# no admin account exists -- see docker-compose.yml's Grafana hardening
+# comments) from modifying these through the UI; the only way to change a
+# datasource is to edit this file and restart the container.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+
+  - name: Tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false

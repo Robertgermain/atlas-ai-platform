@@ -25,6 +25,7 @@ from atlas.evaluation.errors import (
     EvaluationValidationError,
 )
 from atlas.evaluation.repository import SqlAlchemyEvaluationRepository
+from atlas.observability.metrics import AtlasMetrics, default_metrics
 from atlas.persistence.db import session_scope
 from atlas.persistence.models.research_job import ResearchJobModel
 from atlas.persistence.models.workflow import WorkflowExecutionModel
@@ -44,10 +45,12 @@ class EvaluationService:
         session_factory: sessionmaker[Session],
         repository: SqlAlchemyEvaluationRepository | None = None,
         job_repository: SqlAlchemyResearchJobRepository | None = None,
+        metrics: AtlasMetrics | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = repository or SqlAlchemyEvaluationRepository()
         self._job_repository = job_repository or SqlAlchemyResearchJobRepository()
+        self._metrics = metrics or default_metrics()
 
     @staticmethod
     def _new_ownership_token() -> str:
@@ -277,7 +280,19 @@ class EvaluationService:
             refreshed = self._repository.get_by_id(session, run_id)
             if refreshed is None:
                 raise EvaluationNotFoundError()
-            return self._repository.to_result(session, refreshed)
+            profile = refreshed.evaluation_profile
+            result = self._repository.to_result(session, refreshed)
+        # Emitted only after ``session_scope`` above has committed: a commit
+        # failure raises out of the ``with`` block and this line never runs,
+        # so a durable-transition metric can never precede its own durable
+        # commit (Slice 15A2 correction).
+        self._metrics.observe_evaluation_run(profile=profile, outcome="succeeded")
+        for dimension in dimensions:
+            self._metrics.observe_evaluation_dimension(
+                dimension=dimension.name,
+                outcome="passed" if dimension.passed else "failed",
+            )
+        return result
 
     def finalize_failure(
         self,
@@ -319,6 +334,10 @@ class EvaluationService:
             )
             if not ok:
                 raise EvaluationOwnershipLostError()
+            profile = record.evaluation_profile
+        # Emitted only after ``session_scope`` above has committed (Slice
+        # 15A2 correction) -- see ``finalize_success``'s equivalent comment.
+        self._metrics.observe_evaluation_run(profile=profile, outcome="failed")
 
     def get_latest_for_job(self, job_id: str) -> EvaluationRunResult | None:
         with session_scope(self._session_factory) as session:

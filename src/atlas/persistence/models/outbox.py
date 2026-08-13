@@ -76,6 +76,14 @@ class OutboxEventModel(Base):
             "length(trim(aggregate_id)) > 0",
             name="ck_outbox_events_aggregate_id_nonempty",
         ),
+        CheckConstraint(
+            "traceparent IS NULL OR ("
+            "traceparent ~ '^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$' AND "
+            "traceparent !~ '^00-0{32}-[0-9a-f]{16}-[0-9a-f]{2}$' AND "
+            "traceparent !~ '^00-[0-9a-f]{32}-0{16}-[0-9a-f]{2}$'"
+            ")",
+            name="ck_outbox_events_traceparent_format",
+        ),
         UniqueConstraint(
             "outbox_position",
             name="uq_outbox_events_outbox_position",
@@ -129,3 +137,9 @@ class OutboxEventModel(Base):
     last_publish_error_class: Mapped[str | None] = mapped_column(
         String(128), nullable=True
     )
+    #: The W3C ``traceparent`` active at insert time (Slice 15A3). Persistence-
+    #: only: never exposed through any public API or domain model. The relay
+    #: reads this once per row to start an ``outbox.publish`` child span; it
+    #: never forwards this value unchanged into Kafka headers -- see
+    #: ``atlas.outbox.relay``.
+    traceparent: Mapped[str | None] = mapped_column(String(55), nullable=True)

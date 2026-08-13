@@ -14,7 +14,13 @@ from atlas.eventing.contracts import DomainEvent
 
 @dataclass(frozen=True, slots=True)
 class ClaimedOutboxRecord:
-    """Typed claimed outbox row ready for publication outside the claim TX."""
+    """Typed claimed outbox row ready for publication outside the claim TX.
+
+    ``traceparent`` (Slice 15A3) is the W3C trace context active when this
+    row was originally enqueued, if any -- a lineage source the relay reads
+    once per row to start an ``outbox.publish`` child span; never forwarded
+    to Kafka unchanged (see ``atlas.outbox.relay``).
+    """
 
     event_id: UUID
     outbox_position: int
@@ -22,6 +28,7 @@ class ClaimedOutboxRecord:
     publish_claim_token: str
     publish_lease_expires_at: datetime
     publish_attempts: int
+    traceparent: str | None = None
 
 
 class OutboxEnqueuer(Protocol):
@@ -70,5 +77,12 @@ class OutboxRepository(OutboxEnqueuer, Protocol):
 class EventProducer(Protocol):
     """Delivery port for claimed envelopes. Kafka is deferred to Slice 13C."""
 
-    def publish(self, event: DomainEvent) -> None:
-        """Deliver one typed envelope. Raises on failure."""
+    def publish(self, event: DomainEvent, *, traceparent: str | None = None) -> None:
+        """Deliver one typed envelope. Raises on failure.
+
+        ``traceparent`` (Slice 15A3) is the relay's own ``outbox.publish``
+        child span's resulting W3C trace context, when tracing is bound --
+        never the outbox row's original stored value forwarded unchanged.
+        Injected into the Kafka record's headers as an additional optional
+        header; ``None`` omits the header entirely.
+        """

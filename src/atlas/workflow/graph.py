@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,8 @@ from uuid import uuid4
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 from atlas.evaluation.contracts import (
     EVALUATION_PROFILE,
@@ -36,6 +39,7 @@ from atlas.models.fakes import (
     DeterministicResearchDrafter,
     DeterministicResearchPlanner,
 )
+from atlas.observability.metrics import AtlasMetrics, default_metrics
 from atlas.specialists.contracts import (
     CitationVerifierInput,
     PlannerInput,
@@ -113,6 +117,7 @@ PolicyCallback = Callable[
 ]
 
 _logger = logging.getLogger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +144,10 @@ class WorkflowRuntimeContext:
     policy_callback: PolicyCallback | None = None
     # Never checkpointed. Validates human-review override for complete.
     completion_auth_checker: Callable[..., bool] | None = None
+    # ``None`` (not a mutable default) resolves to the process-wide
+    # ``default_metrics()`` singleton in ``_wrap_node`` -- tests inject an
+    # isolated ``AtlasMetrics`` instance here instead.
+    metrics: AtlasMetrics | None = None
 
 
 # Isolated fake claim for pure unit graph tests (not a production secret).
@@ -203,6 +212,7 @@ def default_fake_runtime_context(
     citation_verifier: CitationVerifier | None = None,
     evaluation_runner: EvaluationNodeRunner | None = None,
     job_claim_token: str = UNIT_TEST_JOB_CLAIM_TOKEN,
+    metrics: AtlasMetrics | None = None,
 ) -> WorkflowRuntimeContext:
     """Build a deterministic fake specialist runtime context."""
     from atlas.config.settings import Settings
@@ -253,6 +263,7 @@ def default_fake_runtime_context(
             else _AlwaysPassEvaluationRunner()
         ),
         job_claim_token=job_claim_token,
+        metrics=metrics,
     )
 
 
@@ -639,20 +650,42 @@ def _wrap_node(
             counters[node_name] = counters.get(node_name, 0) + 1
 
         hooks = runtime.context.hooks
+        metrics = runtime.context.metrics or default_metrics()
         attempt: int | None = None
         if hooks is not None:
             attempt = hooks.begin(node_name)
-        try:
-            if node_name == "research":
-                result = dict(node_fn(state, runtime, workflow_node_attempt=attempt))
-            else:
-                result = dict(node_fn(state, runtime))
-        except Exception as exc:
-            if hooks is not None and attempt is not None:
-                hooks.fail(node_name, attempt, exc)
-            raise
+        started_at = time.perf_counter()
+        # `node_name` is always one of the fixed `NODE_NAMES` (Slice 15A3):
+        # a bounded, safe span name/attribute, never caller-supplied text.
+        with _tracer.start_as_current_span(
+            f"workflow.node.{node_name}",
+            attributes={"atlas.node_name": node_name},
+        ) as span:
+            try:
+                if node_name == "research":
+                    result = dict(
+                        node_fn(state, runtime, workflow_node_attempt=attempt)
+                    )
+                else:
+                    result = dict(node_fn(state, runtime))
+            except Exception as exc:
+                span.set_status(Status(StatusCode.ERROR))
+                span.set_attribute("error.class", exc.__class__.__name__)
+                if hooks is not None and attempt is not None:
+                    hooks.fail(node_name, attempt, exc)
+                metrics.observe_workflow_node(
+                    node_name=node_name,
+                    outcome="failed",
+                    duration_seconds=time.perf_counter() - started_at,
+                )
+                raise
         if hooks is not None and attempt is not None:
             hooks.complete(node_name, attempt)
+        metrics.observe_workflow_node(
+            node_name=node_name,
+            outcome="completed",
+            duration_seconds=time.perf_counter() - started_at,
+        )
         return result
 
     return wrapped

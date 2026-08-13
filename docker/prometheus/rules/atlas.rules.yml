@@ -1,0 +1,67 @@
+# Version-controlled Prometheus recording/alerting rules (Slice 15A3).
+#
+# Denominator-guard rationale (recording rule): plain vector division of
+# two independently-labeled `rate()` series is undefined when the
+# denominator's rate is exactly zero (no traffic in the window). Wrapping
+# the denominator in `clamp_min(..., 1e-9)` guarantees the recorded ratio
+# is always a well-defined, tiny (not NaN, not a spurious divide-by-zero)
+# value during a zero-traffic window rather than an absent/NaN sample --
+# validated by the `promtool` unit tests at
+# docker/prometheus/tests/atlas_rules_test.yml (zero-traffic, healthy,
+# boundary, above-threshold, multi-route/status cases).
+groups:
+  - name: atlas_recording_rules
+    rules:
+      - record: atlas:http_error_ratio:rate5m
+        expr: >-
+          sum(rate(atlas_http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(atlas_http_requests_total[5m])), 1e-9)
+
+  - name: atlas_alerts
+    rules:
+      - alert: AtlasHighHttpErrorRatio
+        expr: atlas:http_error_ratio:rate5m > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Atlas API 5xx error ratio above 5% for 2m"
+
+      # Scoped to job="atlas-worker": the heartbeat gauge is registered in
+      # every Atlas process's shared metrics catalog, but only the worker
+      # updates it. Other roles expose the gauge at prometheus_client's
+      # default of 0, which would otherwise make `time() - 0 > 60` always
+      # true for atlas-api / atlas-outbox-relay / atlas-consumer.
+      #
+      # Missing-series policy: if the worker heartbeat series is entirely
+      # absent, this expression produces no samples and the alert does
+      # not fire. Absence of telemetry is not treated as a stale
+      # heartbeat. A down worker scrape target is owned by
+      # AtlasScrapeTargetDown.
+      - alert: AtlasWorkerHeartbeatStale
+        expr: >-
+          time()
+          - atlas_worker_heartbeat_last_success_timestamp_seconds{job="atlas-worker"}
+          > 60
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Atlas worker heartbeat has not succeeded in over 60s"
+
+      - alert: AtlasOutboxBacklogGrowing
+        expr: atlas_outbox_backlog_age_seconds > 120
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Atlas outbox relay backlog's oldest unpublished row exceeds 120s"
+
+      - alert: AtlasScrapeTargetDown
+        expr: up{job=~"atlas-.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Atlas scrape target {{ $labels.job }} is down"

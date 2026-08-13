@@ -23,6 +23,12 @@ from confluent_kafka.admin import AdminClient, NewTopic
 
 from atlas.config import get_settings
 from atlas.eventing.topic import RESEARCH_JOB_EVENTS_TOPIC_V1
+from atlas.observability.events import Event
+from atlas.observability.logging import (
+    configure_logging,
+    log_event,
+    log_exception_boundary,
+)
 from atlas.outbox.errors import (
     KafkaProducerConfigurationError,
     KafkaTopicVerificationError,
@@ -161,23 +167,20 @@ def main() -> int:
     depend on this container's successful (zero) exit code rather than the
     broker's own auto-create behavior, which stays disabled.
 
-    Logging discipline matches ``python -m atlas.outbox``/``atlas.consumer``:
-    every log call uses only a fixed, sanitized message and, where useful,
-    ``exc.__class__.__name__``. Never ``str(exc)``, ``repr(exc)``, or any
-    value derived from settings (Kafka broker addresses, configuration
-    values).
+    Logging discipline (Slice 15A1) matches ``python -m atlas.outbox``/
+    ``atlas.consumer``: every log call goes through
+    ``atlas.observability.logging.log_event``/``log_exception_boundary``,
+    which only ever accept a fixed
+    :class:`~atlas.observability.events.Event` name and the approved
+    structured fields -- never a free-text message, ``str(exc)``,
+    ``repr(exc)``, ``exc.args``, ``exc_info``, ``stack_info``, or any value
+    derived from settings (Kafka broker addresses, configuration values).
     """
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging(service_role="kafka-topic-init")
     try:
         settings = get_settings()
     except Exception as exc:
-        logger.error(
-            "Failed to load settings; exiting. error_class=%s",
-            exc.__class__.__name__,
-        )
+        log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
         return 1
 
     try:
@@ -194,23 +197,13 @@ def main() -> int:
             timeout_seconds=settings.kafka_topic_verify_timeout_seconds,
         )
     except OutboxError as exc:
-        logger.error(
-            "Kafka topic administration failed; exiting. error_class=%s",
-            exc.__class__.__name__,
-        )
+        log_exception_boundary(logger, Event.STARTUP_VERIFICATION_FAILED, exc)
         return 1
     except Exception as exc:
-        logger.error(
-            "Unexpected error during Kafka topic administration; exiting. "
-            "error_class=%s",
-            exc.__class__.__name__,
-        )
+        log_exception_boundary(logger, Event.STARTUP_VERIFICATION_FAILED, exc)
         return 1
 
-    logger.info(
-        "Kafka topic administration succeeded: reserved topic created/"
-        "verified with the required partition count."
-    )
+    log_event(logger, Event.TOPIC_ADMIN_SUCCEEDED)
     return 0
 
 

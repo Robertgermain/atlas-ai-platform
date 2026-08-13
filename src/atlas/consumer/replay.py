@@ -24,7 +24,8 @@ Exit codes:
   to a concurrent reclaim, still in progress, or an unexpected/
   infrastructure error.
 
-Logging discipline matches every other Atlas executable: fixed messages and
+Logging discipline matches every other Atlas executable
+(``atlas.observability.logging``): fixed structured events and
 ``exc.__class__.__name__`` only -- never ``str(exc)``, ``repr(exc)``,
 ``exc.args``, a database URL, or any payload-derived text.
 """
@@ -42,6 +43,12 @@ from uuid import UUID
 from atlas.config import get_settings
 from atlas.consumer.db import build_consumer_engine
 from atlas.consumer.replay_errors import ReplayError
+from atlas.observability.events import Event
+from atlas.observability.logging import (
+    configure_logging,
+    log_event,
+    log_exception_boundary,
+)
 from atlas.persistence.db import get_session_factory
 from atlas.persistence.repositories.consumer_dead_letter import (
     DeadLetterReplayService,
@@ -110,10 +117,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def _validate_bounded(value: str, *, name: str, max_length: int) -> str | None:
     cleaned = value.strip()
     if not cleaned or len(cleaned) > max_length:
-        logger.error(
-            "Invalid %s: must be non-empty and at most %s characters.",
-            name,
-            max_length,
+        log_event(
+            logger,
+            Event.REPLAY_INPUT_REJECTED,
+            level=logging.ERROR,
+            outcome=name,
         )
         return None
     return cleaned
@@ -121,16 +129,18 @@ def _validate_bounded(value: str, *, name: str, max_length: int) -> str | None:
 
 def main(argv: list[str] | None = None) -> int:
     """Run one replay command. Returns the process exit code."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging(service_role="consumer-replay")
     args = _parse_args(argv if argv is not None else sys.argv[1:])
 
     try:
         dead_letter_id = UUID(args.dead_letter_id)
     except ValueError:
-        logger.error("Invalid --dead-letter-id: must be a UUID.")
+        log_event(
+            logger,
+            Event.REPLAY_INPUT_REJECTED,
+            level=logging.ERROR,
+            outcome="--dead-letter-id",
+        )
         return 1
 
     actor_id = _validate_bounded(
@@ -157,11 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         session_factory = get_session_factory(engine)
     except Exception as exc:
-        logger.error(
-            "Failed to load settings or construct database dependencies; "
-            "exiting. error_class=%s",
-            exc.__class__.__name__,
-        )
+        log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
         return 1
 
     service = DeadLetterReplayService(
@@ -186,20 +192,17 @@ def main(argv: list[str] | None = None) -> int:
             request_fingerprint=fingerprint,
         )
     except ReplayError as exc:
-        logger.error("Replay rejected. error_class=%s", exc.__class__.__name__)
+        log_exception_boundary(
+            logger, Event.REPLAY_ATTEMPT_FAILED, exc, outcome="rejected"
+        )
         return 1
     except Exception as exc:
-        logger.error(
-            "Unexpected error during replay. error_class=%s", exc.__class__.__name__
+        log_exception_boundary(
+            logger, Event.REPLAY_ATTEMPT_FAILED, exc, outcome="unexpected_error"
         )
         return 1
 
-    logger.info(
-        "Replay finished. dead_letter_id=%s attempt_id=%s outcome=%s",
-        result.dead_letter_id,
-        result.attempt_id,
-        result.outcome.value,
-    )
+    log_event(logger, Event.REPLAY_FINISHED, outcome=result.outcome.value)
     return 0 if result.outcome in _SUCCESS_OUTCOMES else 1
 
 

@@ -36,6 +36,7 @@ from atlas.eventing.builders import (
 from atlas.evidence.contracts import ClaimStructured
 from atlas.evidence.service import EvidenceIngestService, ReportArtifactService
 from atlas.models.composition import build_planner_and_drafter
+from atlas.observability.metrics import AtlasMetrics, default_metrics
 from atlas.outbox.ports import OutboxEnqueuer
 from atlas.persistence.db import session_scope
 from atlas.persistence.models.evidence import EvidenceJobLinkModel
@@ -266,6 +267,7 @@ class LangGraphResearchProcessor:
         drafter: ResearchDrafter | None = None,
         research_executor: ResearchPlanExecutor | None = None,
         outbox: OutboxEnqueuer | None = None,
+        metrics: AtlasMetrics | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings or get_settings()
@@ -273,6 +275,7 @@ class LangGraphResearchProcessor:
         self._job_repo = SqlAlchemyResearchJobRepository()
         self._recovery_repo = SqlAlchemyRecoveryRepository()
         self._outbox = outbox or SqlAlchemyOutboxRepository()
+        self._metrics = metrics or default_metrics()
         self._node_counters = node_counters
         self._planner_override = planner
         self._drafter_override = drafter
@@ -790,6 +793,16 @@ class LangGraphResearchProcessor:
                         next_at = existing_attempt.next_attempt_at
                         attempt_number = existing_attempt.attempt_number
 
+            # Emitted only after the ``with`` block above has committed, and
+            # only for a freshly-persisted decision -- ``created`` is False
+            # on an idempotent replay of the same decision fingerprint, which
+            # must never double-count (Slice 15A2 correction).
+            if created:
+                self._metrics.observe_recovery_decision(
+                    action=decision.action,
+                    failure_category=decision.failure_category.value,
+                )
+
             return RetryScheduled(
                 workflow_execution_id=execution_id or "",
                 next_attempt_at=next_at,
@@ -997,6 +1010,14 @@ class LangGraphResearchProcessor:
                     )
                     if not ok:
                         raise ClaimOwnershipError("increment_repair_count")
+            # Emitted only after the ``with`` block above has committed, and
+            # only for a freshly-persisted decision (Slice 15A2 correction) --
+            # see ``_handle_exception``'s equivalent comment.
+            if created:
+                self._metrics.observe_recovery_decision(
+                    action=policy_decision.action,
+                    failure_category=policy_decision.failure_category.value,
+                )
             return policy_decision.action
 
         recovery_repo = self._recovery_repo
@@ -1042,4 +1063,5 @@ class LangGraphResearchProcessor:
             job_claim_token=job_claim_token,
             policy_callback=_policy_callback,
             completion_auth_checker=_completion_auth_checker,
+            metrics=self._metrics,
         )

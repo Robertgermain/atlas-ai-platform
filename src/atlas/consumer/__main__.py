@@ -85,11 +85,14 @@ horizons, not one:
   never skips the others, and any such failure makes the process exit
   nonzero.
 
-Logging discipline: every log call below uses only a fixed, sanitized
-message and -- where useful -- ``exc.__class__.__name__``. Never ``str(exc)``,
-``repr(exc)``, ``exc.args``, ``exc_info``/``logger.exception()``, or any
-value derived from settings (SQL, database URLs, Kafka broker addresses,
-configuration values).
+Logging discipline (Slice 15A1): every log call below goes through
+``atlas.observability.logging.log_event``/``log_exception_boundary``,
+which only ever accept a fixed :class:`~atlas.observability.events.Event`
+name and the approved structured fields -- never a free-text message,
+``str(exc)``, ``repr(exc)``, ``exc.args``, ``exc_info``, ``stack_info``, or
+any value derived from settings (SQL, database URLs, Kafka broker
+addresses, configuration values). Only ``exc.__class__.__name__`` may
+represent an exception, via ``log_exception_boundary``.
 """
 
 from __future__ import annotations
@@ -114,6 +117,18 @@ from atlas.consumer.kafka_consumer import KafkaEventConsumer
 from atlas.consumer.runner import ConsumerRunner
 from atlas.consumer.timing import RetryTimingParameters
 from atlas.consumer.wait import Waiter, build_shutdown_aware_waiter
+from atlas.observability.events import Event
+from atlas.observability.logging import (
+    configure_logging,
+    log_event,
+    log_exception_boundary,
+)
+from atlas.observability.metrics import (
+    AtlasMetrics,
+    default_metrics,
+    start_metrics_http_server,
+)
+from atlas.observability.tracing import configure_tracing
 from atlas.outbox.errors import KafkaTopicVerificationError
 from atlas.outbox.topic_admin import (
     verify_broker_connectivity,
@@ -190,6 +205,7 @@ def _run_poll_loop(
     shutdown_requested: Callable[[], bool],
     wait: Waiter,
     kafka_retry_backoff_seconds: float,
+    metrics: AtlasMetrics | None = None,
 ) -> int:
     """Poll until shutdown or an error. Returns the exit code.
 
@@ -210,42 +226,35 @@ def _run_poll_loop(
     mid-backoff inside ``runner.run_once()``) is a clean stop, not a
     failure.
     """
+    active_metrics = metrics or default_metrics()
     outage_warning = _OutageWarningTracker()
     while not shutdown_requested():
         try:
-            runner.run_once()
+            outcome = runner.run_once()
         except ConsumerShutdownRequestedError:
-            logger.info(
-                "Shutdown requested during a retry backoff; stopping cleanly "
-                "with the offset uncommitted."
-            )
+            log_event(logger, Event.POLL_LOOP_SHUTDOWN_DURING_BACKOFF)
             return 0
         except TransientKafkaError as exc:
+            active_metrics.observe_consumer_message(outcome="poll_recoverable_error")
             if outage_warning.should_warn():
-                logger.warning(
-                    "Transient Kafka error before a record was in hand; "
-                    "backing off and retrying until the broker recovers or "
-                    "shutdown is requested. Further transient failures in "
-                    "this same outage are not individually logged. "
-                    "error_class=%s",
-                    exc.__class__.__name__,
+                log_exception_boundary(
+                    logger,
+                    Event.POLL_LOOP_RECOVERABLE_ERROR,
+                    exc,
+                    level=logging.WARNING,
                 )
             if wait(kafka_retry_backoff_seconds):
                 return 0
         except ConsumerError as exc:
-            logger.error(
-                "Unexpected consumer error; terminating. error_class=%s",
-                exc.__class__.__name__,
-            )
+            active_metrics.observe_consumer_message(outcome="terminal_error")
+            log_exception_boundary(logger, Event.POLL_LOOP_TERMINAL_ERROR, exc)
             return 1
         except Exception as exc:
-            logger.error(
-                "Unexpected PostgreSQL/session/Kafka error; terminating. "
-                "error_class=%s",
-                exc.__class__.__name__,
-            )
+            active_metrics.observe_consumer_message(outcome="terminal_error")
+            log_exception_boundary(logger, Event.POLL_LOOP_TERMINAL_ERROR, exc)
             return 1
         else:
+            active_metrics.observe_consumer_message(outcome=outcome.value)
             outage_warning.reset()
     return 0
 
@@ -285,10 +294,7 @@ def _restore_signal_handlers(previous_handlers: dict[int, SignalHandler]) -> boo
         try:
             signal.signal(signum, previous_handler)
         except Exception as exc:
-            logger.error(
-                "Failed to restore a shutdown signal handler. error_class=%s",
-                exc.__class__.__name__,
-            )
+            log_exception_boundary(logger, Event.SHUTDOWN_CLEANUP_FAILED, exc)
             all_ok = False
     return all_ok
 
@@ -307,10 +313,7 @@ def _cleanup(
     try:
         consumer.close()
     except Exception as exc:
-        logger.error(
-            "Kafka consumer close failed during shutdown. error_class=%s",
-            exc.__class__.__name__,
-        )
+        log_exception_boundary(logger, Event.SHUTDOWN_CLEANUP_FAILED, exc)
         cleanup_ok = False
 
     if not _restore_signal_handlers(previous_handlers):
@@ -321,13 +324,18 @@ def _cleanup(
 
 def main() -> int:
     """Run the research-job projection consumer until interrupted or an error occurs."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging(service_role="consumer")
+    metrics_server = None
+    tracing_handle = None
 
     try:
         settings = get_settings()
+        tracing_handle = configure_tracing(
+            service_name="atlas-consumer",
+            deployment_environment=settings.otel_deployment_environment,
+            otlp_traces_endpoint=settings.otel_exporter_otlp_traces_endpoint,
+        )
+        metrics_server = start_metrics_http_server(port=settings.metrics_port)
         engine = build_consumer_engine(
             settings.database_url,
             connect_timeout_seconds=settings.consumer_db_connect_timeout_seconds,
@@ -340,11 +348,11 @@ def main() -> int:
         # failure (e.g. a Pydantic validation error) can otherwise embed the
         # invalid environment-derived value in its own message, so only the
         # sanitized exception class name is ever logged here.
-        logger.error(
-            "Failed to load settings or construct database dependencies; "
-            "exiting. error_class=%s",
-            exc.__class__.__name__,
-        )
+        log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
+        if metrics_server is not None:
+            metrics_server.close()
+        if tracing_handle is not None:
+            tracing_handle.close()
         return 1
 
     try:
@@ -358,10 +366,9 @@ def main() -> int:
         # Construction either fully failed (nothing to clean up -- see
         # ``KafkaEventConsumer``'s own subscribe-failure close path) or fully
         # succeeded; there is no partially-constructed consumer to close here.
-        logger.error(
-            "Failed to construct the Kafka consumer; exiting. error_class=%s",
-            exc.__class__.__name__,
-        )
+        log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
+        metrics_server.close()
+        tracing_handle.close()
         return 1
 
     # From this point on the consumer exists and must always be closed.
@@ -369,15 +376,12 @@ def main() -> int:
 
     def _handle_signal(signum: int, _frame: FrameType | None) -> None:
         nonlocal shutdown_requested
-        logger.info("Received signal %s; stopping after the current record.", signum)
+        log_event(logger, Event.SIGNAL_RECEIVED)
         shutdown_requested = True
 
     installed_handlers, install_error = _install_signal_handlers(_handle_signal)
     if install_error is not None:
-        logger.error(
-            "Failed to install shutdown signal handlers; exiting. error_class=%s",
-            install_error.__class__.__name__,
-        )
+        log_exception_boundary(logger, Event.STARTUP_FAILED, install_error)
         # Reverse whichever signals were already replaced before the
         # failure, then close the consumer -- both are independent
         # best-effort steps and neither may mask this classification.
@@ -385,10 +389,9 @@ def main() -> int:
         try:
             consumer.close()
         except Exception as close_exc:
-            logger.error(
-                "Kafka consumer close failed during shutdown. error_class=%s",
-                close_exc.__class__.__name__,
-            )
+            log_exception_boundary(logger, Event.SHUTDOWN_CLEANUP_FAILED, close_exc)
+        metrics_server.close()
+        tracing_handle.close()
         return 1
 
     exit_code = 1
@@ -403,10 +406,7 @@ def main() -> int:
                 timeout_seconds=settings.kafka_topic_verify_timeout_seconds,
             )
         except KafkaTopicVerificationError as exc:
-            logger.error(
-                "Kafka startup verification failed; exiting. error_class=%s",
-                exc.__class__.__name__,
-            )
+            log_exception_boundary(logger, Event.STARTUP_VERIFICATION_FAILED, exc)
             return 1
 
         wait = build_shutdown_aware_waiter(lambda: shutdown_requested)
@@ -421,23 +421,27 @@ def main() -> int:
             max_poll_interval_seconds=settings.consumer_max_poll_interval_seconds,
             timing_params=_timing_params_from_settings(settings),
             wait=wait,
+            metrics=default_metrics(),
         )
-        logger.info("Starting research-job projection consumer.")
+        log_event(logger, Event.PROCESS_STARTED)
         exit_code = _run_poll_loop(
             runner,
             shutdown_requested=lambda: shutdown_requested,
             wait=wait,
             kafka_retry_backoff_seconds=settings.consumer_poll_timeout_seconds,
+            metrics=default_metrics(),
         )
     finally:
         cleanup_ok = _cleanup(
             consumer=consumer,
             previous_handlers=installed_handlers,
         )
+        metrics_server.close()
+        tracing_handle.close()
 
     if not cleanup_ok:
         exit_code = 1
-    logger.info("Research-job projection consumer stopped (exit_code=%s)", exit_code)
+    log_event(logger, Event.PROCESS_STOPPED, outcome=str(exit_code))
     return exit_code
 
 

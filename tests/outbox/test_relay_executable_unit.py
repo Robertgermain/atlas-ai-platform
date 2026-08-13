@@ -9,14 +9,18 @@ from __future__ import annotations
 
 import ast
 import inspect
-import logging
 import signal
 from collections.abc import Iterator
 
 import pytest
+from prometheus_client import CollectorRegistry
 
 import atlas.outbox.__main__ as outbox_main
 from atlas.config.settings import Settings
+from atlas.observability.events import Event
+from atlas.observability.metrics.catalog import AtlasMetrics
+from atlas.observability.metrics.exposition import MetricsServerHandle
+from atlas.observability.testing import CapturedLogs, capture_logs
 from atlas.outbox.errors import (
     KafkaProducerConfigurationError,
     KafkaTopicVerificationError,
@@ -45,6 +49,14 @@ _SENSITIVE_FRAGMENTS = (
 def _assert_no_sensitive_fragments(text: str) -> None:
     for fragment in _SENSITIVE_FRAGMENTS:
         assert fragment not in text
+
+
+def _rendered(captured: CapturedLogs) -> str:
+    return captured.text
+
+
+def _events(captured: CapturedLogs) -> list[str | None]:
+    return captured.events
 
 
 def test_fake_event_producer_is_never_importable_from_the_executable() -> None:
@@ -165,6 +177,50 @@ def test_poll_loop_backs_off_and_continues_on_recoverable_failure() -> None:
     assert relay.calls == 2
 
 
+def test_poll_loop_observes_relay_runs_and_published_events_distinctly() -> None:
+    """``atlas_outbox_relay_runs_total`` counts completed ``run_once()`` calls
+    by outcome; ``atlas_outbox_published_events_total`` counts the actual
+    number of individually published events -- these must differ whenever a
+    single run publishes more than one event (Slice 15A2 correction)."""
+    relay = _FakeRelay(
+        [
+            RelayBatchResult(outcome=RelayRunOutcome.PUBLISHED, published_count=3),
+            RelayBatchResult(outcome=RelayRunOutcome.EMPTY, published_count=0),
+        ]
+    )
+    settings = Settings(outbox_relay_poll_interval_seconds=0.001)
+    metrics = AtlasMetrics(CollectorRegistry())
+    calls = {"n": 0}
+
+    def _shutdown() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    exit_code = outbox_main._run_poll_loop(
+        relay,  # type: ignore[arg-type]
+        settings,
+        _shutdown,
+        metrics=metrics,
+    )
+
+    assert exit_code == 0
+    assert relay.calls == 2
+
+    def _sample(metric_name: str, **labels: str) -> float:
+        total = 0.0
+        for family in metrics.registry.collect():
+            for sample in family.samples:
+                if sample.name != metric_name:
+                    continue
+                if all(sample.labels.get(k) == v for k, v in labels.items()):
+                    total += sample.value
+        return total
+
+    assert _sample("atlas_outbox_relay_runs_total", outcome="published") == 1
+    assert _sample("atlas_outbox_relay_runs_total", outcome="empty") == 1
+    assert _sample("atlas_outbox_published_events_total") == 3
+
+
 def test_poll_loop_terminates_nonzero_on_unexpected_database_error() -> None:
     """A DB/session error not classified as an OutboxError still terminates."""
     relay = _RaisingRelay(RuntimeError("connection lost"))
@@ -182,28 +238,27 @@ def test_poll_loop_terminates_nonzero_on_outbox_error() -> None:
     assert relay.calls == 1
 
 
-def test_poll_loop_logs_are_sanitized_on_outbox_error(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_poll_loop_logs_are_sanitized_on_outbox_error() -> None:
     relay = _RaisingRelay(OutboxError(_SENSITIVE_MESSAGE))
     settings = Settings(outbox_relay_poll_interval_seconds=0.01)
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.outbox.__main__") as captured:
         exit_code = outbox_main._run_poll_loop(relay, settings, lambda: False)  # type: ignore[arg-type]
     assert exit_code == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "OutboxError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert "OutboxError" in rendered
+    assert Event.POLL_LOOP_TERMINAL_ERROR.value in _events(captured)
 
 
-def test_poll_loop_logs_are_sanitized_on_unexpected_error(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_poll_loop_logs_are_sanitized_on_unexpected_error() -> None:
     relay = _RaisingRelay(RuntimeError(_SENSITIVE_MESSAGE))
     settings = Settings(outbox_relay_poll_interval_seconds=0.01)
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.outbox.__main__") as captured:
         exit_code = outbox_main._run_poll_loop(relay, settings, lambda: False)  # type: ignore[arg-type]
     assert exit_code == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "RuntimeError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert "RuntimeError" in rendered
 
 
 # --- main() composition/cleanup -----------------------------------------
@@ -235,7 +290,7 @@ class _FakeLock:
     instances: list[_FakeLock] = []
     raise_on_release: Exception | None = None
 
-    def __init__(self, _engine: object) -> None:
+    def __init__(self, _engine: object, **_kwargs: object) -> None:
         self.acquired = False
         self.released = False
         _FakeLock.instances.append(self)
@@ -277,6 +332,13 @@ def _patched_composition(monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setattr(outbox_main, "get_engine", lambda _url: object())
     monkeypatch.setattr(outbox_main, "get_session_factory", lambda _engine: object())
     monkeypatch.setattr(outbox_main, "SqlAlchemyOutboxRepository", lambda: object())
+    # Unbound handle (no real socket): avoids CI port-conflict flakiness
+    # across this file's many sequential main() invocations.
+    monkeypatch.setattr(
+        outbox_main,
+        "start_metrics_http_server",
+        lambda **_kwargs: MetricsServerHandle(None, None),
+    )
     return settings
 
 
@@ -297,16 +359,16 @@ class _SensitiveFailingProducerCtor:
 def test_main_logs_are_sanitized_when_producer_construction_fails(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(
         outbox_main, "KafkaEventProducer", _SensitiveFailingProducerCtor()
     )
     monkeypatch.setattr(outbox_main, "PostgresOutboxRelayLock", _FakeLock)
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.outbox.__main__") as captured:
         assert outbox_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "KafkaProducerConfigurationError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert "KafkaProducerConfigurationError" in rendered
 
 
 def test_main_exits_nonzero_on_advisory_lock_contention(
@@ -326,16 +388,16 @@ class _SensitiveFailingAcquireLock(_FakeLock):
 def test_main_logs_are_sanitized_on_advisory_lock_contention(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(outbox_main, "KafkaEventProducer", _FakeProducer)
     monkeypatch.setattr(
         outbox_main, "PostgresOutboxRelayLock", _SensitiveFailingAcquireLock
     )
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.outbox.__main__") as captured:
         assert outbox_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "RelayOwnershipError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert "RelayOwnershipError" in rendered
 
 
 class _UnexpectedFailingAcquireLock(_FakeLock):
@@ -366,22 +428,21 @@ def test_main_exits_nonzero_on_unexpected_lock_acquisition_failure(
 def test_main_logs_are_sanitized_on_unexpected_lock_acquisition_failure(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(outbox_main, "KafkaEventProducer", _FakeProducer)
     monkeypatch.setattr(
         outbox_main, "PostgresOutboxRelayLock", _UnexpectedFailingAcquireLock
     )
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.outbox.__main__") as captured:
         assert outbox_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "RuntimeError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert "RuntimeError" in rendered
 
 
 def test_main_producer_close_failure_after_lock_acquisition_failure_does_not_mask_it(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(outbox_main, "KafkaEventProducer", _FakeProducer)
     monkeypatch.setattr(
@@ -389,12 +450,16 @@ def test_main_producer_close_failure_after_lock_acquisition_failure_does_not_mas
     )
     _FakeProducer.raise_on_close = RuntimeError(_SENSITIVE_MESSAGE)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.outbox.__main__") as captured:
         assert outbox_main.main() == 1
     assert _FakeProducer.instances[0].closed is True
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "Failed to acquire the outbox relay advisory lock" in caplog.text
-    assert "Kafka producer close failed during startup-failure cleanup" in caplog.text
+    _assert_no_sensitive_fragments(_rendered(captured))
+    # Both the original lock-acquisition failure and the startup-failure
+    # cleanup's own producer-close failure were logged as separate,
+    # distinct lines -- neither masks the other.
+    events = _events(captured)
+    assert events.count(Event.STARTUP_FAILED.value) == 1
+    assert events.count(Event.SHUTDOWN_CLEANUP_FAILED.value) == 1
 
 
 def test_main_exits_nonzero_when_topic_verification_fails(
@@ -422,7 +487,6 @@ def test_main_exits_nonzero_when_topic_verification_fails(
 def test_main_logs_are_sanitized_when_topic_verification_fails(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(outbox_main, "KafkaEventProducer", _FakeProducer)
     monkeypatch.setattr(outbox_main, "PostgresOutboxRelayLock", _FakeLock)
@@ -435,10 +499,11 @@ def test_main_logs_are_sanitized_when_topic_verification_fails(
 
     monkeypatch.setattr(outbox_main, "verify_topic_partitioning", _fail_verify)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.outbox.__main__") as captured:
         assert outbox_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "KafkaTopicVerificationError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert "KafkaTopicVerificationError" in rendered
 
 
 def test_main_runs_poll_loop_and_cleans_up_on_graceful_shutdown(
@@ -466,7 +531,7 @@ def test_main_runs_poll_loop_and_cleans_up_on_graceful_shutdown(
     monkeypatch.setattr(
         outbox_main,
         "_run_poll_loop",
-        lambda relay, settings, shutdown_requested: 0,
+        lambda relay, settings, shutdown_requested, **_kwargs: 0,
     )
 
     assert outbox_main.main() == 0
@@ -490,7 +555,7 @@ def test_main_exits_nonzero_and_cleans_up_on_fatal_poll_loop_result(
     monkeypatch.setattr(
         outbox_main,
         "_run_poll_loop",
-        lambda relay, settings, shutdown_requested: 1,
+        lambda relay, settings, shutdown_requested, **_kwargs: 1,
     )
 
     assert outbox_main.main() == 1
@@ -514,7 +579,7 @@ def _patch_for_cleanup_test(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         outbox_main,
         "_run_poll_loop",
-        lambda relay, settings, shutdown_requested: 0,
+        lambda relay, settings, shutdown_requested, **_kwargs: 0,
     )
 
 
@@ -578,14 +643,14 @@ def test_main_exits_nonzero_when_cleanup_fails_despite_successful_poll_loop(
 def test_cleanup_logs_are_sanitized_when_both_operations_fail(
     monkeypatch: pytest.MonkeyPatch,
     _patched_composition: Settings,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     _patch_for_cleanup_test(monkeypatch)
     monkeypatch.setattr(signal, "signal", lambda *_args, **_kwargs: None)
     _FakeProducer.raise_on_close = RuntimeError(_SENSITIVE_MESSAGE)
     _FakeLock.raise_on_release = RuntimeError(_SENSITIVE_MESSAGE)
 
-    with caplog.at_level(logging.INFO):
+    with capture_logs("atlas.outbox.__main__") as captured:
         assert outbox_main.main() == 1
-    _assert_no_sensitive_fragments(caplog.text)
-    assert "RuntimeError" in caplog.text
+    rendered = _rendered(captured)
+    _assert_no_sensitive_fragments(rendered)
+    assert "RuntimeError" in rendered

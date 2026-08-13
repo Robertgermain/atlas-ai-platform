@@ -11,20 +11,25 @@ import redis
 from atlas.coordination.heartbeat import RedisHeartbeatRecorder
 from atlas.coordination.outage_log import OncePerOutageLogger
 from atlas.coordination.rate_limit import RedisFixedWindowRateLimiter
+from atlas.observability.events import Event
+from atlas.observability.logging import AtlasJSONFormatter
 
 
 def test_once_per_outage_logger_emits_one_warning_then_silences(
     caplog: Any,
 ) -> None:
     log = logging.getLogger("atlas.test.outage")
-    outage = OncePerOutageLogger(log, warning_message="redis unavailable")
+    outage = OncePerOutageLogger(
+        log, event=Event.DEPENDENCY_OPERATION_FAILED_OPEN, outcome="redis_test"
+    )
     with caplog.at_level(logging.WARNING, logger="atlas.test.outage"):
         outage.note_failure()
         outage.note_failure()
         outage.note_failure()
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
-    assert warnings[0].getMessage() == "redis unavailable"
+    assert warnings[0].event == Event.DEPENDENCY_OPERATION_FAILED_OPEN.value
+    assert warnings[0].outcome == "redis_test"
     assert outage.in_outage is True
 
 
@@ -32,7 +37,9 @@ def test_once_per_outage_logger_recovery_allows_one_later_warning(
     caplog: Any,
 ) -> None:
     log = logging.getLogger("atlas.test.outage.recover")
-    outage = OncePerOutageLogger(log, warning_message="redis unavailable")
+    outage = OncePerOutageLogger(
+        log, event=Event.DEPENDENCY_OPERATION_FAILED_OPEN, outcome="redis_test"
+    )
     with caplog.at_level(logging.WARNING, logger="atlas.test.outage.recover"):
         outage.note_failure()
         outage.note_failure()
@@ -61,9 +68,11 @@ def test_rate_limiter_logs_once_per_outage_episode(caplog: Any) -> None:
         if r.name == "atlas.coordination.rate_limit" and r.levelno == logging.WARNING
     ]
     assert len(warnings) == 1
-    assert "failing open" in warnings[0].getMessage()
-    assert "boom" not in warnings[0].getMessage()
-    assert "redis://" not in warnings[0].getMessage()
+    assert warnings[0].event == Event.DEPENDENCY_OPERATION_FAILED_OPEN.value
+    assert warnings[0].outcome == "redis_rate_limit_check"
+    rendered = AtlasJSONFormatter().format(warnings[0])
+    assert "boom" not in rendered
+    assert "redis://" not in rendered
 
 
 def test_rate_limiter_recovery_allows_later_warning(caplog: Any) -> None:
@@ -106,8 +115,9 @@ def test_heartbeat_recorder_logs_once_per_outage_episode(caplog: Any) -> None:
         if r.name == "atlas.coordination.heartbeat" and r.levelno == logging.WARNING
     ]
     assert len(warnings) == 1
-    assert "fail-open" in warnings[0].getMessage()
-    assert "slow" not in warnings[0].getMessage()
+    assert warnings[0].event == Event.DEPENDENCY_OPERATION_FAILED_OPEN.value
+    assert warnings[0].outcome == "redis_heartbeat_write"
+    assert "slow" not in AtlasJSONFormatter().format(warnings[0])
 
 
 def test_heartbeat_recorder_recovery_allows_later_warning(caplog: Any) -> None:

@@ -22,12 +22,23 @@ class ResearchJobIdempotencyRecord:
 
 @dataclass(frozen=True, slots=True)
 class ClaimedResearchJob:
-    """Domain job plus opaque claim token and continuation context for fenced worker."""
+    """Domain job plus opaque claim token and continuation context for fenced worker.
+
+    ``traceparent``/``use_traceparent_as_parent`` (Slice 15A3) are the
+    persistence-layer's resolved tracing decision for this specific claim --
+    the worker must not attempt to reconstruct eligibility itself from
+    ``continuation_mode``/``active_workflow_execution_id``. See
+    ``atlas.persistence.repositories.research_job.claim_next`` for exactly
+    how/when ``use_traceparent_as_parent`` becomes ``True`` (at most once per
+    row, ever) and the Slice 15A3 migration docstring for the full contract.
+    """
 
     job: ResearchJob
     claim_token: str
     continuation_mode: ContinuationMode
     active_workflow_execution_id: str | None
+    traceparent: str | None = None
+    use_traceparent_as_parent: bool = False
 
 
 class ResearchJobRepository(Protocol):
@@ -40,8 +51,15 @@ class ResearchJobRepository(Protocol):
         *,
         idempotency_key: str,
         request_fingerprint: str,
+        traceparent: str | None = None,
     ) -> None:
-        """Insert a new research job with required idempotency metadata."""
+        """Insert a new research job with required idempotency metadata.
+
+        ``traceparent`` (Slice 15A3) is the W3C trace context active at
+        submission time, stored verbatim for later worker-side continuation
+        decisions. Persistence-only: never re-exposed through any public API
+        or domain model.
+        """
 
     def get(self, session: Session, job_id: str) -> ResearchJob | None:
         """Load a research job by id, or None if missing."""

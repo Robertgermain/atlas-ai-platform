@@ -35,6 +35,8 @@ from enum import StrEnum
 from typing import Protocol
 
 from confluent_kafka import Message
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.consumer.db_classify import DatabaseErrorClass, classify_database_error
@@ -65,9 +67,13 @@ from atlas.consumer.timing import (
 )
 from atlas.consumer.wait import Waiter, build_shutdown_aware_waiter
 from atlas.eventing.contracts import DomainEvent
+from atlas.observability.metrics import AtlasMetrics, default_metrics
+from atlas.observability.tracing import resolve_parent_or_link
 from atlas.outbox.clock import Clock, utc_now
 from atlas.outbox.kafka_errors import KafkaErrorClass, classify_kafka_error
 from atlas.persistence.db import session_scope
+
+_tracer = trace.get_tracer(__name__)
 
 
 class ProcessOutcome(StrEnum):
@@ -130,6 +136,7 @@ class ConsumerRunner:
         timing_params: RetryTimingParameters | None = None,
         clock: Clock = utc_now,
         wait: Waiter | None = None,
+        metrics: AtlasMetrics | None = None,
     ) -> None:
         self._consumer = consumer
         self._session_factory = session_factory
@@ -139,6 +146,7 @@ class ConsumerRunner:
         self._consumer_id = consumer_id
         self._poll_timeout_seconds = poll_timeout_seconds
         self._max_poll_interval_seconds = max_poll_interval_seconds
+        self._metrics = metrics or default_metrics()
         self._timing_params = timing_params or RetryTimingParameters(
             max_attempts=3,
             base_seconds=1.0,
@@ -180,27 +188,47 @@ class ConsumerRunner:
         )
 
         try:
-            event = decode_message(message)
+            event, traceparent = decode_message(message)
         except PoisonEventError as exc:
-            return self._dead_letter_and_commit(
-                exc,
-                message=message,
-                event=None,
-                partition=partition,
-                offset=offset,
-                at=at,
-                processing_attempt_count=1,
-                deadline=deadline,
-            )
+            # No decoded headers to source a parent from -- an ordinary new
+            # root span for this dead-letter attempt (Slice 15A3).
+            with _tracer.start_as_current_span("kafka.consume") as span:
+                span.set_status(Status(StatusCode.ERROR))
+                span.set_attribute("error.class", exc.__class__.__name__)
+                return self._dead_letter_and_commit(
+                    exc,
+                    message=message,
+                    event=None,
+                    partition=partition,
+                    offset=offset,
+                    at=at,
+                    processing_attempt_count=1,
+                    deadline=deadline,
+                )
 
-        return self._apply_with_retry(
-            message=message,
-            event=event,
-            partition=partition,
-            offset=offset,
-            at=at,
-            deadline=deadline,
-        )
+        # The relay's own ``outbox.publish`` span's resulting traceparent
+        # (when present) is always used as a direct parent here, never a
+        # Span Link -- a Kafka record's own header value has no ambiguous
+        # claim/reclaim lineage the way a worker's persisted job-level
+        # traceparent does (Slice 15A3).
+        parent_context, _links = resolve_parent_or_link(traceparent, use_as_parent=True)
+        with _tracer.start_as_current_span(
+            "kafka.consume", context=parent_context
+        ) as span:
+            try:
+                outcome = self._apply_with_retry(
+                    message=message,
+                    event=event,
+                    partition=partition,
+                    offset=offset,
+                    at=at,
+                    deadline=deadline,
+                )
+            except Exception as exc:
+                span.set_status(Status(StatusCode.ERROR))
+                span.set_attribute("error.class", exc.__class__.__name__)
+                raise
+            return outcome
 
     def _apply_with_retry(
         self,
@@ -254,6 +282,7 @@ class ConsumerRunner:
                     now=self._clock(), backoff_seconds=backoff
                 ):
                     raise ProcessingDeadlineExceededError() from exc
+                self._metrics.observe_consumer_retry_attempt(stage="apply")
                 if self._wait(backoff):
                     raise ConsumerShutdownRequestedError() from exc
                 continue
@@ -279,12 +308,17 @@ class ConsumerRunner:
         while True:
             attempt_index += 1
             if not deadline.can_start_attempt(now=self._clock()):
+                self._metrics.observe_consumer_offset_commit(
+                    outcome="deadline_exceeded"
+                )
                 raise ProcessingDeadlineExceededError()
             try:
                 self._consumer.commit_message(message)
+                self._metrics.observe_consumer_offset_commit(outcome="success")
                 return
             except TransientKafkaError:
                 if attempt_index >= self._timing_params.max_attempts:
+                    self._metrics.observe_consumer_offset_commit(outcome="failure")
                     raise
                 backoff = backoff_delay_seconds(
                     self._timing_params, attempt_index=attempt_index - 1
@@ -292,8 +326,15 @@ class ConsumerRunner:
                 if not deadline.can_afford_backoff(
                     now=self._clock(), backoff_seconds=backoff
                 ):
+                    self._metrics.observe_consumer_offset_commit(
+                        outcome="deadline_exceeded"
+                    )
                     raise ProcessingDeadlineExceededError() from None
+                self._metrics.observe_consumer_retry_attempt(stage="commit")
                 if self._wait(backoff):
+                    self._metrics.observe_consumer_offset_commit(
+                        outcome="shutdown_requested"
+                    )
                     raise ConsumerShutdownRequestedError() from None
                 continue
 
@@ -352,9 +393,19 @@ class ConsumerRunner:
                     now=self._clock(), backoff_seconds=backoff
                 ):
                     raise ProcessingDeadlineExceededError() from db_exc
+                self._metrics.observe_consumer_retry_attempt(stage="dead_letter_upsert")
                 if self._wait(backoff):
                     raise ConsumerShutdownRequestedError() from db_exc
                 continue
+
+        # Emitted only after the dead-letter upsert above has durably
+        # committed (the ``while`` loop above only exits via ``break`` once
+        # ``session_scope`` has committed, or by raising) -- a redelivered
+        # poison record after restart reuses the same row via the upsert's
+        # own uniqueness boundary rather than creating a second one, but is
+        # still counted again here since it is still a genuine dead-letter
+        # occurrence from this consumer's perspective (Slice 15A2).
+        self._metrics.observe_consumer_dead_letter(failure_code=failure_code)
 
         try:
             self._commit_with_retry(message, deadline=deadline)

@@ -45,6 +45,12 @@ from atlas.outbox.kafka_errors import (
 _HEADER_EVENT_TYPE = "event_type"
 _HEADER_EVENT_VERSION = "event_version"
 _HEADER_AGGREGATE_TYPE = "aggregate_type"
+#: Optional (Slice 15A3): the relay's own ``outbox.publish`` span's
+#: resulting W3C ``traceparent``, when tracing is bound. Never one of the
+#: three required headers above -- a missing/malformed value on the
+#: consumer side is always discarded as absent telemetry, never a
+#: dead-letter condition (see ``atlas.consumer.deserialize``).
+_HEADER_TRACEPARENT = "traceparent"
 
 DeliveryCallback = Callable[[object, object], None]
 
@@ -80,12 +86,17 @@ class _DeliveryOutcome:
         self.error: object | None = None
 
 
-def _headers_for(event: DomainEvent) -> Sequence[tuple[str, bytes]]:
-    return (
+def _headers_for(
+    event: DomainEvent, *, traceparent: str | None
+) -> Sequence[tuple[str, bytes]]:
+    headers = [
         (_HEADER_EVENT_TYPE, event.event_type.encode("utf-8")),
         (_HEADER_EVENT_VERSION, str(int(event.event_version)).encode("utf-8")),
         (_HEADER_AGGREGATE_TYPE, event.aggregate_type.encode("utf-8")),
-    )
+    ]
+    if traceparent is not None:
+        headers.append((_HEADER_TRACEPARENT, traceparent.encode("utf-8")))
+    return headers
 
 
 class KafkaEventProducer:
@@ -140,13 +151,15 @@ class KafkaEventProducer:
                 "ProducerConstructionFailed"
             ) from None
 
-    def publish(self, event: DomainEvent) -> None:
+    def publish(self, event: DomainEvent, *, traceparent: str | None = None) -> None:
         """Publish one envelope, raising only after broker-confirmed outcome.
 
         Raises ``KafkaPublishError``/``KafkaPublishTimeoutError`` for
         recoverable failures (safe to retry the same event later), or
         ``KafkaFatalProducerError`` when this producer instance must never
-        be reused again.
+        be reused again. ``traceparent`` (Slice 15A3), when not ``None``, is
+        injected as an additional optional header -- never one of the three
+        required headers validated by ``atlas.consumer.deserialize``.
         """
         if self._closed:
             raise KafkaFatalProducerError("ProducerClosed")
@@ -164,7 +177,7 @@ class KafkaEventProducer:
                 RESEARCH_JOB_EVENTS_TOPIC_V1,
                 key=key,
                 value=value,
-                headers=list(_headers_for(event)),
+                headers=list(_headers_for(event, traceparent=traceparent)),
                 on_delivery=_on_delivery,
             )
         except BufferError:

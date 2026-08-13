@@ -14,9 +14,20 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import redis
+from prometheus_client import CollectorRegistry
 
 from atlas.coordination.rate_limit import RedisFixedWindowRateLimiter
+from atlas.observability.metrics.catalog import AtlasMetrics
 from tests.integration.redis_support import build_test_redis_client, cleanup_atlas_keys
+
+
+def _label_values(metrics: AtlasMetrics, metric_name: str, label: str) -> list[str]:
+    return [
+        sample.labels[label]
+        for metric in metrics.registry.collect()
+        for sample in metric.samples
+        if sample.name == metric_name
+    ]
 
 
 @pytest.fixture(scope="module")
@@ -124,3 +135,30 @@ def test_fails_open_when_redis_is_unreachable() -> None:
     assert decision.allowed is True
     assert decision.retry_after_seconds == 0
     assert elapsed < 1.0
+
+
+def test_observes_allowed_denied_and_failed_open_metric_outcomes(
+    redis_client: redis.Redis,
+) -> None:
+    metrics = AtlasMetrics(CollectorRegistry())
+    limiter = RedisFixedWindowRateLimiter(
+        client=redis_client, max_requests=1, window_seconds=60, metrics=metrics
+    )
+    identity = _unique_identity()
+
+    assert limiter.check(identity=identity).allowed is True
+    assert limiter.check(identity=identity).allowed is False
+
+    unreachable_client: redis.Redis = redis.Redis.from_url(
+        "redis://127.0.0.1:6399/0",
+        socket_connect_timeout=0.2,
+        socket_timeout=0.2,
+    )
+    unreachable_limiter = RedisFixedWindowRateLimiter(
+        client=unreachable_client, max_requests=1, window_seconds=60, metrics=metrics
+    )
+    unreachable_limiter.check(identity=_unique_identity())
+
+    assert _label_values(
+        metrics, "atlas_redis_rate_limit_decisions_total", "outcome"
+    ) == ["allowed", "denied", "failed_open"]

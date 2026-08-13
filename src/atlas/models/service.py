@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from langchain_core.language_models.chat_models import BaseChatModel
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
@@ -31,6 +34,7 @@ from atlas.models.errors import (
     ModelUnknownError,
 )
 from atlas.models.langchain import draft_prompts, invoke_structured, plan_prompts
+from atlas.observability.metrics import AtlasMetrics, default_metrics
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.model_invocation import (
     ModelInvocationRecord,
@@ -39,6 +43,8 @@ from atlas.persistence.repositories.model_invocation import (
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
+
+_tracer = trace.get_tracer(__name__)
 
 
 def build_invocation_key(
@@ -91,6 +97,7 @@ class ModelInvocationService:
         model_name: str,
         call_timeout_seconds: float,
         repository: SqlAlchemyModelInvocationRepository | None = None,
+        metrics: AtlasMetrics | None = None,
     ) -> None:
         if provider is ProviderId.FAKE:
             raise ValueError("ModelInvocationService requires a non-fake provider")
@@ -100,6 +107,7 @@ class ModelInvocationService:
         self._model_name = model_name
         self._call_timeout_seconds = call_timeout_seconds
         self._repository = repository or SqlAlchemyModelInvocationRepository()
+        self._metrics = metrics or default_metrics()
 
     def plan(
         self,
@@ -278,18 +286,37 @@ class ModelInvocationService:
             except IntegrityError as exc:
                 raise ModelInvocationInProgressError() from exc
 
+        attempt_started_at = time.perf_counter()
+        # Bounded span attributes only: `node_name` is one of a small fixed
+        # set of caller-controlled node names ("plan"/"draft"), and
+        # `self._provider.value` is a `ProviderId` enum value -- never the
+        # prompt text, provider response, or any other free-form content
+        # (Slice 15A3).
         try:
-            validated, meta = invoke_structured(
-                chat_model=self._chat_model,
-                provider=self._provider,
-                model_name=self._model_name,
-                prompt_version=prompt_version,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                schema=schema,
-            )
+            with _tracer.start_as_current_span(
+                "model.attempt",
+                attributes={
+                    "atlas.node_name": node_name,
+                    "atlas.model.provider": self._provider.value,
+                },
+            ) as span:
+                try:
+                    validated, meta = invoke_structured(
+                        chat_model=self._chat_model,
+                        provider=self._provider,
+                        model_name=self._model_name,
+                        prompt_version=prompt_version,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        schema=schema,
+                    )
+                except Exception as exc:
+                    span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("error.class", exc.__class__.__name__)
+                    raise
         except ModelError as exc:
             finished = datetime.now(UTC)
+            duration_seconds = time.perf_counter() - attempt_started_at
             with session_scope(self._session_factory) as session:
                 if not self._repository.fail_attempt(
                     session,
@@ -298,6 +325,10 @@ class ModelInvocationService:
                     retry_class=exc.retry_class.value,
                     at=finished,
                 ):
+                    # Ownership already reclaimed by a newer attempt (Slice
+                    # 15A2 approval #8): never observe a metric for this
+                    # superseded attempt -- the eventual owning attempt
+                    # records its own authoritative outcome.
                     raise ModelAttemptOwnershipLostError() from exc
                 if not self._repository.mark_invocation_failed_for_attempt(
                     session,
@@ -308,9 +339,20 @@ class ModelInvocationService:
                     at=finished,
                 ):
                     raise ModelAttemptOwnershipLostError() from exc
+            self._metrics.observe_model_attempt(
+                node_name=node_name,
+                provider=self._provider.value,
+                outcome="failed",
+                retry_class=exc.retry_class.value,
+                duration_seconds=duration_seconds,
+            )
+            self._metrics.observe_model_invocation(
+                node_name=node_name, provider=self._provider.value, outcome="failed"
+            )
             raise
 
         finished = datetime.now(UTC)
+        duration_seconds = time.perf_counter() - attempt_started_at
         output_json = validated.model_dump(mode="json")
         with session_scope(self._session_factory) as session:
             if not self._repository.complete_attempt(
@@ -343,6 +385,27 @@ class ModelInvocationService:
                 at=finished,
             ):
                 raise ModelAttemptOwnershipLostError()
+        self._metrics.observe_model_attempt(
+            node_name=node_name,
+            provider=self._provider.value,
+            outcome="succeeded",
+            retry_class="none",
+            duration_seconds=duration_seconds,
+        )
+        self._metrics.observe_model_invocation(
+            node_name=node_name, provider=self._provider.value, outcome="succeeded"
+        )
+        self._metrics.observe_model_tokens(
+            node_name=node_name,
+            provider=self._provider.value,
+            input_tokens=meta.input_tokens,
+            output_tokens=meta.output_tokens,
+        )
+        self._metrics.observe_model_cost(
+            node_name=node_name,
+            provider=self._provider.value,
+            cost_usd=meta.estimated_cost_usd,
+        )
         return validated, meta
 
     def _can_reclaim(

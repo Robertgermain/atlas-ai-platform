@@ -45,6 +45,8 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
     assert "ck_research_jobs_status_fields" in constraint_names
     assert "ck_research_jobs_idempotency_pair" in constraint_names
     assert "ck_research_jobs_claim_lease_pair" in constraint_names
+    assert "ck_research_jobs_traceparent_format" in constraint_names
+    assert "ck_research_jobs_initial_traceparent_consumed_pair" in constraint_names
 
     unique_names = {
         constraint["name"]
@@ -57,12 +59,14 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
     assert "request_fingerprint" in columns
     assert "lease_expires_at" in columns
     assert "claim_token" in columns
+    assert "traceparent" in columns
+    assert "initial_traceparent_consumed_at" in columns
 
     with engine.connect() as connection:
         version = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-    assert version == "20260809_0013"
+    assert version == "20260812_0014"
     assert inspector.has_table("workflow_executions")
     assert inspector.has_table("workflow_node_executions")
     assert inspector.has_table("model_invocations")
@@ -92,6 +96,11 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
     assert "ck_outbox_events_claim_pair" in outbox_constraints
     assert "ck_outbox_events_published_clears_claim" in outbox_constraints
     assert "ck_outbox_events_payload_size" in outbox_constraints
+    assert "ck_outbox_events_traceparent_format" in outbox_constraints
+    outbox_columns = {
+        column["name"] for column in inspector.get_columns("outbox_events")
+    }
+    assert "traceparent" in outbox_columns
     outbox_uniques = {
         constraint["name"]
         for constraint in inspector.get_unique_constraints("outbox_events")
@@ -288,7 +297,8 @@ def test_legacy_row_survives_upgrade_from_0001(
                     text(
                         """
                     SELECT id, question, status, idempotency_key, request_fingerprint,
-                           lease_expires_at, claim_token
+                           lease_expires_at, claim_token, traceparent,
+                           initial_traceparent_consumed_at
                     FROM research_jobs
                     WHERE id = :id
                     """
@@ -302,7 +312,7 @@ def test_legacy_row_survives_upgrade_from_0001(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
 
-        assert version == "20260809_0013"
+        assert version == "20260812_0014"
         assert row["id"] == "legacy-job"
         assert row["question"] == "legacy question"
         assert row["status"] == "PENDING"
@@ -310,6 +320,8 @@ def test_legacy_row_survives_upgrade_from_0001(
         assert row["request_fingerprint"] is None
         assert row["lease_expires_at"] is None
         assert row["claim_token"] is None
+        assert row["traceparent"] is None
+        assert row["initial_traceparent_consumed_at"] is None
 
         factory = sessionmaker(
             bind=engine,
@@ -590,12 +602,99 @@ def test_upgrade_downgrade_0013_and_0012(
                 os.environ["ATLAS_DATABASE_URL"] = previous
 
 
-def test_migrations_0001_through_0012_unchanged_versus_main() -> None:
-    """Slice 13C2B must not modify migrations 0001–0012 relative to origin/main.
+def test_upgrade_downgrade_0014_and_0013(
+    test_database_url: str,
+    engine: Engine,
+) -> None:
+    """Explicit 0014 ↔ 0013 round-trip required by Slice 15A3."""
+    assert_safe_test_database(test_database_url)
+    previous = os.environ.get("ATLAS_DATABASE_URL")
+    os.environ["ATLAS_DATABASE_URL"] = test_database_url
+    config = _alembic_config(test_database_url)
 
-    Migration ``20260809_0012`` (the consumer inbox/projection tables added in
-    Slice 13C2A) is now merged into ``origin/main`` through Pull Request #22,
-    so the invariant covers all twelve prior migrations, not just 0001–0011.
+    try:
+        _reset_public_schema(engine)
+        command.upgrade(config, "20260809_0013")
+        inspector = inspect(engine)
+        research_job_columns = {
+            column["name"] for column in inspector.get_columns("research_jobs")
+        }
+        outbox_columns = {
+            column["name"] for column in inspector.get_columns("outbox_events")
+        }
+        assert "traceparent" not in research_job_columns
+        assert "initial_traceparent_consumed_at" not in research_job_columns
+        assert "traceparent" not in outbox_columns
+
+        command.upgrade(config, "20260812_0014")
+        inspector = inspect(engine)
+        research_job_columns = {
+            column["name"] for column in inspector.get_columns("research_jobs")
+        }
+        research_job_constraints = {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("research_jobs")
+        }
+        outbox_columns = {
+            column["name"] for column in inspector.get_columns("outbox_events")
+        }
+        outbox_constraints = {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("outbox_events")
+        }
+        assert "traceparent" in research_job_columns
+        assert "initial_traceparent_consumed_at" in research_job_columns
+        assert "ck_research_jobs_traceparent_format" in research_job_constraints
+        assert (
+            "ck_research_jobs_initial_traceparent_consumed_pair"
+            in research_job_constraints
+        )
+        assert "traceparent" in outbox_columns
+        assert "ck_outbox_events_traceparent_format" in outbox_constraints
+
+        command.downgrade(config, "20260809_0013")
+        inspector = inspect(engine)
+        research_job_columns = {
+            column["name"] for column in inspector.get_columns("research_jobs")
+        }
+        outbox_columns = {
+            column["name"] for column in inspector.get_columns("outbox_events")
+        }
+        assert "traceparent" not in research_job_columns
+        assert "initial_traceparent_consumed_at" not in research_job_columns
+        assert "traceparent" not in outbox_columns
+        assert inspector.has_table("consumer_dead_letters")
+
+        command.upgrade(config, "20260812_0014")
+        inspector = inspect(engine)
+        research_job_columns = {
+            column["name"] for column in inspector.get_columns("research_jobs")
+        }
+        assert "traceparent" in research_job_columns
+        assert "initial_traceparent_consumed_at" in research_job_columns
+        with engine.connect() as connection:
+            version = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert version == "20260812_0014"
+    finally:
+        try:
+            _reset_public_schema(engine)
+            command.upgrade(config, "head")
+            initialize_langgraph_checkpoint_schema(test_database_url)
+        finally:
+            if previous is None:
+                os.environ.pop("ATLAS_DATABASE_URL", None)
+            else:
+                os.environ["ATLAS_DATABASE_URL"] = previous
+
+
+def test_migrations_0001_through_0013_unchanged_versus_main() -> None:
+    """Slice 15A3 must not modify migrations 0001–0013 relative to origin/main.
+
+    Migration ``20260809_0013`` (consumer dead-letter/replay tables from Slice
+    13C2B) is merged into ``origin/main`` through Pull Request #25 / Milestone
+    14, so the invariant covers all thirteen prior migrations.
 
     Compares against the remote-tracking ref ``origin/main`` (not a local
     ``main`` branch) so GitHub Actions PR checkouts succeed when only remotes

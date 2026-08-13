@@ -8,10 +8,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from typing import Any
 
 import pytest
 
 from atlas.coordination.heartbeat_thread import HeartbeatThread
+from atlas.observability.events import Event
+from atlas.observability.logging import AtlasJSONFormatter
 
 
 class _FakeRecorder:
@@ -96,7 +99,7 @@ def test_heartbeat_thread_survives_recorder_exceptions() -> None:
 
 
 def test_heartbeat_thread_unexpected_errors_log_once_without_traceback(
-    caplog: pytest.LogCaptureFixture,
+    caplog: Any,
 ) -> None:
     thread = HeartbeatThread(
         recorder=_BoomingRecorder(), worker_id="worker-1", interval_seconds=0.05
@@ -114,8 +117,50 @@ def test_heartbeat_thread_unexpected_errors_log_once_without_traceback(
             and r.levelno == logging.WARNING
         ]
         assert len(warnings) == 1
-        assert "RuntimeError" in warnings[0].getMessage()
-        assert "boom" not in warnings[0].getMessage()
+        assert warnings[0].event == Event.HEARTBEAT_RECORDER_UNEXPECTED_ERROR.value
+        assert warnings[0].error_class == "RuntimeError"
         assert warnings[0].exc_info is None
+        rendered = AtlasJSONFormatter().format(warnings[0])
+        assert "boom" not in rendered
     finally:
         thread.stop(join_timeout_seconds=2.0)
+
+
+class _SlowRecorder:
+    """Blocks inside ``beat()`` past a short join timeout, on purpose."""
+
+    def __init__(self, release: threading.Event) -> None:
+        self._release = release
+
+    def beat(self, *, worker_id: str) -> None:
+        del worker_id
+        self._release.wait(timeout=5.0)
+
+
+def test_heartbeat_thread_stop_timeout_logs_shutdown_wait_abandoned(
+    caplog: Any,
+) -> None:
+    """``stop()`` abandoning its join must log a distinct, observable event."""
+    release = threading.Event()
+    thread = HeartbeatThread(
+        recorder=_SlowRecorder(release), worker_id="worker-1", interval_seconds=10.0
+    )
+    try:
+        thread.start()
+        time.sleep(0.05)  # let the blocking beat() call actually start
+        with caplog.at_level(
+            logging.WARNING, logger="atlas.coordination.heartbeat_thread"
+        ):
+            thread.stop(join_timeout_seconds=0.05)
+        warnings = [
+            r
+            for r in caplog.records
+            if r.name == "atlas.coordination.heartbeat_thread"
+            and r.levelno == logging.WARNING
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].event == "shutdown_wait_abandoned"
+        assert warnings[0].outcome == "heartbeat_thread"
+        assert warnings[0].duration_ms == pytest.approx(50.0)
+    finally:
+        release.set()

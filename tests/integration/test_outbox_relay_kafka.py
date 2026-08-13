@@ -66,8 +66,8 @@ class _ClockAdvancingKafkaProducer:
         self._clock = clock
         self._advance_by = advance_by
 
-    def publish(self, event: object) -> None:
-        self._inner.publish(event)  # type: ignore[arg-type]
+    def publish(self, event: object, *, traceparent: str | None = None) -> None:
+        self._inner.publish(event, traceparent=traceparent)  # type: ignore[arg-type]
         self._clock.advance(self._advance_by)
 
 

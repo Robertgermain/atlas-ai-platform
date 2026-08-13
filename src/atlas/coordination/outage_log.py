@@ -5,18 +5,24 @@ from __future__ import annotations
 import logging
 import threading
 
+from atlas.observability.events import Event
+from atlas.observability.logging import log_event
+
 
 class OncePerOutageLogger:
     """Log one sanitized warning for an outage episode; silence repeats.
 
     A successful operation resets the episode so a later distinct outage can
-    emit one warning again. Never interpolates Redis URLs, credentials, raw
-    exception messages, or tracebacks.
+    emit one warning again. Emits only the fixed ``event`` (with a fixed
+    ``outcome`` label identifying which dependency operation failed) via
+    :func:`atlas.observability.logging.log_event` -- never a free-text
+    message, Redis URL, credential, raw exception message, or traceback.
     """
 
-    def __init__(self, logger: logging.Logger, *, warning_message: str) -> None:
+    def __init__(self, logger: logging.Logger, *, event: Event, outcome: str) -> None:
         self._logger = logger
-        self._warning_message = warning_message
+        self._event = event
+        self._outcome = outcome
         self._lock = threading.Lock()
         self._in_outage = False
 
@@ -36,7 +42,12 @@ class OncePerOutageLogger:
     def note_failure(self) -> None:
         """Record a failure; emit at most one warning for the current episode."""
         if self.begin_outage_if_new():
-            self._logger.warning(self._warning_message)
+            log_event(
+                self._logger,
+                self._event,
+                level=logging.WARNING,
+                outcome=self._outcome,
+            )
 
     def note_success(self) -> None:
         """Clear the outage episode after a successful Redis operation."""

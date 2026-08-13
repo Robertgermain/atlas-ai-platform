@@ -6,13 +6,14 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import Session
 
 from atlas.eventing.contracts import DomainEvent, parse_domain_event
 from atlas.eventing.errors import DomainEventError
 from atlas.eventing.serialization import serialize_payload
+from atlas.observability.tracing import current_traceparent
 from atlas.outbox.errors import OutboxEnqueueError
 from atlas.outbox.ports import ClaimedOutboxRecord
 from atlas.persistence.models.outbox import OutboxEventModel
@@ -36,7 +37,14 @@ class SqlAlchemyOutboxRepository:
     """Persist and claim typed domain events. Callers own the transaction."""
 
     def enqueue(self, session: Session, event: DomainEvent) -> None:
-        """Insert a typed domain event; never accepts a raw public dict."""
+        """Insert a typed domain event; never accepts a raw public dict.
+
+        Captures the currently active span's ``traceparent`` (Slice 15A3),
+        if any, at this exact insert boundary -- the relay reads it once per
+        row later to start a child ``outbox.publish`` span; this is a
+        lineage source only, never forwarded unchanged (see
+        ``atlas.outbox.relay``).
+        """
         try:
             payload = serialize_payload(event)
             row = OutboxEventModel(
@@ -53,6 +61,7 @@ class SqlAlchemyOutboxRepository:
                 publish_lease_expires_at=None,
                 publish_attempts=0,
                 last_publish_error_class=None,
+                traceparent=current_traceparent(),
             )
             session.add(row)
             session.flush()
@@ -156,6 +165,7 @@ class SqlAlchemyOutboxRepository:
                     publish_claim_token=claimant_token,
                     publish_lease_expires_at=lease_expires_at,
                     publish_attempts=int(row.publish_attempts),
+                    traceparent=row.traceparent,
                 )
             )
         if claimed:
@@ -233,6 +243,34 @@ class SqlAlchemyOutboxRepository:
         )
         session.flush()
         return int(getattr(result, "rowcount", 0) or 0) == 1
+
+    def backlog_stats(
+        self, session: Session, *, now: datetime
+    ) -> tuple[int, float | None]:
+        """Unpublished row count and the oldest unpublished row's age in seconds.
+
+        Reuses the same ``published_at IS NULL`` predicate (backed by the
+        existing ``outbox_position`` index) as ``claim_batch``'s
+        head-of-line query, so this stays a cheap index-only scan rather
+        than a full-table count. Callers sample this only when the relay
+        would otherwise back off or sit idle -- never on every claim -- to
+        keep it off the hot publish path (Slice 15A2).
+        """
+        count = session.scalar(
+            select(func.count()).where(OutboxEventModel.published_at.is_(None))
+        )
+        oldest_created_at = session.scalars(
+            select(OutboxEventModel.created_at)
+            .where(OutboxEventModel.published_at.is_(None))
+            .order_by(OutboxEventModel.outbox_position.asc())
+            .limit(1)
+        ).first()
+        oldest_age_seconds = (
+            (now - oldest_created_at).total_seconds()
+            if oldest_created_at is not None
+            else None
+        )
+        return int(count or 0), oldest_age_seconds
 
     def get_by_event_id(
         self, session: Session, event_id: UUID

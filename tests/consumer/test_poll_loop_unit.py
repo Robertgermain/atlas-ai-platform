@@ -13,6 +13,7 @@ import logging
 from collections.abc import Callable
 
 import pytest
+from prometheus_client import CollectorRegistry
 
 import atlas.consumer.__main__ as consumer_main
 from atlas.consumer.errors import (
@@ -21,6 +22,22 @@ from atlas.consumer.errors import (
     TransientKafkaError,
 )
 from atlas.consumer.runner import ProcessOutcome
+from atlas.observability.events import Event
+from atlas.observability.logging import AtlasJSONFormatter
+from atlas.observability.metrics.catalog import AtlasMetrics
+
+
+def _rendered(caplog: pytest.LogCaptureFixture) -> str:
+    """Render every captured record through Atlas's own JSON formatter.
+
+    ``caplog.text`` uses pytest's own default plain-text formatter, which
+    only ever shows ``record.getMessage()`` -- empty for every
+    ``log_event``/``log_exception_boundary`` call (Slice 15A1), since their
+    content lives in structured ``extra`` fields instead. This renders
+    what actually reaches stdout in production.
+    """
+    formatter = AtlasJSONFormatter()
+    return "\n".join(formatter.format(record) for record in caplog.records)
 
 
 class _FakeRunner:
@@ -159,7 +176,10 @@ def test_one_warning_across_repeated_transient_poll_failures(
     assert runner.calls == 5
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
-    assert "Transient Kafka error" in warnings[0].message
+    assert (
+        getattr(warnings[0], "event", None) == Event.POLL_LOOP_RECOVERABLE_ERROR.value
+    )
+    assert getattr(warnings[0], "error_class", None) == "TransientKafkaError"
 
 
 def test_recovery_resets_the_outage_episode(caplog: pytest.LogCaptureFixture) -> None:
@@ -254,9 +274,10 @@ def test_outage_warning_logs_remain_sanitized(
             wait=_wait_stub(),
             kafka_retry_backoff_seconds=0.001,
         )
-    assert "TransientKafkaError" in caplog.text
+    rendered = _rendered(caplog)
+    assert "TransientKafkaError" in rendered
     # Only the sanitized exception class name is logged, never str(exc).
-    assert "PollTimeout" not in caplog.text
+    assert "PollTimeout" not in rendered
 
 
 # --- _OutageWarningTracker itself -------------------------------------------
@@ -274,3 +295,88 @@ def test_outage_warning_tracker_reset_allows_a_new_warning() -> None:
     assert tracker.should_warn() is True
     tracker.reset()
     assert tracker.should_warn() is True
+
+
+# --- atlas_consumer_messages_total observations (Slice 15A2) ----------------
+
+
+def _label_values(metrics: AtlasMetrics, metric_name: str, label: str) -> list[str]:
+    return [
+        sample.labels[label]
+        for metric in metrics.registry.collect()
+        for sample in metric.samples
+        if sample.name == metric_name
+    ]
+
+
+def test_run_once_outcomes_observe_matching_consumer_message_labels() -> None:
+    metrics = AtlasMetrics(CollectorRegistry())
+    runner = _FakeRunner(
+        [
+            ProcessOutcome.NO_MESSAGE,
+            ProcessOutcome.APPLIED,
+            ProcessOutcome.DUPLICATE,
+            ProcessOutcome.DEAD_LETTERED,
+        ]
+    )
+    exit_code = consumer_main._run_poll_loop(
+        runner,  # type: ignore[arg-type]
+        shutdown_requested=_shutdown_after(4),
+        wait=_wait_stub(),
+        kafka_retry_backoff_seconds=0.001,
+        metrics=metrics,
+    )
+    assert exit_code == 0
+    assert _label_values(metrics, "atlas_consumer_messages_total", "outcome") == [
+        "no_message",
+        "applied",
+        "duplicate",
+        "dead_lettered",
+    ]
+
+
+def test_transient_poll_failure_observes_poll_recoverable_error_label() -> None:
+    metrics = AtlasMetrics(CollectorRegistry())
+    runner = _FakeRunner(
+        [TransientKafkaError("PollTimeout"), ProcessOutcome.NO_MESSAGE]
+    )
+    consumer_main._run_poll_loop(
+        runner,  # type: ignore[arg-type]
+        shutdown_requested=_shutdown_after(2),
+        wait=_wait_stub(),
+        kafka_retry_backoff_seconds=0.001,
+        metrics=metrics,
+    )
+    assert _label_values(metrics, "atlas_consumer_messages_total", "outcome") == [
+        "poll_recoverable_error",
+        "no_message",
+    ]
+
+
+def test_fatal_and_unexpected_errors_observe_terminal_error_label() -> None:
+    metrics = AtlasMetrics(CollectorRegistry())
+    runner = _FakeRunner([ConsumerError("Fatal")])
+    consumer_main._run_poll_loop(
+        runner,  # type: ignore[arg-type]
+        shutdown_requested=lambda: False,
+        wait=_wait_stub(),
+        kafka_retry_backoff_seconds=0.001,
+        metrics=metrics,
+    )
+    assert _label_values(metrics, "atlas_consumer_messages_total", "outcome") == [
+        "terminal_error"
+    ]
+
+
+def test_shutdown_requested_error_observes_no_metric() -> None:
+    """A clean shutdown mid-backoff is not itself a message-processing outcome."""
+    metrics = AtlasMetrics(CollectorRegistry())
+    runner = _FakeRunner([ConsumerShutdownRequestedError()])
+    consumer_main._run_poll_loop(
+        runner,  # type: ignore[arg-type]
+        shutdown_requested=lambda: False,
+        wait=_wait_stub(),
+        kafka_retry_backoff_seconds=0.001,
+        metrics=metrics,
+    )
+    assert _label_values(metrics, "atlas_consumer_messages_total", "outcome") == []

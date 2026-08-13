@@ -11,6 +11,7 @@ from __future__ import annotations
 from sqlalchemy import Engine, text
 from sqlalchemy.engine import Connection
 
+from atlas.observability.metrics import AtlasMetrics, default_metrics
 from atlas.outbox.errors import RelayOwnershipError
 
 # Stable dedicated key for Milestone 13 Slice 13B. Do not change once deployed
@@ -22,9 +23,10 @@ OUTBOX_RELAY_ADVISORY_LOCK_KEY = 738_192_013
 class PostgresOutboxRelayLock:
     """Acquire/release the singleton outbox-relay advisory lock."""
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, *, metrics: AtlasMetrics | None = None) -> None:
         self._engine = engine
         self._connection: Connection | None = None
+        self._metrics = metrics or default_metrics()
 
     @property
     def held(self) -> bool:
@@ -54,20 +56,33 @@ class PostgresOutboxRelayLock:
             connection.close()
             raise
         self._connection = connection
+        self._metrics.set_outbox_relay_lock_held(held=True)
 
     def release(self) -> None:
-        """Release the lock on clean shutdown. Connection close also releases it."""
+        """Release the lock on clean shutdown. Connection close also releases it.
+
+        The gauge update sits in its own outer ``finally`` so it always runs
+        exactly once -- regardless of whether the unlock statement, the
+        connection close, both, or neither raise. Nesting it inside the
+        same ``finally`` as ``connection.close()`` (the prior shape) meant a
+        ``close()`` failure raised out of that block before the gauge line
+        was ever reached, silently leaving the gauge reporting "held" for a
+        connection this process no longer owns.
+        """
         connection = self._connection
         self._connection = None
         if connection is None:
             return
         try:
-            connection.execute(
-                text("SELECT pg_advisory_unlock(:key)"),
-                {"key": OUTBOX_RELAY_ADVISORY_LOCK_KEY},
-            )
+            try:
+                connection.execute(
+                    text("SELECT pg_advisory_unlock(:key)"),
+                    {"key": OUTBOX_RELAY_ADVISORY_LOCK_KEY},
+                )
+            finally:
+                connection.close()
         finally:
-            connection.close()
+            self._metrics.set_outbox_relay_lock_held(held=False)
 
     def abandon_connection(self) -> None:
         """Discard the dedicated connection without an explicit unlock.
@@ -80,6 +95,7 @@ class PostgresOutboxRelayLock:
         self._connection = None
         if connection is not None:
             connection.invalidate()
+        self._metrics.set_outbox_relay_lock_held(held=False)
 
     def __enter__(self) -> PostgresOutboxRelayLock:
         self.acquire()

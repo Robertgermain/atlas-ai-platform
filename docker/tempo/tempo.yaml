@@ -1,0 +1,42 @@
+# Local Grafana Tempo 3 monolithic (single-binary, `-target=all` -- the
+# default, no Kafka) configuration (Slice 15A3). Traces are ingested
+# directly in-process (distributor -> live-store, no Kafka `ingest` path)
+# and flushed to the local filesystem -- no external object storage,
+# consistent with every other local-first Atlas dependency.
+#
+# Tempo 3.0 removed the `ingester`/`ingester_client`/`compactor`/
+# `metrics_generator_client` blocks entirely (see the upstream "Migrate
+# from Tempo 2.x to 3.0" guide): compaction/retention is now handled by
+# `backend_scheduler`/`backend_worker`, which -- like `live_store_client`--
+# "apply in both modes but run in-process in monolithic mode" with no
+# explicit configuration required for this single-instance local setup.
+# This file intentionally has no `ingester:`/`compactor:` block; adding
+# either back would fail Tempo's own strict config unmarshalling (`field
+# ingester not found in type app.Config`), which is exactly the failure
+# this file previously reproduced against the pinned ``3.0.2`` image.
+#
+# Binds 0.0.0.0 for the OTLP receivers because this runs inside its own
+# Compose network namespace, reachable only from the otel-collector
+# container on the internal Compose network (docker-compose.yml never
+# publishes Tempo's ports to the host).
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:4317"
+        http:
+          endpoint: "0.0.0.0:4318"
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks

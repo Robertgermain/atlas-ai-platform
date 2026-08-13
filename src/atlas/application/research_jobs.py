@@ -16,6 +16,8 @@ from atlas.application.exceptions import (
 from atlas.application.ports import ResearchJobRepository
 from atlas.domain import ResearchJob
 from atlas.eventing.builders import build_research_job_created
+from atlas.observability.metrics import AtlasMetrics, default_metrics
+from atlas.observability.tracing import current_traceparent
 from atlas.outbox.ports import OutboxEnqueuer
 from atlas.persistence.db import session_scope
 from atlas.persistence.exceptions import IdempotencyKeyConflictError
@@ -42,11 +44,13 @@ class ResearchJobService:
         repository: ResearchJobRepository,
         outbox: OutboxEnqueuer | None = None,
         id_factory: Callable[[], str] | None = None,
+        metrics: AtlasMetrics | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = repository
         self._outbox = outbox or SqlAlchemyOutboxRepository()
         self._id_factory = id_factory or (lambda: str(uuid.uuid4()))
+        self._metrics = metrics or default_metrics()
 
     def submit(self, question: str, *, idempotency_key: str) -> ResearchJob:
         """Persist a PENDING research job or replay a matching idempotent request.
@@ -58,6 +62,13 @@ class ResearchJobService:
         job_id = self._id_factory()
         job = ResearchJob.create(job_id, question)
         fingerprint = _fingerprint_create_request(job.question)
+        # Slice 15A3: the API's own root span (see the ASGI tracing
+        # middleware in atlas.main) is the currently active span at this
+        # point on every real request; this is the one and only place the
+        # initial traceparent for a research job is ever captured.
+        # Deliberately read once, before the insert, never recomputed
+        # later -- an idempotent replay below does not re-read it either.
+        traceparent = current_traceparent()
 
         try:
             with session_scope(self._session_factory) as session:
@@ -66,6 +77,7 @@ class ResearchJobService:
                     job,
                     idempotency_key=idempotency_key,
                     request_fingerprint=fingerprint,
+                    traceparent=traceparent,
                 )
                 self._outbox.enqueue(
                     session,
@@ -80,6 +92,7 @@ class ResearchJobService:
                 request_fingerprint=fingerprint,
             )
 
+        self._metrics.observe_research_job_submitted()
         return job
 
     def get(self, job_id: str) -> ResearchJob:

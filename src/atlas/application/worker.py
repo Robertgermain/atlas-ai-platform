@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import logging
 import secrets
+import time
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from threading import Event
-from typing import TYPE_CHECKING
+from threading import Event as ThreadingEvent
+from typing import TYPE_CHECKING, TypeVar
+
+from opentelemetry import trace
+from opentelemetry.context import Context
 
 from atlas.application.exceptions import ClaimOwnershipError
 from atlas.application.job_processing import (
@@ -28,6 +33,14 @@ from atlas.eventing.builders import (
     build_research_job_completed,
     build_research_job_failed,
 )
+from atlas.observability.events import Event
+from atlas.observability.logging import log_event, log_exception_boundary
+from atlas.observability.metrics import AtlasMetrics, default_metrics
+from atlas.observability.tracing import (
+    resolve_parent_or_link,
+    run_in_span,
+    trace_and_span_id_hex,
+)
 from atlas.outbox.ports import OutboxEnqueuer
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.outbox import SqlAlchemyOutboxRepository
@@ -36,6 +49,8 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
 
 logger = logging.getLogger(__name__)
+_tracer = trace.get_tracer(__name__)
+_FinalizeResultT = TypeVar("_FinalizeResultT")
 
 PROCESSING_TIMEOUT_REASON = "Processing timed out."
 PROCESSING_TIMEOUT_REASON_CLASS = "ProcessingTimeout"
@@ -77,16 +92,18 @@ class ResearchJobWorker:
         processing_timeout_seconds: float = 60.0,
         lease_seconds: float = 90.0,
         shutdown_grace_seconds: float | None = None,
-        shutdown_event: Event | None = None,
+        shutdown_event: ThreadingEvent | None = None,
         heartbeat_recorder: HeartbeatRecorder | None = None,
         heartbeat_interval_seconds: float = 5.0,
         worker_id: str | None = None,
         outbox: OutboxEnqueuer | None = None,
+        metrics: AtlasMetrics | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = repository
         self._processor = processor
         self._outbox = outbox or SqlAlchemyOutboxRepository()
+        self._metrics = metrics or default_metrics()
         self._poll_interval_seconds = poll_interval_seconds
         self._processing_timeout_seconds = processing_timeout_seconds
         self._lease_seconds = lease_seconds
@@ -95,7 +112,7 @@ class ResearchJobWorker:
             if shutdown_grace_seconds is None
             else shutdown_grace_seconds
         )
-        self._shutdown_event = shutdown_event or Event()
+        self._shutdown_event = shutdown_event or ThreadingEvent()
         self._executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="atlas-job-processor",
@@ -163,8 +180,10 @@ class ResearchJobWorker:
 
         claimed = self._claim_next()
         if claimed is None:
+            self._metrics.observe_worker_claim(outcome="empty")
             return False
 
+        self._metrics.observe_worker_claim(outcome="claimed")
         self._process_claimed(claimed)
         return True
 
@@ -193,47 +212,102 @@ class ResearchJobWorker:
             )
 
     def _process_claimed(self, claimed: ClaimedResearchJob) -> None:
-        future: Future[ProcessingOutcome] = self._executor.submit(
-            partial(
-                self._processor,
-                claimed.job.question,
-                job_id=claimed.job.id,
-                claim_token=claimed.claim_token,
-                continuation_mode=claimed.continuation_mode,
-                active_workflow_execution_id=claimed.active_workflow_execution_id,
-            )
+        started_at = time.perf_counter()
+
+        # Slice 15A3: resolve this specific claim's already-decided
+        # (persistence-layer) parent-or-link eligibility -- never
+        # reconstructed here from continuation_mode/active_workflow_
+        # execution_id. See atlas.persistence.repositories.research_job.
+        # claim_next and ClaimedResearchJob's own docstring.
+        parent_context, links = resolve_parent_or_link(
+            claimed.traceparent, use_as_parent=claimed.use_traceparent_as_parent
         )
+        span = _tracer.start_span(
+            "worker.process_job",
+            context=parent_context,
+            links=list(links),
+            attributes={"atlas.research_job_id": claimed.job.id},
+        )
+        span_trace_id, span_span_id = trace_and_span_id_hex(span)
+        otel_context = trace.set_span_in_context(span, parent_context)
+        atlas_fields = {
+            "research_job_id": claimed.job.id,
+            "trace_id": span_trace_id,
+            "span_id": span_span_id,
+        }
+
+        try:
+            future: Future[ProcessingOutcome] = self._executor.submit(
+                run_in_span,
+                span=span,
+                otel_context=otel_context,
+                atlas_fields=atlas_fields,
+                fn=partial(
+                    self._processor,
+                    claimed.job.question,
+                    job_id=claimed.job.id,
+                    claim_token=claimed.claim_token,
+                    continuation_mode=claimed.continuation_mode,
+                    active_workflow_execution_id=claimed.active_workflow_execution_id,
+                ),
+            )
+        except Exception:
+            # submit() itself failed (e.g. the executor is shutting down):
+            # run_in_span never started, so span.end() here is this span's
+            # only owner -- nothing was ever attached on this thread, so
+            # there is nothing to detach/leak either.
+            span.set_status(trace.Status(trace.StatusCode.ERROR))
+            span.end()
+            raise
         self._inflight_future = future
         try:
             outcome = future.result(timeout=self._processing_timeout_seconds)
         except FuturesTimeoutError:
-            self._finalize_failure(
-                claimed,
-                reason=PROCESSING_TIMEOUT_REASON,
-                reason_class=PROCESSING_TIMEOUT_REASON_CLASS,
+            self._run_finalize_in_span(
+                otel_context,
+                atlas_fields,
+                lambda: self._finalize_failure(
+                    claimed,
+                    reason=PROCESSING_TIMEOUT_REASON,
+                    reason_class=PROCESSING_TIMEOUT_REASON_CLASS,
+                    duration_seconds=time.perf_counter() - started_at,
+                ),
             )
             self._abandoned_future = future
             self._inflight_future = None
             return
         except ClaimOwnershipError:
-            logger.warning(
-                "Claim ownership lost during processing of job %s; "
-                "finalize_failure will no-op if claim is gone.",
-                claimed.job.id,
+            log_event(
+                logger,
+                Event.CLAIM_OWNERSHIP_LOST,
+                level=logging.WARNING,
+                research_job_id=claimed.job.id,
+                outcome="processing",
             )
-            self._finalize_failure(
-                claimed,
-                reason="Claim ownership lost during processing.",
-                reason_class=CLAIM_OWNERSHIP_LOST_REASON_CLASS,
+            self._run_finalize_in_span(
+                otel_context,
+                atlas_fields,
+                lambda: self._finalize_failure(
+                    claimed,
+                    reason="Claim ownership lost during processing.",
+                    reason_class=CLAIM_OWNERSHIP_LOST_REASON_CLASS,
+                    duration_seconds=time.perf_counter() - started_at,
+                ),
             )
             self._inflight_future = None
             self._ignore_late_result(future)
             return
         except Exception as exc:
-            self._finalize_failure(
-                claimed,
-                reason=f"Processing failed: {exc.__class__.__name__}",
-                reason_class=exc.__class__.__name__,
+            processing_error_class = exc.__class__.__name__
+            self._run_finalize_in_span(
+                otel_context,
+                atlas_fields,
+                lambda: self._finalize_failure(
+                    claimed,
+                    reason=f"Processing failed: {processing_error_class}",
+                    reason_class=processing_error_class,
+                    duration_seconds=time.perf_counter() - started_at,
+                ),
             )
             self._inflight_future = None
             self._ignore_late_result(future)
@@ -242,34 +316,87 @@ class ResearchJobWorker:
         self._inflight_future = None
         # Outcome finalization (including outbox insert) is outside the
         # processor-exception handler so an outbox failure cannot recurse into
-        # finalize_failure.
-        self._handle_outcome(claimed, outcome)
+        # finalize_failure. Run under a fresh child span of the same trace
+        # (Slice 15A3): by this point run_in_span's own worker.process_job
+        # span has already ended and detached on the executor thread, so
+        # without this, SqlAlchemyOutboxRepository.enqueue's
+        # current_traceparent() capture -- read on *this* (polling) thread,
+        # which never attached anything -- would always observe no active
+        # span and store a null traceparent for the job's own completion/
+        # failure event, breaking outbox-to-Kafka lineage for exactly the
+        # event that matters most.
+        self._run_finalize_in_span(
+            otel_context,
+            atlas_fields,
+            lambda: self._handle_outcome(
+                claimed, outcome, duration_seconds=time.perf_counter() - started_at
+            ),
+        )
+
+    @staticmethod
+    def _run_finalize_in_span(
+        otel_context: Context,
+        atlas_fields: Mapping[str, str],
+        fn: Callable[[], _FinalizeResultT],
+    ) -> _FinalizeResultT:
+        """Run finalize/outbox-enqueue work in a ``worker.finalize`` child
+        span of the same trace as ``worker.process_job``, on whichever
+        thread calls this (always the polling thread here -- no executor
+        boundary to cross, so this is strictly simpler than
+        :func:`run_in_span`'s cross-thread contract, but reuses it exactly
+        for the same exactly-once end/detach guarantee)."""
+        finalize_span = _tracer.start_span("worker.finalize", context=otel_context)
+        return run_in_span(
+            span=finalize_span,
+            otel_context=trace.set_span_in_context(finalize_span, otel_context),
+            atlas_fields=atlas_fields,
+            fn=fn,
+        )
 
     def _handle_outcome(
-        self, claimed: ClaimedResearchJob, outcome: ProcessingOutcome
+        self,
+        claimed: ClaimedResearchJob,
+        outcome: ProcessingOutcome,
+        *,
+        duration_seconds: float,
     ) -> None:
         if isinstance(outcome, CompletedProcessing):
-            self._finalize_completion(claimed, result=outcome.result)
+            self._finalize_completion(
+                claimed, result=outcome.result, duration_seconds=duration_seconds
+            )
         elif isinstance(outcome, TerminalFailed):
             self._finalize_failure(
                 claimed,
                 reason=f"Terminal: {outcome.reason_code}",
                 reason_class=outcome.reason_code,
+                duration_seconds=duration_seconds,
             )
         elif isinstance(outcome, (PausedForReview, RetryScheduled)):
-            logger.info(
-                "Processor returned %s for job %s; no worker finalization.",
-                type(outcome).__name__,
-                claimed.job.id,
+            log_event(
+                logger,
+                Event.PROCESSOR_OUTCOME_DEFERRED,
+                research_job_id=claimed.job.id,
+                outcome=type(outcome).__name__,
+            )
+            deferred_outcome = (
+                "paused_for_review"
+                if isinstance(outcome, PausedForReview)
+                else "retry_scheduled"
+            )
+            self._metrics.observe_worker_processing(
+                outcome=deferred_outcome, duration_seconds=duration_seconds
             )
         else:
             self._finalize_failure(
                 claimed,
                 reason="Processing returned unrecognized outcome",
                 reason_class=UNRECOGNIZED_OUTCOME_REASON_CLASS,
+                duration_seconds=duration_seconds,
             )
 
-    def _finalize_completion(self, claimed: ClaimedResearchJob, *, result: str) -> bool:
+    def _finalize_completion(
+        self, claimed: ClaimedResearchJob, *, result: str, duration_seconds: float
+    ) -> bool:
         at = datetime.now(UTC)
         owned = False
         try:
@@ -290,17 +417,33 @@ class ResearchJobWorker:
                         ),
                     )
         except Exception as exc:
-            logger.warning(
-                "Completion finalization failed for job %s (%s); "
-                "transaction rolled back; not marking terminal.",
-                claimed.job.id,
-                exc.__class__.__name__,
+            log_exception_boundary(
+                logger,
+                Event.FINALIZATION_FAILED,
+                exc,
+                level=logging.WARNING,
+                research_job_id=claimed.job.id,
+                outcome="completion",
+            )
+            self._metrics.observe_worker_processing(
+                outcome="finalization_failed", duration_seconds=duration_seconds
             )
             raise
-        if not owned:
-            logger.warning(
-                "Lost claim ownership while completing research job %s",
-                claimed.job.id,
+        if owned:
+            self._metrics.observe_worker_processing(
+                outcome="completed", duration_seconds=duration_seconds
+            )
+            self._metrics.observe_research_job_terminal(status="completed")
+        else:
+            log_event(
+                logger,
+                Event.CLAIM_OWNERSHIP_LOST,
+                level=logging.WARNING,
+                research_job_id=claimed.job.id,
+                outcome="completion",
+            )
+            self._metrics.observe_worker_processing(
+                outcome="claim_ownership_lost", duration_seconds=duration_seconds
             )
         return owned
 
@@ -310,6 +453,7 @@ class ResearchJobWorker:
         *,
         reason: str,
         reason_class: str,
+        duration_seconds: float,
     ) -> bool:
         at = datetime.now(UTC)
         owned = False
@@ -333,17 +477,33 @@ class ResearchJobWorker:
                     )
         except Exception as exc:
             # Never recurse into finalize_failure when this path itself failed.
-            logger.warning(
-                "Failure finalization failed for job %s (%s); "
-                "transaction rolled back; not marking terminal.",
-                claimed.job.id,
-                exc.__class__.__name__,
+            log_exception_boundary(
+                logger,
+                Event.FINALIZATION_FAILED,
+                exc,
+                level=logging.WARNING,
+                research_job_id=claimed.job.id,
+                outcome="failure",
+            )
+            self._metrics.observe_worker_processing(
+                outcome="finalization_failed", duration_seconds=duration_seconds
             )
             raise
-        if not owned:
-            logger.warning(
-                "Lost claim ownership while failing research job %s",
-                claimed.job.id,
+        if owned:
+            self._metrics.observe_worker_processing(
+                outcome="failed", duration_seconds=duration_seconds
+            )
+            self._metrics.observe_research_job_terminal(status="failed")
+        else:
+            log_event(
+                logger,
+                Event.CLAIM_OWNERSHIP_LOST,
+                level=logging.WARNING,
+                research_job_id=claimed.job.id,
+                outcome="failure",
+            )
+            self._metrics.observe_worker_processing(
+                outcome="claim_ownership_lost", duration_seconds=duration_seconds
             )
         return owned
 
@@ -359,14 +519,14 @@ class ResearchJobWorker:
         except FuturesTimeoutError:
             self._processor_wait_abandoned = True
             self._abandoned_future = future
-            logger.warning(
-                "Processor still running after %.3fs shutdown grace; "
-                "abandoning wait without killing the thread. Claim fencing "
-                "prevents stale finalization. The process may remain alive "
-                "until the thread finishes or is force-killed. Hard "
-                "termination of arbitrary LLM/tool/graph work requires process "
-                "isolation or an external worker system.",
-                timeout,
+            # Claim fencing (not this log line) is what prevents stale
+            # finalization; see the class docstring's shutdown guarantee.
+            log_event(
+                logger,
+                Event.SHUTDOWN_WAIT_ABANDONED,
+                level=logging.WARNING,
+                outcome="processor",
+                duration_ms=timeout * 1000,
             )
         except Exception:
             # Late processor failure is ignored permanently.

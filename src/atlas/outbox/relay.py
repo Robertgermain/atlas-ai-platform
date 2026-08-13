@@ -22,8 +22,13 @@ from datetime import timedelta
 from enum import StrEnum
 from uuid import UUID
 
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 from sqlalchemy.orm import Session, sessionmaker
 
+from atlas.observability.events import Event
+from atlas.observability.logging import log_event
+from atlas.observability.tracing import current_traceparent, resolve_parent_or_link
 from atlas.outbox.clock import Clock, utc_now
 from atlas.outbox.errors import (
     EventPublishError,
@@ -35,6 +40,7 @@ from atlas.outbox.relay_lock import PostgresOutboxRelayLock
 from atlas.persistence.db import session_scope
 
 logger = logging.getLogger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 DEFAULT_OUTBOX_BATCH_SIZE = 50
 
@@ -132,21 +138,44 @@ class OutboxRelay:
         for index, record in enumerate(claimed):
             failure_outcome: RelayRunOutcome | None = None
             error_class: str | None = None
-            try:
-                self._producer.publish(record.event)
-            except FatalEventPublishError as exc:
-                failure_outcome = RelayRunOutcome.FATAL_FAILURE
-                error_class = exc.__class__.__name__
-            except EventPublishError as exc:
-                failure_outcome = RelayRunOutcome.RECOVERABLE_FAILURE
-                error_class = exc.__class__.__name__
-            except Exception as exc:
-                # Not a typed publish error: a programming error or some
-                # other unexpected failure. Never assume this is safe to
-                # retry -- release what we can, using only the safe class
-                # name, then stop and let the caller terminate nonzero.
-                failure_outcome = RelayRunOutcome.UNEXPECTED_FAILURE
-                error_class = exc.__class__.__name__
+            # Slice 15A3: the row's own stored traceparent (captured
+            # atomically at enqueue, in the same transaction as the
+            # business insert -- see SqlAlchemyOutboxRepository.enqueue) is
+            # always used as a direct parent here, never a Span Link --
+            # unlike the worker's claim-vs-reclaim ambiguity, an outbox
+            # row's lineage from its own enqueue transaction is never
+            # ambiguous. A missing/malformed stored value simply yields no
+            # parent (an ordinary new root span), never a failure.
+            parent_context, _links = resolve_parent_or_link(
+                record.traceparent, use_as_parent=True
+            )
+            with _tracer.start_as_current_span(
+                "outbox.publish",
+                context=parent_context,
+                attributes={"atlas.outbox_event_id": str(record.event_id)},
+            ) as publish_span:
+                outgoing_traceparent = current_traceparent()
+                try:
+                    self._producer.publish(
+                        record.event, traceparent=outgoing_traceparent
+                    )
+                except FatalEventPublishError as exc:
+                    failure_outcome = RelayRunOutcome.FATAL_FAILURE
+                    error_class = exc.__class__.__name__
+                except EventPublishError as exc:
+                    failure_outcome = RelayRunOutcome.RECOVERABLE_FAILURE
+                    error_class = exc.__class__.__name__
+                except Exception as exc:
+                    # Not a typed publish error: a programming error or some
+                    # other unexpected failure. Never assume this is safe to
+                    # retry -- release what we can, using only the safe class
+                    # name, then stop and let the caller terminate nonzero.
+                    failure_outcome = RelayRunOutcome.UNEXPECTED_FAILURE
+                    error_class = exc.__class__.__name__
+                if failure_outcome is not None:
+                    publish_span.set_status(Status(StatusCode.ERROR))
+                    assert error_class is not None
+                    publish_span.set_attribute("error.class", error_class)
 
             if failure_outcome is not None:
                 assert error_class is not None
@@ -180,10 +209,12 @@ class OutboxRelay:
 
             # Ownership lost (lease expired / reclaimed). Do not overwrite the
             # new owner. Stop so later positions cannot leapfrog.
-            logger.warning(
-                "Outbox mark_published lost ownership for event %s; "
-                "stopping batch to preserve outbox_position order.",
-                record.event_id,
+            log_event(
+                logger,
+                Event.OUTBOX_OWNERSHIP_LOST,
+                level=logging.WARNING,
+                outbox_event_id=str(record.event_id),
+                outcome="mark_published",
             )
             self._release_remaining(
                 claimed[index + 1 :],
@@ -217,9 +248,12 @@ class OutboxRelay:
                 error_class=error_class,
             )
         if not released:
-            logger.warning(
-                "Outbox release_failed_claim lost ownership for event %s.",
-                event_id,
+            log_event(
+                logger,
+                Event.OUTBOX_OWNERSHIP_LOST,
+                level=logging.WARNING,
+                outbox_event_id=str(event_id),
+                outcome="release_failed_claim",
             )
 
     def _release_remaining(
