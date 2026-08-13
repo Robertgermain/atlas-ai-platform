@@ -228,6 +228,29 @@ class SqlAlchemyModelInvocationRepository:
         ).scalar_one_or_none()
         return ModelInvocationAttemptRecord(row) if row is not None else None
 
+    def count_failed_attempts_with_error_class(
+        self,
+        session: Session,
+        *,
+        invocation_id: str,
+        error_class: str,
+    ) -> int:
+        """Count FAILED physical attempts with an exact error class.
+
+        Must be called while the logical invocation row is locked
+        (``FOR UPDATE``) so the malformed-attempt cap cannot race.
+        """
+        counted = session.execute(
+            select(func.count())
+            .select_from(ModelInvocationAttemptModel)
+            .where(
+                ModelInvocationAttemptModel.invocation_id == invocation_id,
+                ModelInvocationAttemptModel.status == "FAILED",
+                ModelInvocationAttemptModel.error_class == error_class,
+            )
+        ).scalar_one()
+        return int(counted)
+
     def complete_attempt(
         self,
         session: Session,

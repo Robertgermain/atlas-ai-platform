@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     model_call_timeout_seconds: float = Field(default=25.0, gt=0)
     plan_prompt_version: str = Field(default="plan.v1")
     draft_prompt_version: str = Field(default="draft.v2")
+    # Explicit worker composition only. Never inferred from model_provider.
+    # Live + fake provider is rejected at worker startup, not here, so the
+    # API can construct Settings with this combination.
+    semantic_grader_mode: Literal["skipped", "fake", "live"] = Field(default="skipped")
     openai_api_key: SecretStr | None = Field(default=None)
     anthropic_api_key: SecretStr | None = Field(default=None)
 

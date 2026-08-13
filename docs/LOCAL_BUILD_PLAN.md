@@ -293,7 +293,7 @@ Local verification's Tini-based fix directly addressed a genuine, pre-existing (
 
 ## Milestone 15 — Observability, LangSmith, semantic grading, and advisory operations analysis
 
-**Status:** Current (working branch `milestone-15-langsmith`, based on `8a25935`). Slice 15A is **Complete** through Pull Request #27 / `8a25935`. Slice 15B (mandatory LangSmith AI observability) is **Current**. Slice 15C remains **Pending**.
+**Status:** Current (working branch `milestone-15-semantic-evaluation`, based on `062fb92`). Slice 15A is **Complete** through Pull Request #27 / `8a25935`. Slice 15B (mandatory LangSmith AI observability) is **Complete** through Pull Request #28 / `062fb92`, with green PR CI and resulting `main` CI. Slice 15C is **Current**. Slice 15C1 (live semantic-grader foundation) is implemented in this working tree and is not Complete. The held-out set has not been created. Slice 15C2 has not started. `evaluation.candidate.v1` remains provisional.
 
 **Goal:** Make the distributed local platform explainable and measurable — for both infrastructure and AI behavior — before defending it, and provide a bounded advisory analyst over that telemetry without granting it any control-plane power.
 
@@ -326,7 +326,7 @@ Local verification's Tini-based fix directly addressed a genuine, pre-existing (
 
 ### Slice 15B — Mandatory LangSmith AI observability
 
-**Current** (working branch `milestone-15-langsmith`, based on `8a25935`). LangSmith is **mandatory** for Atlas AI observability — it must never be described as optional. Distinction to preserve: LangSmith is mandatory for LangGraph/LLM/RAG/tool/evaluation observability; OpenTelemetry, Prometheus, Grafana, Alertmanager, and structured logging remain mandatory for infrastructure and distributed-system observability; LangSmith does not replace operational monitoring; and LangSmith must never become an availability dependency — an export outage must not fail a research job.
+**Complete** through Pull Request #28 / `062fb92`, with green PR CI and resulting `main` CI. LangSmith is **mandatory** for Atlas AI observability — it must never be described as optional. Distinction to preserve: LangSmith is mandatory for LangGraph/LLM/RAG/tool/evaluation observability; OpenTelemetry, Prometheus, Grafana, Alertmanager, and structured logging remain mandatory for infrastructure and distributed-system observability; LangSmith does not replace operational monitoring; and LangSmith must never become an availability dependency — an export outage must not fail a research job.
 
 Demonstrated in this working tree (see `PROJECT_STATE.md` "Verification (Milestone 15 Slice 15B)"):
 
@@ -338,7 +338,7 @@ Demonstrated in this working tree (see `PROJECT_STATE.md` "Verification (Milesto
 - Fail-open enqueue/flush after successful config; fake/offline without a key stays network-free. Bounded `Client.flush(timeout=5)`.
 - Dataset/experiment orchestration is test-only (`tests/observability/langsmith_dataset_support.py` over `tests/evaluation/candidate_goldens.v1.json`). Production code does not import tests or golden fixture paths. Boolean compare against `grader_expected`. Unique live experiments are retained for manual cleanup.
 - Metric: `atlas_langsmith_operations_total{operation,outcome}` with closed allowlists. `operation=export` is error/timeout-only.
-- Offline tests require no key and must not inherit a developer `.env`: Settings/containment tests `delenv` `ATLAS_LANGSMITH_*` and `chdir` into `tmp_path` before constructing `Settings()`. Opt-in live tests require `ATLAS_ENABLE_LIVE_LANGSMITH_TESTS=1` and `ATLAS_LANGSMITH_API_KEY`; skipped in CI; fake Atlas providers only. The workflow live test polls `list_runs(trace_id=...)` until the required root/graph/native-node/explicit-boundary runs and in-trace parents are present rather than accepting the first partial snapshot. Local live verification (2026-08-13) passed in LangSmith project `atlas-slice-15b-live-20260813160447` (`7 passed, 0 skipped` on the two live modules). Local complete-suite gate (2026-08-13): isolated Pytest `1126 passed, 7 skipped`; full Pytest `1341 passed, 11 skipped`. Slice 15B remains Current, not Complete.
+- Offline tests require no key and must not inherit a developer `.env`: Settings/containment tests `delenv` `ATLAS_LANGSMITH_*` and `chdir` into `tmp_path` before constructing `Settings()`. Opt-in live tests require `ATLAS_ENABLE_LIVE_LANGSMITH_TESTS=1` and `ATLAS_LANGSMITH_API_KEY`; skipped in CI; fake Atlas providers only. The workflow live test polls `list_runs(trace_id=...)` until the required root/graph/native-node/explicit-boundary runs and in-trace parents are present rather than accepting the first partial snapshot. Local live verification (2026-08-13) passed in LangSmith project `atlas-slice-15b-live-20260813160447` (`7 passed, 0 skipped` on the two live modules). Local complete-suite gate (2026-08-13): isolated Pytest `1126 passed, 7 skipped`; full Pytest `1341 passed, 11 skipped`. Slice 15B is Complete through Pull Request #28 / `062fb92`.
 
 Not in this slice: live semantic grader, held-out calibration, `evaluation.v1` freeze, advisory analyst (all Slice 15C). No Alembic migration.
 
@@ -353,11 +353,18 @@ Not in this slice: live semantic grader, held-out calibration, `evaluation.v1` f
 
 ### Slice 15C — Live semantic grader, held-out calibration, and the bounded advisory analyst
 
-**Pending.** A live LangChain semantic groundedness grader; durable semantic-grading results in the Atlas evaluation system; the independent held-out human-labeled calibration set; and the resulting `evaluation.v1` freeze decision.
+**Current** (working branch `milestone-15-semantic-evaluation`). A live LangChain semantic groundedness grader foundation (Slice 15C1) is implemented in this working tree and is not Complete. The independent held-out human-labeled calibration set has not been created and must remain unseen until the grader, prompt, threshold, and contracts are reviewed and frozen. Slice 15C2 and the bounded advisory analyst have not started. `evaluation.candidate.v1` remains provisional.
 
-- A live LangChain semantic groundedness grader with durable semantic-grading results persisted in the Atlas evaluation system.
-- An independent held-out human-labeled validation set, distinct from `candidate_goldens.v1`, used for calibration.
-- `evaluation.candidate.v1` must remain provisional until this documented held-out/live-semantic calibration gate passes; only then may `evaluation.v1` be frozen, and only as an explicit, separately reviewed decision — landing the live grader itself does not automatically freeze `evaluation.v1`.
+Slice 15C1 demonstrated in this working tree (see `PROJECT_STATE.md` "Verification (Milestone 15 Slice 15C1)"):
+
+- Explicit `ATLAS_SEMANTIC_GRADER_MODE=skipped|fake|live`, default `skipped`. Live is never inferred from provider selection. Worker startup rejects `live` plus a fake model provider. Not a global API availability requirement.
+- Bounded typed semantic input (claims + job-linked excerpts only), deterministic assembly, fingerprint extension, `LangChainSemanticGroundednessGrader` via existing model composition, malformed-only two-attempt ledger cap, and quality-versus-availability evaluation outcomes.
+- Pass threshold remains exactly `0.70`. Prompt version remains `semantic_groundedness.v1`. No `evaluation.v1` freeze. No Alembic migration. No per-claim semantic SQL tables. No held-out dataset file.
+
+Remaining Slice 15C work (not started):
+
+- An independent held-out human-labeled validation set, distinct from `candidate_goldens.v1`, used for calibration (created only after the 15C1 review freeze).
+- `evaluation.candidate.v1` must remain provisional until this documented held-out/live-semantic calibration gate passes; only then may `evaluation.v1` be frozen, and only as an explicit, separately reviewed decision — landing the live grader foundation itself does not automatically freeze `evaluation.v1`.
 
 An advisory AI analyst that consumes sanitized, bounded telemetry summaries (never unrestricted raw production data) to: summarize incidents; cluster recurring failures; suggest likely causes and remediation; and explain job, agent, model, tool, retrieval, Kafka, and evaluation failures.
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -12,7 +13,7 @@ from uuid import uuid4
 from langchain_core.language_models.chat_models import BaseChatModel
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from atlas.models.contracts import (
@@ -30,6 +31,7 @@ from atlas.models.contracts import (
 from atlas.models.errors import (
     ModelAttemptOwnershipLostError,
     ModelError,
+    ModelInvalidStructuredOutputError,
     ModelInvocationInProgressError,
     ModelUnknownError,
 )
@@ -43,6 +45,11 @@ from atlas.persistence.repositories.model_invocation import (
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
+
+    from atlas.evaluation.semantic_contracts import (
+        SemanticGradeRequest,
+        SemanticGroundednessOutput,
+    )
 
 _tracer = trace.get_tracer(__name__)
 
@@ -183,6 +190,77 @@ class ModelInvocationService:
             meta=meta,
         )
 
+    def evaluate_semantic(
+        self,
+        request: SemanticGradeRequest,
+        *,
+        workflow_execution_id: str,
+    ) -> tuple[SemanticGroundednessOutput, ModelCallMeta]:
+        """Ledger-backed semantic grade with a malformed-output attempt cap of 2.
+
+        The malformed retry is not a generic ``_execute`` loop. Timeout,
+        rate-limit, auth, and refusal propagate without an in-process retry.
+        """
+        from atlas.evaluation.semantic_contracts import SemanticGroundednessOutput
+        from atlas.evaluation.semantic_input import (
+            assert_exact_claim_ordinals,
+            render_semantic_prompts,
+        )
+
+        fingerprint = fingerprint_payload(
+            {
+                "claims": [
+                    {
+                        "ordinal": item.claim_ordinal,
+                        "text": item.text,
+                        "evidence_item_ids": list(item.evidence_item_ids),
+                    }
+                    for item in request.claims
+                ],
+                "excerpts": [
+                    {
+                        "evidence_item_id": item.evidence_item_id,
+                        "text": item.text,
+                        "trust_label": item.trust_label,
+                    }
+                    for item in request.excerpts
+                ],
+                "prompt_version": request.prompt_version,
+            }
+        )
+        system_prompt, user_prompt = render_semantic_prompts(request)
+        expected_n = len(request.claims)
+
+        def _validate_parsed(parsed: SemanticGroundednessOutput) -> None:
+            try:
+                assert_exact_claim_ordinals(
+                    [item.claim_ordinal for item in parsed.claims],
+                    expected_count=expected_n,
+                )
+            except ValueError as exc:
+                raise ModelInvalidStructuredOutputError() from exc
+
+        def _once() -> tuple[SemanticGroundednessOutput, ModelCallMeta]:
+            validated, meta = self._execute(
+                node_name="evaluate",
+                research_job_id=request.job_id,
+                workflow_execution_id=workflow_execution_id,
+                prompt_version=request.prompt_version,
+                input_fingerprint=fingerprint,
+                schema=SemanticGroundednessOutput,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                validate_parsed=_validate_parsed,
+                malformed_attempt_cap=2,
+            )
+            assert isinstance(validated, SemanticGroundednessOutput)
+            return validated, meta
+
+        try:
+            return _once()
+        except ModelInvalidStructuredOutputError:
+            return _once()
+
     def _execute[SchemaT: BaseModel](
         self,
         *,
@@ -194,6 +272,8 @@ class ModelInvocationService:
         schema: type[SchemaT],
         system_prompt: str,
         user_prompt: str,
+        validate_parsed: Callable[[SchemaT], None] | None = None,
+        malformed_attempt_cap: int | None = None,
     ) -> tuple[SchemaT, ModelCallMeta]:
         invocation_key = build_invocation_key(
             research_job_id=research_job_id,
@@ -224,7 +304,10 @@ class ModelInvocationService:
                     model=self._model_name,
                     prompt_version=prompt_version,
                 )
-                return schema.model_validate(existing.output_json), meta
+                try:
+                    return schema.model_validate(existing.output_json), meta
+                except ValidationError:
+                    raise ModelUnknownError() from None
 
             if existing is not None and existing.status == "IN_PROGRESS":
                 if not self._can_reclaim(session, existing=existing, now=now):
@@ -251,6 +334,17 @@ class ModelInvocationService:
                         at=now,
                     ):
                         raise ModelInvocationInProgressError()
+
+            if malformed_attempt_cap is not None and existing is not None:
+                malformed_failed = (
+                    self._repository.count_failed_attempts_with_error_class(
+                        session,
+                        invocation_id=existing.id,
+                        error_class="ModelInvalidStructuredOutputError",
+                    )
+                )
+                if malformed_failed >= malformed_attempt_cap:
+                    raise ModelInvalidStructuredOutputError()
 
             invocation_id = existing.id if existing is not None else str(uuid4())
             attempt_id = str(uuid4())
@@ -288,7 +382,7 @@ class ModelInvocationService:
 
         attempt_started_at = time.perf_counter()
         # Bounded span attributes only: `node_name` is one of a small fixed
-        # set of caller-controlled node names ("plan"/"draft"), and
+        # set of caller-controlled node names ("plan"/"draft"/"evaluate"), and
         # `self._provider.value` is a `ProviderId` enum value -- never the
         # prompt text, provider response, or any other free-form content
         # (Slice 15A3).
@@ -310,6 +404,8 @@ class ModelInvocationService:
                         user_prompt=user_prompt,
                         schema=schema,
                     )
+                    if validate_parsed is not None:
+                        validate_parsed(validated)
                 except Exception as exc:
                     span.set_status(Status(StatusCode.ERROR))
                     span.set_attribute("error.class", exc.__class__.__name__)

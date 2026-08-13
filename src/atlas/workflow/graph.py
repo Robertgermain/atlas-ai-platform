@@ -35,6 +35,7 @@ from atlas.evidence.service import (
     EvidenceIngestService,
     ReportArtifactService,
 )
+from atlas.models.errors import ModelError
 from atlas.models.fakes import (
     DeterministicResearchDrafter,
     DeterministicResearchPlanner,
@@ -480,6 +481,8 @@ def evaluate_node(
         raise
     except EvaluationError:
         raise
+    except ModelError:
+        raise
     except Exception as exc:
         raise EvaluationTerminalError(sanitize_evaluation_error(exc)) from None
 
@@ -501,6 +504,8 @@ def evaluate_node(
     except EvaluationTerminalError:
         raise
     except EvaluationError:
+        raise
+    except ModelError:
         raise
     except Exception as exc:
         raise EvaluationError(sanitize_evaluation_error(exc)) from None

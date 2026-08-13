@@ -25,9 +25,11 @@ from atlas.application.job_processing import (
     TerminalFailed,
 )
 from atlas.config.settings import Settings, get_settings
+from atlas.evaluation.composition import build_semantic_grader
 from atlas.evaluation.contracts import EvaluationCandidateInput, ToolSummaryRow
 from atlas.evaluation.errors import EvaluationError, EvaluationTerminalError
 from atlas.evaluation.runner import EvaluationRunner
+from atlas.evaluation.semantic_contracts import SemanticExcerptSource
 from atlas.evaluation.service import EvaluationService
 from atlas.eventing.builders import (
     build_research_job_awaiting_review,
@@ -42,6 +44,7 @@ from atlas.persistence.db import session_scope
 from atlas.persistence.models.evidence import EvidenceJobLinkModel
 from atlas.persistence.models.tool_invocation import ToolInvocationModel
 from atlas.persistence.models.workflow import WorkflowExecutionModel
+from atlas.persistence.repositories.evidence import SqlAlchemyEvidenceRepository
 from atlas.persistence.repositories.outbox import SqlAlchemyOutboxRepository
 from atlas.persistence.repositories.recovery import SqlAlchemyRecoveryRepository
 from atlas.persistence.repositories.research_job import (
@@ -994,12 +997,34 @@ class LangGraphResearchProcessor:
                     if node_name
                 ]
 
+        def load_excerpt_sources(
+            evidence_item_ids: list[str],
+        ) -> list[SemanticExcerptSource]:
+            with session_scope(session_factory) as session:
+                views = SqlAlchemyEvidenceRepository().list_evidence_context(
+                    session,
+                    evidence_item_ids=evidence_item_ids,
+                )
+            return [
+                SemanticExcerptSource(
+                    evidence_item_id=view.id,
+                    trust_label=view.trust_label,
+                    text=view.text,
+                )
+                for view in views
+            ]
+
         evaluation_runner = _BoundEvaluationRunner(
             runner=EvaluationRunner(
                 evaluation_service=evaluation_service,
                 load_linked_ids=load_linked_ids,
                 load_tool_rows=load_tool_rows,
-                semantic_grader=None,
+                load_excerpt_sources=load_excerpt_sources,
+                semantic_grader=build_semantic_grader(
+                    self._settings,
+                    session_factory=session_factory,
+                    workflow_execution_id=workflow_execution_id,
+                ),
                 max_logical_calls=self._settings.tool_max_logical_calls_per_research_node,
             ),
             citation_validator=citation_validator,

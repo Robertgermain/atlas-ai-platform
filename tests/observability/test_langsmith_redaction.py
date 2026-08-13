@@ -81,3 +81,18 @@ def test_correlation_metadata_merges_context_and_otel() -> None:
     assert "atlas.otel_span_id" in meta
     assert "question" not in meta
     assert set(meta) <= ALLOWED_METADATA_KEYS
+
+
+def test_semantic_grader_outcome_is_allowlisted_without_claim_text() -> None:
+    filtered = filter_metadata(
+        {
+            "atlas.semantic_grader_outcome": "quality_fail",
+            "atlas.evaluation_dimension": "semantic_groundedness",
+            "claim_text": "must-not-export",
+            "excerpt_text": "must-not-export-either",
+        }
+    )
+    assert filtered["atlas.semantic_grader_outcome"] == "quality_fail"
+    assert "claim_text" not in filtered
+    assert "excerpt_text" not in filtered
+    assert "atlas.semantic_grader_outcome" in ALLOWED_METADATA_KEYS

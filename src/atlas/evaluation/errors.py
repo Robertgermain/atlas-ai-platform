@@ -66,6 +66,17 @@ class EvaluationStaleError(EvaluationError):
         super().__init__(message or "Evaluation attempt is stale.")
 
 
+class SemanticGraderConfigurationError(EvaluationError):
+    """Worker refused live semantic grading due to invalid composition.
+
+    Raised at worker startup, not from global Settings, so the API can
+    construct Settings with ``semantic_grader_mode=live`` without failing.
+    """
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(message or "Live semantic grader configuration is invalid.")
+
+
 def sanitize_evaluation_error(exc: Exception) -> str:
     """Persist a class-only error string without raw exception text."""
     return f"{type(exc).__name__}: evaluation failed"

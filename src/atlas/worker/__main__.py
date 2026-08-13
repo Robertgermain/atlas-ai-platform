@@ -9,6 +9,8 @@ import sys
 from atlas.application.worker import ResearchJobWorker
 from atlas.config import get_settings
 from atlas.coordination.composition import build_heartbeat_recorder
+from atlas.evaluation.composition import require_semantic_grader_mode
+from atlas.evaluation.errors import SemanticGraderConfigurationError
 from atlas.observability.events import Event
 from atlas.observability.langsmith import (
     configure_langsmith,
@@ -39,7 +41,8 @@ def main() -> int:
     settings = get_settings()
     try:
         require_langsmith_for_live_ai(settings)
-    except LangSmithConfigurationError as exc:
+        require_semantic_grader_mode(settings)
+    except (LangSmithConfigurationError, SemanticGraderConfigurationError) as exc:
         log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
         return 1
     tracing_handle = configure_tracing(

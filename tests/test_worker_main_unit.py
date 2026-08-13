@@ -241,3 +241,30 @@ def test_main_exits_before_checkpoint_when_live_ai_missing_langsmith_key(
     assert captured.json(0)["error_class"] == "LangSmithConfigurationError"
     assert "sk-test-not-a-real-key" not in captured.text
     assert "lsv2" not in captured.text
+
+
+def test_main_exits_when_live_semantic_grader_uses_fake_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("ATLAS_SEMANTIC_GRADER_MODE", raising=False)
+    monkeypatch.delenv("ATLAS_LANGSMITH_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    settings = Settings(semantic_grader_mode="live", model_provider="fake")
+    monkeypatch.setattr(worker_main, "get_settings", lambda: settings)
+    called = {"checkpoint": 0}
+
+    def _must_not_run(_database_url: str) -> _FakeCheckpointRuntime:
+        called["checkpoint"] += 1
+        return _FakeCheckpointRuntime()
+
+    monkeypatch.setattr(worker_main, "create_checkpoint_runtime", _must_not_run)
+    monkeypatch.setattr(signal, "signal", lambda *_args, **_kwargs: None)
+
+    with capture_logs("atlas.worker.__main__") as captured:
+        assert worker_main.main() == 1
+    assert called["checkpoint"] == 0
+    assert captured.events == [Event.STARTUP_FAILED.value]
+    assert captured.json(0)["error_class"] == "SemanticGraderConfigurationError"
+    assert "sk-" not in captured.text
+    assert "openai" not in captured.text.lower()

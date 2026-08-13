@@ -1,33 +1,27 @@
-"""Opt-in live evaluation placeholder — deferred, not verification evidence."""
+"""Opt-in live semantic evaluation is explicit and skipped in CI."""
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
-from atlas.evaluation.contracts import EvaluationCandidateInput
-from atlas.evaluation.errors import EvaluationTerminalError
-from atlas.evaluation.llm_grader import DeferredSemanticGroundednessPort
+from atlas.evaluation.aggregation import SEMANTIC_PASS_THRESHOLD
+from atlas.evaluation.semantic_contracts import SEMANTIC_PROMPT_VERSION
 
 
-def test_deferred_semantic_port_fails_closed() -> None:
-    """Live semantic evaluation is deferred; the scaffold must not pretend to work."""
-    grader = DeferredSemanticGroundednessPort()
-    candidate = EvaluationCandidateInput(
-        job_id="deferred-job",
-        question="Deferred semantic probe",
-        plan=["Review market outlook"],
-        findings=["Market outlook remains mixed"],
-        draft="Market outlook remains mixed in this draft.",
-    )
-    with pytest.raises(EvaluationTerminalError):
-        grader.grade(candidate)
+def test_live_semantic_eval_is_not_inferred_and_not_run_here() -> None:
+    """Slice 15C1 does not arm live provider tests."""
+    assert os.environ.get("ATLAS_ENABLE_LIVE_SEMANTIC_GRADER_TESTS") != "1"
+    assert SEMANTIC_PASS_THRESHOLD == 0.70
+    assert SEMANTIC_PROMPT_VERSION == "semantic_groundedness.v1"
 
 
 @pytest.mark.skip(
     reason=(
-        "Live LangChain semantic groundedness is deferred until later in "
-        "Milestone 12; a skipped placeholder is not live-verification evidence."
+        "Live provider semantic groundedness tests are deferred until after "
+        "the Slice 15C1 foundation, prompt, threshold, and contracts are frozen."
     )
 )
-def test_live_semantic_eval_deferred_not_implemented() -> None:
-    raise AssertionError("live semantic grader is not implemented")
+def test_live_semantic_eval_not_run_in_this_slice() -> None:
+    raise AssertionError("live semantic provider tests must not run in Slice 15C1")

@@ -315,6 +315,7 @@ def test_evaluation_runner_emits_run_and_dimension_traces(
             linked_ids=set(),
             tool_rows=[],
             provenance_ok=True,
+            semantic_request=None,
         )
 
     _result, names, _tree = _invoke_under_job(

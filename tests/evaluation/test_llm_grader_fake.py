@@ -10,6 +10,7 @@ from atlas.evaluation.graders import (
 )
 from atlas.evaluation.llm_grader import FakeSemanticGroundednessGrader as ReexportedFake
 from atlas.evidence.contracts import ClaimStructured
+from tests.evaluation.semantic_helpers import semantic_request_for_candidate
 
 
 def _candidate(
@@ -35,17 +36,17 @@ def test_fake_semantic_groundedness_grader_works() -> None:
         claims=[ClaimStructured(text="Supported", evidence_item_ids=["ev-1"])],
         evidence_item_ids=["ev-1"],
     )
-    ok = grader.grade(linked, linked_ids={"ev-1"})
+    ok = grader.grade(semantic_request_for_candidate(linked, {"ev-1"}))
     assert ok.name == "semantic_groundedness"
     assert ok.method == "llm"
     assert ok.passed is True
     assert ok.score == 1.0
     assert ok.failure_codes == []
 
-    weak = grader.grade(linked, linked_ids=set())
+    weak = grader.grade(semantic_request_for_candidate(linked, set()))
     assert weak.passed is False
     assert weak.score == 0.5
-    assert "SEMANTIC_GROUNDEDNESS_WEAK" in weak.failure_codes
+    assert "SEMANTIC_UNCLEAR" in weak.failure_codes
 
 
 def test_skipped_semantic_dimension_when_grader_none() -> None:

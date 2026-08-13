@@ -123,13 +123,8 @@ class _RaisingSemanticGrader:
         self._exc = exc
         self.version = "test.raising"
 
-    def grade(
-        self,
-        candidate: EvaluationCandidateInput,
-        *,
-        linked_ids: set[str] | None = None,
-    ) -> DimensionResult:
-        del candidate, linked_ids
+    def grade(self, request: object) -> DimensionResult:
+        del request
         raise self._exc
 
 

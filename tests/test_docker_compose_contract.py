@@ -191,6 +191,7 @@ _LANGSMITH_ENV_KEYS = (
     "ATLAS_LANGSMITH_API_URL",
     "ATLAS_LANGSMITH_TIMEOUT_MS",
 )
+_SEMANTIC_GRADER_ENV_KEYS = ("ATLAS_SEMANTIC_GRADER_MODE",)
 _LITERAL_CREDENTIAL = re.compile(r"lsv2_[A-Za-z0-9]+|sk-[A-Za-z0-9]{20,}")
 
 
@@ -231,3 +232,24 @@ def test_langsmith_api_key_is_mapped_only_on_worker() -> None:
         if isinstance(value, str) and _LITERAL_CREDENTIAL.search(value):
             literal_langsmith_key = True
     assert literal_langsmith_key is False
+
+
+def test_semantic_grader_mode_is_mapped_only_on_worker() -> None:
+    """Slice 15C1: semantic grader mode is worker-only and defaults to skipped."""
+    compose_text = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert (
+        "ATLAS_SEMANTIC_GRADER_MODE: ${ATLAS_SEMANTIC_GRADER_MODE:-skipped}"
+        in compose_text
+    )
+    config = _load_rendered_config()
+    services = config["services"]
+    worker_env = _service_env(services["worker"])
+    for key in _SEMANTIC_GRADER_ENV_KEYS:
+        assert key in worker_env
+        assert worker_env[key] == "skipped"
+    for name, service in services.items():
+        if name == "worker":
+            continue
+        env = _service_env(service)
+        for key in _SEMANTIC_GRADER_ENV_KEYS:
+            assert key not in env
