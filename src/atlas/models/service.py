@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from langchain_core.language_models.chat_models import BaseChatModel
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
@@ -41,6 +43,8 @@ from atlas.persistence.repositories.model_invocation import (
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
+
+_tracer = trace.get_tracer(__name__)
 
 
 def build_invocation_key(
@@ -283,16 +287,33 @@ class ModelInvocationService:
                 raise ModelInvocationInProgressError() from exc
 
         attempt_started_at = time.perf_counter()
+        # Bounded span attributes only: `node_name` is one of a small fixed
+        # set of caller-controlled node names ("plan"/"draft"), and
+        # `self._provider.value` is a `ProviderId` enum value -- never the
+        # prompt text, provider response, or any other free-form content
+        # (Slice 15A3).
         try:
-            validated, meta = invoke_structured(
-                chat_model=self._chat_model,
-                provider=self._provider,
-                model_name=self._model_name,
-                prompt_version=prompt_version,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                schema=schema,
-            )
+            with _tracer.start_as_current_span(
+                "model.attempt",
+                attributes={
+                    "atlas.node_name": node_name,
+                    "atlas.model.provider": self._provider.value,
+                },
+            ) as span:
+                try:
+                    validated, meta = invoke_structured(
+                        chat_model=self._chat_model,
+                        provider=self._provider,
+                        model_name=self._model_name,
+                        prompt_version=prompt_version,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        schema=schema,
+                    )
+                except Exception as exc:
+                    span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("error.class", exc.__class__.__name__)
+                    raise
         except ModelError as exc:
             finished = datetime.now(UTC)
             duration_seconds = time.perf_counter() - attempt_started_at

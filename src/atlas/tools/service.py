@@ -9,6 +9,8 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 from sqlalchemy.exc import IntegrityError
 
 from atlas.observability.metrics import AtlasMetrics, default_metrics
@@ -48,6 +50,8 @@ from atlas.tools.registry import NodePermissionPolicy, ToolRegistry
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
+
+_tracer = trace.get_tracer(__name__)
 
 
 TRANSIENT_RETRY_CLASSES = frozenset(
@@ -379,8 +383,23 @@ class ToolInvocationService:
                 raise ToolInvocationInProgressError() from exc
 
         attempt_started_at = time.perf_counter()
+        # Bounded span attributes only: `tool_id`/`provider` values are
+        # fixed enums, never caller-supplied text or tool output (Slice
+        # 15A3).
         try:
-            result = tool.invoke(raw_input, context=context)
+            with _tracer.start_as_current_span(
+                "tool.attempt",
+                attributes={
+                    "atlas.tool_id": tool_id.value,
+                    "atlas.tool.provider": provider.value,
+                },
+            ) as span:
+                try:
+                    result = tool.invoke(raw_input, context=context)
+                except Exception as exc:
+                    span.set_status(Status(StatusCode.ERROR))
+                    span.set_attribute("error.class", exc.__class__.__name__)
+                    raise
         except ToolError as exc:
             finished = datetime.now(UTC)
             duration_seconds = time.perf_counter() - attempt_started_at

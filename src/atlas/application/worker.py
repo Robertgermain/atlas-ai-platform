@@ -5,12 +5,16 @@ from __future__ import annotations
 import logging
 import secrets
 import time
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from threading import Event as ThreadingEvent
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
+
+from opentelemetry import trace
+from opentelemetry.context import Context
 
 from atlas.application.exceptions import ClaimOwnershipError
 from atlas.application.job_processing import (
@@ -32,6 +36,11 @@ from atlas.eventing.builders import (
 from atlas.observability.events import Event
 from atlas.observability.logging import log_event, log_exception_boundary
 from atlas.observability.metrics import AtlasMetrics, default_metrics
+from atlas.observability.tracing import (
+    resolve_parent_or_link,
+    run_in_span,
+    trace_and_span_id_hex,
+)
 from atlas.outbox.ports import OutboxEnqueuer
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.outbox import SqlAlchemyOutboxRepository
@@ -40,6 +49,8 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
 
 logger = logging.getLogger(__name__)
+_tracer = trace.get_tracer(__name__)
+_FinalizeResultT = TypeVar("_FinalizeResultT")
 
 PROCESSING_TIMEOUT_REASON = "Processing timed out."
 PROCESSING_TIMEOUT_REASON_CLASS = "ProcessingTimeout"
@@ -202,25 +213,65 @@ class ResearchJobWorker:
 
     def _process_claimed(self, claimed: ClaimedResearchJob) -> None:
         started_at = time.perf_counter()
-        future: Future[ProcessingOutcome] = self._executor.submit(
-            partial(
-                self._processor,
-                claimed.job.question,
-                job_id=claimed.job.id,
-                claim_token=claimed.claim_token,
-                continuation_mode=claimed.continuation_mode,
-                active_workflow_execution_id=claimed.active_workflow_execution_id,
-            )
+
+        # Slice 15A3: resolve this specific claim's already-decided
+        # (persistence-layer) parent-or-link eligibility -- never
+        # reconstructed here from continuation_mode/active_workflow_
+        # execution_id. See atlas.persistence.repositories.research_job.
+        # claim_next and ClaimedResearchJob's own docstring.
+        parent_context, links = resolve_parent_or_link(
+            claimed.traceparent, use_as_parent=claimed.use_traceparent_as_parent
         )
+        span = _tracer.start_span(
+            "worker.process_job",
+            context=parent_context,
+            links=list(links),
+            attributes={"atlas.research_job_id": claimed.job.id},
+        )
+        span_trace_id, span_span_id = trace_and_span_id_hex(span)
+        otel_context = trace.set_span_in_context(span, parent_context)
+        atlas_fields = {
+            "research_job_id": claimed.job.id,
+            "trace_id": span_trace_id,
+            "span_id": span_span_id,
+        }
+
+        try:
+            future: Future[ProcessingOutcome] = self._executor.submit(
+                run_in_span,
+                span=span,
+                otel_context=otel_context,
+                atlas_fields=atlas_fields,
+                fn=partial(
+                    self._processor,
+                    claimed.job.question,
+                    job_id=claimed.job.id,
+                    claim_token=claimed.claim_token,
+                    continuation_mode=claimed.continuation_mode,
+                    active_workflow_execution_id=claimed.active_workflow_execution_id,
+                ),
+            )
+        except Exception:
+            # submit() itself failed (e.g. the executor is shutting down):
+            # run_in_span never started, so span.end() here is this span's
+            # only owner -- nothing was ever attached on this thread, so
+            # there is nothing to detach/leak either.
+            span.set_status(trace.Status(trace.StatusCode.ERROR))
+            span.end()
+            raise
         self._inflight_future = future
         try:
             outcome = future.result(timeout=self._processing_timeout_seconds)
         except FuturesTimeoutError:
-            self._finalize_failure(
-                claimed,
-                reason=PROCESSING_TIMEOUT_REASON,
-                reason_class=PROCESSING_TIMEOUT_REASON_CLASS,
-                duration_seconds=time.perf_counter() - started_at,
+            self._run_finalize_in_span(
+                otel_context,
+                atlas_fields,
+                lambda: self._finalize_failure(
+                    claimed,
+                    reason=PROCESSING_TIMEOUT_REASON,
+                    reason_class=PROCESSING_TIMEOUT_REASON_CLASS,
+                    duration_seconds=time.perf_counter() - started_at,
+                ),
             )
             self._abandoned_future = future
             self._inflight_future = None
@@ -233,21 +284,30 @@ class ResearchJobWorker:
                 research_job_id=claimed.job.id,
                 outcome="processing",
             )
-            self._finalize_failure(
-                claimed,
-                reason="Claim ownership lost during processing.",
-                reason_class=CLAIM_OWNERSHIP_LOST_REASON_CLASS,
-                duration_seconds=time.perf_counter() - started_at,
+            self._run_finalize_in_span(
+                otel_context,
+                atlas_fields,
+                lambda: self._finalize_failure(
+                    claimed,
+                    reason="Claim ownership lost during processing.",
+                    reason_class=CLAIM_OWNERSHIP_LOST_REASON_CLASS,
+                    duration_seconds=time.perf_counter() - started_at,
+                ),
             )
             self._inflight_future = None
             self._ignore_late_result(future)
             return
         except Exception as exc:
-            self._finalize_failure(
-                claimed,
-                reason=f"Processing failed: {exc.__class__.__name__}",
-                reason_class=exc.__class__.__name__,
-                duration_seconds=time.perf_counter() - started_at,
+            processing_error_class = exc.__class__.__name__
+            self._run_finalize_in_span(
+                otel_context,
+                atlas_fields,
+                lambda: self._finalize_failure(
+                    claimed,
+                    reason=f"Processing failed: {processing_error_class}",
+                    reason_class=processing_error_class,
+                    duration_seconds=time.perf_counter() - started_at,
+                ),
             )
             self._inflight_future = None
             self._ignore_late_result(future)
@@ -256,9 +316,41 @@ class ResearchJobWorker:
         self._inflight_future = None
         # Outcome finalization (including outbox insert) is outside the
         # processor-exception handler so an outbox failure cannot recurse into
-        # finalize_failure.
-        self._handle_outcome(
-            claimed, outcome, duration_seconds=time.perf_counter() - started_at
+        # finalize_failure. Run under a fresh child span of the same trace
+        # (Slice 15A3): by this point run_in_span's own worker.process_job
+        # span has already ended and detached on the executor thread, so
+        # without this, SqlAlchemyOutboxRepository.enqueue's
+        # current_traceparent() capture -- read on *this* (polling) thread,
+        # which never attached anything -- would always observe no active
+        # span and store a null traceparent for the job's own completion/
+        # failure event, breaking outbox-to-Kafka lineage for exactly the
+        # event that matters most.
+        self._run_finalize_in_span(
+            otel_context,
+            atlas_fields,
+            lambda: self._handle_outcome(
+                claimed, outcome, duration_seconds=time.perf_counter() - started_at
+            ),
+        )
+
+    @staticmethod
+    def _run_finalize_in_span(
+        otel_context: Context,
+        atlas_fields: Mapping[str, str],
+        fn: Callable[[], _FinalizeResultT],
+    ) -> _FinalizeResultT:
+        """Run finalize/outbox-enqueue work in a ``worker.finalize`` child
+        span of the same trace as ``worker.process_job``, on whichever
+        thread calls this (always the polling thread here -- no executor
+        boundary to cross, so this is strictly simpler than
+        :func:`run_in_span`'s cross-thread contract, but reuses it exactly
+        for the same exactly-once end/detach guarantee)."""
+        finalize_span = _tracer.start_span("worker.finalize", context=otel_context)
+        return run_in_span(
+            span=finalize_span,
+            otel_context=trace.set_span_in_context(finalize_span, otel_context),
+            atlas_fields=atlas_fields,
+            fn=fn,
         )
 
     def _handle_outcome(

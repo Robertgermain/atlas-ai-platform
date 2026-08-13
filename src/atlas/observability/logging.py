@@ -223,6 +223,7 @@ _KNOWN_SERVICE_ROLES: Final[frozenset[str]] = frozenset(
         "consumer",
         "kafka-topic-init",
         "consumer-replay",
+        "alert-receiver",
     }
 )
 
@@ -240,6 +241,7 @@ _LOGGER_CATEGORIES: Final[frozenset[str]] = frozenset(
         "httpx_httpcore",
         "redis",
         "sqlalchemy",
+        "opentelemetry",
         "atlas_unconverted",
         "other",
     }
@@ -256,6 +258,14 @@ _LOGGER_CATEGORY_PREFIXES: Final[tuple[tuple[str, str], ...]] = (
     ("httpcore", "httpx_httpcore"),
     ("redis", "redis"),
     ("sqlalchemy", "sqlalchemy"),
+    # opentelemetry's own SDK/exporter internals (Slice 15A3) -- e.g. a
+    # queue-full drop warning or an unreachable-Collector export failure.
+    # Never configured for level/routing below (unlike the loggers that
+    # are): the OTel SDK's own logging already stays at WARNING/ERROR by
+    # default and this formatter already renders it exactly as safely as
+    # every other unconverted logger regardless -- this prefix only makes
+    # that occurrence's category honestly distinguishable from "other".
+    ("opentelemetry", "opentelemetry"),
     ("atlas", "atlas_unconverted"),
 )
 _DEFAULT_LOGGER_CATEGORY: Final[str] = "other"

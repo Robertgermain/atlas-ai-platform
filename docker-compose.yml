@@ -277,6 +277,154 @@ services:
     # Milestone 18.
     stop_grace_period: 300s
 
+  alert-receiver:
+    # Atlas-owned internal Alertmanager webhook receiver (Milestone 15
+    # Slice 15A3, `atlas.observability.alert_receiver`). Reuses the shared
+    # backend image -- no seventh third-party image. Internal-only: no
+    # `ports:` published to the host; verified via
+    # `docker compose exec alert-receiver python -c "..."` loopback
+    # requests against its own `GET /received`, never a host-published
+    # port. Never logs a request body/header/URL/label/annotation/
+    # fingerprint -- see the module's own docstring.
+    image: *atlas-backend-image
+    <<: *atlas-hardening
+    command: ["python", "-m", "atlas.observability.alert_receiver"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9465/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    stop_grace_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Local observability stack (Milestone 15 Slice 15A3): Prometheus, Grafana,
+  # Alertmanager, Tempo, and the OpenTelemetry Collector. Every image below
+  # is pinned to an exact tag *and* its resolved multi-architecture manifest-
+  # list digest (never a floating tag) -- see docs/TECHNICAL_DESIGN.md for
+  # the verification method and upstream release evidence for each. None of
+  # these five is required for Atlas's own business processing to function;
+  # every application role's tracing/metrics export is fail-open regardless
+  # of whether any of these services is healthy, reachable, or even started.
+  # ---------------------------------------------------------------------------
+
+  prometheus:
+    image: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/rules:/etc/prometheus/rules:ro
+      - atlas_prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.listen-address=0.0.0.0:9090"
+    ports:
+      # Localhost-only: a developer inspects targets/rules/alerts locally.
+      - "127.0.0.1:9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  alertmanager:
+    image: prom/alertmanager:v0.33.1@sha256:9e082985f56f4c8c9f724e18f2288c6708f472e56a5286b8863d080434ea065d
+    volumes:
+      - ./docker/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--web.listen-address=0.0.0.0:9093"
+      # Single local node: disable HA gossip clustering entirely (empty
+      # value). Verified locally: with clustering enabled, Alertmanager
+      # waits a fixed ~10s "gossip settle" period before dispatching its
+      # first notification even in this single-node topology; disabling it
+      # removes both that delay and the otherwise-unused cluster listener.
+      - "--cluster.listen-address="
+    ports:
+      # Localhost-only: a developer inspects alert grouping/routing/silences
+      # locally. The receiver it routes to (alert-receiver) stays internal.
+      - "127.0.0.1:9093:9093"
+    depends_on:
+      alert-receiver:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:9093/-/healthy"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  tempo:
+    image: grafana/tempo:3.0.2@sha256:cda87c212d8c584dc0b89e337e7ed648a5100feb657e5d528480ee4fa03dbbe3
+    volumes:
+      - ./docker/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - atlas_tempo_data:/var/tempo
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    ports:
+      # Localhost-only: used to run trace-continuity verification queries
+      # against Tempo's own HTTP query API (e.g. GET /api/traces/{id}).
+      - "127.0.0.1:3200:3200"
+    # No Docker healthcheck: the pinned image's own root filesystem has no
+    # `/bin/sh` or `wget` (verified directly: `docker run --entrypoint
+    # /bin/sh ...` and `--entrypoint /bin/wget ...` both fail with "no such
+    # file or directory") -- there is no in-container tool a `CMD-SHELL`
+    # healthcheck could invoke, exactly like `otel-collector` below. Tempo's
+    # own `/ready` HTTP endpoint (published at `127.0.0.1:3200`, see above)
+    # is still reachable from the host for manual verification. Fail-open by
+    # design: no Atlas application container depends on this service's
+    # health, and its own dependents (`otel-collector`/`grafana`) key off
+    # `service_started`, not `service_healthy`.
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.158.0@sha256:5b97e6e3550ec6e48a71dba6f6304d349a293af8df4ee1f51da67be94fce2ecd
+    volumes:
+      - ./docker/otel-collector/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    command: ["--config=/etc/otelcol/config.yaml"]
+    depends_on:
+      tempo:
+        condition: service_started
+    # No Docker healthcheck: the core distribution's official image is a
+    # `FROM scratch` build with no shell, curl, or wget (verified against
+    # the official Dockerfile in open-telemetry/opentelemetry-collector-
+    # releases) -- there is no in-container tool a CMD-SHELL healthcheck
+    # could invoke. The `health_check` extension's HTTP endpoint
+    # (0.0.0.0:13133, see docker/otel-collector/otel-collector-config.yaml)
+    # is still configured and reachable from other containers on this
+    # Compose network for manual verification. Fail-open by design: no
+    # Atlas application container depends on this service's health.
+
+  grafana:
+    image: grafana/grafana:13.1.3@sha256:ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b260e1f5bc089bf0b759b43
+    environment:
+      # Anonymous Viewer-only access; no login form, no default admin
+      # account, no committed credential (Slice 15A3 hardening). See
+      # docs/TECHNICAL_DESIGN.md for the verification proving anonymous
+      # Viewer access works, administrative mutation endpoints are denied,
+      # and there is no usable default admin/admin path.
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "true"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./docker/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./docker/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./docker/grafana/atlas-dashboards:/etc/grafana/provisioning/atlas-dashboards:ro
+    ports:
+      # Localhost-only (hardening requirement: bind only 127.0.0.1).
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      tempo:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   atlas_pg_data:
   atlas_kafka_data:
+  atlas_prometheus_data:
+  atlas_tempo_data:

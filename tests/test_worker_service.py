@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from threading import Event as ThreadingEvent
 
 import pytest
+from opentelemetry import trace
 from prometheus_client import CollectorRegistry
 from sqlalchemy.orm import Session
 
@@ -22,10 +23,19 @@ from atlas.application.job_processing import (
 from atlas.application.ports import ClaimedResearchJob
 from atlas.application.worker import PROCESSING_TIMEOUT_REASON, ResearchJobWorker
 from atlas.domain import ResearchJob, ResearchJobStatus
+from atlas.observability.context import current_context
 from atlas.observability.events import Event
 from atlas.observability.metrics.catalog import AtlasMetrics
 from atlas.observability.testing import capture_logs
 from atlas.outbox.fakes import RecordingOutbox
+
+
+def _assert_no_tracing_leak() -> None:
+    """No span left attached and no Atlas correlation context left bound
+    on the calling thread (Slice 15A3 final condition #11)."""
+    assert not trace.get_current_span().get_span_context().is_valid
+    assert dict(current_context()) == {}
+
 
 T0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
 
@@ -226,6 +236,33 @@ def test_run_once_completes_deterministically() -> None:
         assert loaded.status is ResearchJobStatus.COMPLETED
         assert loaded.result == "echo:job-1:What is Atlas?"
         assert repo.completions
+        _assert_no_tracing_leak()
+    finally:
+        worker.close()
+
+
+def test_submit_failure_ends_span_and_leaves_no_tracing_leak() -> None:
+    """If ``Executor.submit()`` itself raises (e.g. a shutting-down pool),
+    ``worker.process_job``'s span is this worker's only owner: it must still
+    be ended (ERROR status) and detach nothing it never attached, and the
+    calling thread must show no leaked span or Atlas context afterward."""
+    repo = _FakeRepository()
+    job = ResearchJob.create("job-submit-failure", "question", at=T0)
+    repo.seed_pending(job)
+    worker = ResearchJobWorker(
+        session_factory=_FakeSessionFactory(),  # type: ignore[arg-type]
+        repository=repo,
+        processor=_echo_processor,
+        poll_interval_seconds=0.01,
+        processing_timeout_seconds=1.0,
+        lease_seconds=1.0,
+        outbox=RecordingOutbox(),
+    )
+    try:
+        worker._executor.shutdown(wait=False)
+        with pytest.raises(RuntimeError):
+            worker.run_once()
+        _assert_no_tracing_leak()
     finally:
         worker.close()
 
@@ -271,6 +308,7 @@ def test_timeout_finalizes_failure_and_ignores_late_result() -> None:
         assert loaded.status is ResearchJobStatus.FAILED
         assert late_results == ["LATE:job-timeout:slow question"]
         assert repo.completions == []
+        _assert_no_tracing_leak()
     finally:
         worker.close()
 
@@ -309,6 +347,7 @@ def test_processor_exception_fails_without_leaking_details() -> None:
         assert secret not in (loaded.failure_reason or "")
         assert "password" not in (loaded.failure_reason or "")
         assert repo.completions == []
+        _assert_no_tracing_leak()
     finally:
         worker.close()
 

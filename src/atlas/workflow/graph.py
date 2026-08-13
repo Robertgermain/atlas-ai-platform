@@ -13,6 +13,8 @@ from uuid import uuid4
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.runtime import Runtime
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 from atlas.evaluation.contracts import (
     EVALUATION_PROFILE,
@@ -115,6 +117,7 @@ PolicyCallback = Callable[
 ]
 
 _logger = logging.getLogger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -652,20 +655,30 @@ def _wrap_node(
         if hooks is not None:
             attempt = hooks.begin(node_name)
         started_at = time.perf_counter()
-        try:
-            if node_name == "research":
-                result = dict(node_fn(state, runtime, workflow_node_attempt=attempt))
-            else:
-                result = dict(node_fn(state, runtime))
-        except Exception as exc:
-            if hooks is not None and attempt is not None:
-                hooks.fail(node_name, attempt, exc)
-            metrics.observe_workflow_node(
-                node_name=node_name,
-                outcome="failed",
-                duration_seconds=time.perf_counter() - started_at,
-            )
-            raise
+        # `node_name` is always one of the fixed `NODE_NAMES` (Slice 15A3):
+        # a bounded, safe span name/attribute, never caller-supplied text.
+        with _tracer.start_as_current_span(
+            f"workflow.node.{node_name}",
+            attributes={"atlas.node_name": node_name},
+        ) as span:
+            try:
+                if node_name == "research":
+                    result = dict(
+                        node_fn(state, runtime, workflow_node_attempt=attempt)
+                    )
+                else:
+                    result = dict(node_fn(state, runtime))
+            except Exception as exc:
+                span.set_status(Status(StatusCode.ERROR))
+                span.set_attribute("error.class", exc.__class__.__name__)
+                if hooks is not None and attempt is not None:
+                    hooks.fail(node_name, attempt, exc)
+                metrics.observe_workflow_node(
+                    node_name=node_name,
+                    outcome="failed",
+                    duration_seconds=time.perf_counter() - started_at,
+                )
+                raise
         if hooks is not None and attempt is not None:
             hooks.complete(node_name, attempt)
         metrics.observe_workflow_node(

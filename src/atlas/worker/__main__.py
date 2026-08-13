@@ -16,6 +16,7 @@ from atlas.observability.logging import (
     log_exception_boundary,
 )
 from atlas.observability.metrics import start_metrics_http_server
+from atlas.observability.tracing import configure_tracing
 from atlas.persistence.db import get_session_factory
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
 from atlas.workflow import (
@@ -31,6 +32,11 @@ def main() -> int:
     """Run the research-job worker until interrupted."""
     configure_logging(service_role="worker")
     settings = get_settings()
+    tracing_handle = configure_tracing(
+        service_name="atlas-worker",
+        deployment_environment=settings.otel_deployment_environment,
+        otlp_traces_endpoint=settings.otel_exporter_otlp_traces_endpoint,
+    )
     metrics_server = start_metrics_http_server(port=settings.metrics_port)
     session_factory = get_session_factory()
     checkpoint_runtime = create_checkpoint_runtime(settings.database_url)
@@ -51,6 +57,7 @@ def main() -> int:
             # function still returns 1 for the original failure either way.
             log_exception_boundary(logger, Event.SHUTDOWN_CLEANUP_FAILED, close_exc)
         metrics_server.close()
+        tracing_handle.close()
         return 1
     processor = LangGraphResearchProcessor(
         checkpointer=checkpoint_runtime.checkpointer,
@@ -81,6 +88,7 @@ def main() -> int:
     finally:
         checkpoint_runtime.close()
         metrics_server.close()
+        tracing_handle.close()
     log_event(logger, Event.PROCESS_STOPPED)
     return 0
 

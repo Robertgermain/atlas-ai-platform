@@ -210,6 +210,18 @@ class ResearchJobModel(Base):
             name="fk_research_jobs_active_execution_job_pair",
             ondelete="NO ACTION",
         ),
+        CheckConstraint(
+            "traceparent IS NULL OR ("
+            "traceparent ~ '^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$' AND "
+            "traceparent !~ '^00-0{32}-[0-9a-f]{16}-[0-9a-f]{2}$' AND "
+            "traceparent !~ '^00-[0-9a-f]{32}-0{16}-[0-9a-f]{2}$'"
+            ")",
+            name="ck_research_jobs_traceparent_format",
+        ),
+        CheckConstraint(
+            "initial_traceparent_consumed_at IS NULL OR traceparent IS NOT NULL",
+            name="ck_research_jobs_initial_traceparent_consumed_pair",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
@@ -259,4 +271,16 @@ class ResearchJobModel(Base):
     )
     active_workflow_execution_id: Mapped[str | None] = mapped_column(
         String(36), nullable=True, index=True
+    )
+    #: The W3C ``traceparent`` active when the API created this row (Slice
+    #: 15A3). Persistence-only: never exposed through any public API or
+    #: domain model. Written once at insert and never overwritten afterward.
+    traceparent: Mapped[str | None] = mapped_column(String(55), nullable=True)
+    #: Set atomically, exactly once, in the same transaction as the first
+    #: successful claim of this row that both has a non-null ``traceparent``
+    #: and finds this column still ``NULL``. See
+    #: ``atlas.persistence.repositories.research_job.claim_next`` and the
+    #: Slice 15A3 migration docstring for the full contract this enforces.
+    initial_traceparent_consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )

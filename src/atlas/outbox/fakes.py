@@ -38,7 +38,8 @@ class FakeEventProducer:
         self._failure_exc = failure_exc or EventPublishError("FakeProducerFailure")
         self._on_before_publish = on_before_publish
 
-    def publish(self, event: DomainEvent) -> None:
+    def publish(self, event: DomainEvent, *, traceparent: str | None = None) -> None:
+        del traceparent
         self.attempts.append(event)
         if self._on_before_publish is not None:
             self._on_before_publish(event)
@@ -73,9 +74,9 @@ class ClockAdvancingProducer:
     def attempts(self) -> list[DomainEvent]:
         return self._inner.attempts
 
-    def publish(self, event: DomainEvent) -> None:
+    def publish(self, event: DomainEvent, *, traceparent: str | None = None) -> None:
         self._clock.advance(self._advance_by)
-        self._inner.publish(event)
+        self._inner.publish(event, traceparent=traceparent)
 
 
 class RecordingOutbox:

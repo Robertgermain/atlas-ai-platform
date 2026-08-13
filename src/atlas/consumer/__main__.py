@@ -128,6 +128,7 @@ from atlas.observability.metrics import (
     default_metrics,
     start_metrics_http_server,
 )
+from atlas.observability.tracing import configure_tracing
 from atlas.outbox.errors import KafkaTopicVerificationError
 from atlas.outbox.topic_admin import (
     verify_broker_connectivity,
@@ -325,9 +326,15 @@ def main() -> int:
     """Run the research-job projection consumer until interrupted or an error occurs."""
     configure_logging(service_role="consumer")
     metrics_server = None
+    tracing_handle = None
 
     try:
         settings = get_settings()
+        tracing_handle = configure_tracing(
+            service_name="atlas-consumer",
+            deployment_environment=settings.otel_deployment_environment,
+            otlp_traces_endpoint=settings.otel_exporter_otlp_traces_endpoint,
+        )
         metrics_server = start_metrics_http_server(port=settings.metrics_port)
         engine = build_consumer_engine(
             settings.database_url,
@@ -344,6 +351,8 @@ def main() -> int:
         log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
         if metrics_server is not None:
             metrics_server.close()
+        if tracing_handle is not None:
+            tracing_handle.close()
         return 1
 
     try:
@@ -359,6 +368,7 @@ def main() -> int:
         # succeeded; there is no partially-constructed consumer to close here.
         log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
         metrics_server.close()
+        tracing_handle.close()
         return 1
 
     # From this point on the consumer exists and must always be closed.
@@ -381,6 +391,7 @@ def main() -> int:
         except Exception as close_exc:
             log_exception_boundary(logger, Event.SHUTDOWN_CLEANUP_FAILED, close_exc)
         metrics_server.close()
+        tracing_handle.close()
         return 1
 
     exit_code = 1
@@ -426,6 +437,7 @@ def main() -> int:
             previous_handlers=installed_handlers,
         )
         metrics_server.close()
+        tracing_handle.close()
 
     if not cleanup_ok:
         exit_code = 1

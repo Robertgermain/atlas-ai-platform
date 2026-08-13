@@ -1,0 +1,186 @@
+# promtool unit tests for docker/prometheus/rules/atlas.rules.yml
+# (Slice 15A3). Run with:
+#   docker run --rm -v "$(pwd)/docker/prometheus:/etc/prometheus" \
+#     prom/prometheus:v3.13.2 promtool test rules \
+#     /etc/prometheus/tests/atlas_rules_test.yml
+
+rule_files:
+  - ../rules/atlas.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # 1. Zero traffic: no atlas_http_requests_total series exists at all.
+  #    sum(rate(...)) over no matching series is empty, so the recording
+  #    rule produces no sample -- absent data, never a spurious 0/0 or NaN.
+  - interval: 1m
+    input_series: []
+    promql_expr_test:
+      - expr: atlas:http_error_ratio:rate5m
+        eval_time: 5m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AtlasHighHttpErrorRatio
+        exp_alerts: []
+
+  # 2. Healthy traffic: all 2xx, zero 5xx. Ratio must be exactly 0, and the
+  #    alert must never fire.
+  - interval: 1m
+    input_series:
+      - series: >-
+          atlas_http_requests_total{method="GET",route="/health",status="200"}
+        values: "0+60x15"
+      - series: >-
+          atlas_http_requests_total{method="GET",route="/health",status="500"}
+        values: "0+0x15"
+    promql_expr_test:
+      - expr: atlas:http_error_ratio:rate5m
+        eval_time: 6m
+        exp_samples:
+          - labels: atlas:http_error_ratio:rate5m
+            value: 0
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AtlasHighHttpErrorRatio
+        exp_alerts: []
+
+  # 3. Boundary: error ratio exactly 0.05 (5%). The alert's strict `> 0.05`
+  #    must not fire exactly at the threshold.
+  - interval: 1m
+    input_series:
+      - series: >-
+          atlas_http_requests_total{method="GET",route="/v1/research-jobs",status="200"}
+        values: "0+57x15"
+      - series: >-
+          atlas_http_requests_total{method="GET",route="/v1/research-jobs",status="500"}
+        values: "0+3x15"
+    promql_expr_test:
+      - expr: atlas:http_error_ratio:rate5m
+        eval_time: 6m
+        exp_samples:
+          - labels: atlas:http_error_ratio:rate5m
+            value: 0.05
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AtlasHighHttpErrorRatio
+        exp_alerts: []
+
+  # 4. Above threshold, sustained past the 2m `for` duration, aggregated
+  #    across two distinct routes/status-code label combinations (multi-
+  #    route/status case): the alert must fire.
+  - interval: 1m
+    input_series:
+      - series: >-
+          atlas_http_requests_total{method="GET",route="/v1/research-jobs",status="200"}
+        values: "0+45x15"
+      - series: >-
+          atlas_http_requests_total{method="POST",route="/v1/research-jobs",status="500"}
+        values: "0+5x15"
+      - series: >-
+          atlas_http_requests_total{method="GET",route="/v1/evidence/documents",status="503"}
+        values: "0+5x15"
+    promql_expr_test:
+      - expr: atlas:http_error_ratio:rate5m
+        eval_time: 6m
+        exp_samples:
+          - labels: atlas:http_error_ratio:rate5m
+            value: 0.18181818181818182
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: AtlasHighHttpErrorRatio
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Atlas API 5xx error ratio above 5% for 2m"
+
+  # 5. Stale worker heartbeat: the worker series is stuck at 0 (never
+  #    updated). `time() - 0 > 60` becomes true at t=2m (interval 1m;
+  #    t=1m is exactly 60, and the comparison is strict `>`), then the
+  #    1m `for` duration elapses at t=3m and the alert fires.
+  - interval: 1m
+    input_series:
+      - series: >-
+          atlas_worker_heartbeat_last_success_timestamp_seconds{job="atlas-worker",instance="worker:9464"}
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: AtlasWorkerHeartbeatStale
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: AtlasWorkerHeartbeatStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: atlas-worker
+              instance: worker:9464
+            exp_annotations:
+              summary: "Atlas worker heartbeat has not succeeded in over 60s"
+
+  # 6. Fresh worker heartbeat: the gauge tracks evaluation time, so
+  #    `time() - value` stays 0 and the alert never fires.
+  - interval: 1m
+    input_series:
+      - series: >-
+          atlas_worker_heartbeat_last_success_timestamp_seconds{job="atlas-worker",instance="worker:9464"}
+        values: "0+60x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AtlasWorkerHeartbeatStale
+        exp_alerts: []
+
+  # 7. Default-zero heartbeat gauges from the other three Atlas scrape
+  #    jobs must not trigger this alert, even when they have been 0 for
+  #    far longer than the `for` window, as long as the worker's own
+  #    series is fresh.
+  - interval: 1m
+    input_series:
+      - series: >-
+          atlas_worker_heartbeat_last_success_timestamp_seconds{job="atlas-api",instance="api:8000"}
+        values: "0x10"
+      - series: >-
+          atlas_worker_heartbeat_last_success_timestamp_seconds{job="atlas-outbox-relay",instance="outbox-relay:9464"}
+        values: "0x10"
+      - series: >-
+          atlas_worker_heartbeat_last_success_timestamp_seconds{job="atlas-consumer",instance="consumer:9464"}
+        values: "0x10"
+      - series: >-
+          atlas_worker_heartbeat_last_success_timestamp_seconds{job="atlas-worker",instance="worker:9464"}
+        values: "0+60x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AtlasWorkerHeartbeatStale
+        exp_alerts: []
+
+  # 8. Missing-series policy: when the worker heartbeat series is
+  #    entirely absent, the expression produces no samples and the
+  #    alert does not fire — even if other roles expose a default-zero
+  #    gauge. Absence of worker heartbeat telemetry is not conflated
+  #    with a stale heartbeat; a down worker scrape target is owned by
+  #    AtlasScrapeTargetDown.
+  - interval: 1m
+    input_series:
+      - series: >-
+          atlas_worker_heartbeat_last_success_timestamp_seconds{job="atlas-api",instance="api:8000"}
+        values: "0x10"
+      - series: >-
+          atlas_worker_heartbeat_last_success_timestamp_seconds{job="atlas-outbox-relay",instance="outbox-relay:9464"}
+        values: "0x10"
+      - series: >-
+          atlas_worker_heartbeat_last_success_timestamp_seconds{job="atlas-consumer",instance="consumer:9464"}
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AtlasWorkerHeartbeatStale
+        exp_alerts: []
+
+  # 9. Missing-series policy with no heartbeat series at all (worker
+  #    never scraped, no default-zero gauges from other roles either):
+  #    still no alert.
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AtlasWorkerHeartbeatStale
+        exp_alerts: []

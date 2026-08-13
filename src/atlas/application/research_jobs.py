@@ -17,6 +17,7 @@ from atlas.application.ports import ResearchJobRepository
 from atlas.domain import ResearchJob
 from atlas.eventing.builders import build_research_job_created
 from atlas.observability.metrics import AtlasMetrics, default_metrics
+from atlas.observability.tracing import current_traceparent
 from atlas.outbox.ports import OutboxEnqueuer
 from atlas.persistence.db import session_scope
 from atlas.persistence.exceptions import IdempotencyKeyConflictError
@@ -61,6 +62,13 @@ class ResearchJobService:
         job_id = self._id_factory()
         job = ResearchJob.create(job_id, question)
         fingerprint = _fingerprint_create_request(job.question)
+        # Slice 15A3: the API's own root span (see the ASGI tracing
+        # middleware in atlas.main) is the currently active span at this
+        # point on every real request; this is the one and only place the
+        # initial traceparent for a research job is ever captured.
+        # Deliberately read once, before the insert, never recomputed
+        # later -- an idempotent replay below does not re-read it either.
+        traceparent = current_traceparent()
 
         try:
             with session_scope(self._session_factory) as session:
@@ -69,6 +77,7 @@ class ResearchJobService:
                     job,
                     idempotency_key=idempotency_key,
                     request_fingerprint=fingerprint,
+                    traceparent=traceparent,
                 )
                 self._outbox.enqueue(
                     session,

@@ -63,8 +63,9 @@ class _FakeRepository:
         *,
         idempotency_key: str,
         request_fingerprint: str,
+        traceparent: str | None = None,
     ) -> None:
-        del session
+        del session, traceparent
         self.add_calls += 1
         if self.fail_idempotency_on_add or idempotency_key in self.records_by_key:
             raise IdempotencyKeyConflictError()

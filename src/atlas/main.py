@@ -29,15 +29,19 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.types import Message, Receive, Scope, Send
 
 from atlas.api.errors import register_exception_handlers
 from atlas.api.v1.router import api_v1_router
+from atlas.config import get_settings
 from atlas.observability.events import Event
 from atlas.observability.logging import configure_logging, log_event
 from atlas.observability.metrics import (
@@ -48,10 +52,73 @@ from atlas.observability.metrics import (
     normalize_http_status,
     render_metrics_safe,
 )
+from atlas.observability.tracing import configure_tracing
 
 configure_logging(service_role="api")
 
 logger = logging.getLogger(__name__)
+_settings = get_settings()
+_tracing_handle = configure_tracing(
+    service_name="atlas-api",
+    deployment_environment=_settings.otel_deployment_environment,
+    otlp_traces_endpoint=_settings.otel_exporter_otlp_traces_endpoint,
+)
+_tracer = trace.get_tracer(__name__)
+
+
+class _TracingMiddleware:
+    """Starts one ``SERVER``-kind root span per HTTP request.
+
+    Always a new root trace: this middleware never reads an inbound
+    ``traceparent`` request header (Slice 15A3's trust-boundary decision --
+    see ``atlas.observability.tracing.propagation``'s own module docstring).
+    A pure ASGI middleware for the same reason as ``_HttpMetricsMiddleware``
+    below: correct post-routing ``scope["route"]`` access and unaltered
+    streaming/exception behavior. Both middleware layers wrap every request
+    all the way down to the route handler regardless of relative
+    add_middleware() order, so ``ResearchJobService.submit()`` (deep inside
+    the route handler) always observes this span as the ambient current
+    span when it reads ``current_traceparent()``.
+    """
+
+    def __init__(
+        self,
+        app: Callable[[Scope, Receive, Send], Awaitable[None]],
+    ) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        method = normalize_http_method(str(scope.get("method", "")))
+        status_code: int | None = None
+
+        async def _send(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message["status"])
+            await send(message)
+
+        with _tracer.start_as_current_span(
+            f"HTTP {method}", kind=SpanKind.SERVER
+        ) as span:
+            try:
+                await self._app(scope, receive, _send)
+            finally:
+                route_obj = scope.get("route")
+                route_template = (
+                    getattr(route_obj, "path_format", None)
+                    if route_obj is not None
+                    else None
+                )
+                route = normalize_http_route(route_template)
+                span.update_name(f"{method} {route}")
+                span.set_attribute("http.request.method", method)
+                span.set_attribute("atlas.http.route", route)
+                if status_code is not None:
+                    span.set_attribute("http.response.status_code", status_code)
 
 
 class _HttpMetricsMiddleware:
@@ -112,9 +179,24 @@ class _HttpMetricsMiddleware:
             )
 
 
-app = FastAPI(title="Atlas AI Platform", version="0.1.0")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Bounded best-effort tracing shutdown; never delays or fails shutdown.
+
+    ``TracingProviderHandle.close()`` is itself bounded (see
+    ``atlas.observability.tracing.provider``'s own docstring) -- a wedged
+    exporter cannot keep this process alive past that bound.
+    """
+    try:
+        yield
+    finally:
+        _tracing_handle.close()
+
+
+app = FastAPI(title="Atlas AI Platform", version="0.1.0", lifespan=_lifespan)
 register_exception_handlers(app)
 app.add_middleware(_HttpMetricsMiddleware, metrics=default_metrics())
+app.add_middleware(_TracingMiddleware)
 app.include_router(api_v1_router)
 
 

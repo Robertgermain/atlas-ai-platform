@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from atlas.eventing.contracts import DomainEvent, parse_domain_event
 from atlas.eventing.errors import DomainEventError
 from atlas.eventing.serialization import serialize_payload
+from atlas.observability.tracing import current_traceparent
 from atlas.outbox.errors import OutboxEnqueueError
 from atlas.outbox.ports import ClaimedOutboxRecord
 from atlas.persistence.models.outbox import OutboxEventModel
@@ -36,7 +37,14 @@ class SqlAlchemyOutboxRepository:
     """Persist and claim typed domain events. Callers own the transaction."""
 
     def enqueue(self, session: Session, event: DomainEvent) -> None:
-        """Insert a typed domain event; never accepts a raw public dict."""
+        """Insert a typed domain event; never accepts a raw public dict.
+
+        Captures the currently active span's ``traceparent`` (Slice 15A3),
+        if any, at this exact insert boundary -- the relay reads it once per
+        row later to start a child ``outbox.publish`` span; this is a
+        lineage source only, never forwarded unchanged (see
+        ``atlas.outbox.relay``).
+        """
         try:
             payload = serialize_payload(event)
             row = OutboxEventModel(
@@ -53,6 +61,7 @@ class SqlAlchemyOutboxRepository:
                 publish_lease_expires_at=None,
                 publish_attempts=0,
                 last_publish_error_class=None,
+                traceparent=current_traceparent(),
             )
             session.add(row)
             session.flush()
@@ -156,6 +165,7 @@ class SqlAlchemyOutboxRepository:
                     publish_claim_token=claimant_token,
                     publish_lease_expires_at=lease_expires_at,
                     publish_attempts=int(row.publish_attempts),
+                    traceparent=row.traceparent,
                 )
             )
         if claimed:

@@ -65,6 +65,7 @@ from atlas.observability.metrics import (
     default_metrics,
     start_metrics_http_server,
 )
+from atlas.observability.tracing import configure_tracing
 from atlas.outbox.errors import KafkaTopicVerificationError, OutboxError
 from atlas.outbox.kafka_producer import KafkaEventProducer
 from atlas.outbox.relay import OutboxRelay, RelayRunOutcome
@@ -215,6 +216,11 @@ def main() -> int:
     """Run the Kafka outbox relay until interrupted or a terminal error occurs."""
     configure_logging(service_role="outbox-relay")
     settings = get_settings()
+    tracing_handle = configure_tracing(
+        service_name="atlas-outbox-relay",
+        deployment_environment=settings.otel_deployment_environment,
+        otlp_traces_endpoint=settings.otel_exporter_otlp_traces_endpoint,
+    )
     metrics_server = start_metrics_http_server(port=settings.metrics_port)
     engine = get_engine(settings.database_url)
     session_factory = get_session_factory(engine)
@@ -228,6 +234,7 @@ def main() -> int:
     except OutboxError as exc:
         log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
         metrics_server.close()
+        tracing_handle.close()
         return 1
 
     lock = PostgresOutboxRelayLock(engine, metrics=default_metrics())
@@ -251,6 +258,7 @@ def main() -> int:
             # path still returns 1 for the original failure either way.
             log_exception_boundary(logger, Event.SHUTDOWN_CLEANUP_FAILED, close_exc)
         metrics_server.close()
+        tracing_handle.close()
         return 1
 
     shutdown_requested = False
@@ -305,6 +313,7 @@ def main() -> int:
             previous_sigterm=previous_sigterm,
         )
         metrics_server.close()
+        tracing_handle.close()
 
     if not cleanup_ok:
         exit_code = 1

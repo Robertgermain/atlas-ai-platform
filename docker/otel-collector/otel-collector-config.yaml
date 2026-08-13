@@ -1,0 +1,65 @@
+# Local OpenTelemetry Collector configuration (Slice 15A3).
+#
+# Core distribution (otel/opentelemetry-collector, not -contrib): the
+# `health_check` extension below is bundled into the core distribution's
+# own component manifest (verified against
+# github.com/open-telemetry/opentelemetry-collector-releases
+# distributions/otelcol/manifest.yaml), so core is sufficient and has a
+# smaller attack surface / image size than contrib, which is not otherwise
+# needed here.
+#
+# Bounded retry/queue contract (an extended Tempo outage drops telemetry
+# rather than blocking Atlas or growing memory without bound):
+# - memory_limiter refuses new data once the soft limit is exceeded and
+#   forces GC at the hard (spike) limit, ahead of the batch/export stage.
+# - The otlp exporter's own sending_queue is a bounded in-memory queue
+#   (queue_size); once full, new batches are dropped (queue.enabled +
+#   fixed queue_size, no on-disk overflow configured for this local
+#   deployment).
+# - retry_on_failure bounds each retry attempt's backoff and the total
+#   time a batch may be retried before it is dropped entirely
+#   (max_elapsed_time) -- retries never continue indefinitely.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 200
+    spike_limit_mib: 50
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+exporters:
+  otlp/tempo:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 120s
+
+extensions:
+  health_check:
+    endpoint: "0.0.0.0:13133"
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo]

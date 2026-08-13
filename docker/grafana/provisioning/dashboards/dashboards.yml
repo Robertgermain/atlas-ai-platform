@@ -1,0 +1,16 @@
+# File-provisioned, immutable Grafana dashboards (Slice 15A3).
+# `allowUiUpdates: false` blocks any UI-side edit from being saved back
+# over the provisioned file (there is no admin account to save it as
+# anyway -- see docker-compose.yml's Grafana hardening comments).
+apiVersion: 1
+
+providers:
+  - name: atlas
+    orgId: 1
+    folder: Atlas
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/atlas-dashboards

@@ -61,11 +61,13 @@ class SqlAlchemyResearchJobRepository:
         *,
         idempotency_key: str,
         request_fingerprint: str,
+        traceparent: str | None = None,
     ) -> None:
         """Insert a new research job with required idempotency metadata."""
         model = to_orm(job)
         model.idempotency_key = idempotency_key
         model.request_fingerprint = request_fingerprint
+        model.traceparent = traceparent
         session.add(model)
         try:
             session.flush()
@@ -168,12 +170,17 @@ class SqlAlchemyResearchJobRepository:
             model.claim_token = claim_token
             model.lease_expires_at = lease_expires_at
             model.next_attempt_at = None
+            use_traceparent_as_parent = self._maybe_consume_initial_traceparent(
+                model, now=now
+            )
             session.flush()
             return ClaimedResearchJob(
                 job=to_domain(model),
                 claim_token=claim_token,
                 continuation_mode=effective_mode,
                 active_workflow_execution_id=model.active_workflow_execution_id,
+                traceparent=model.traceparent,
+                use_traceparent_as_parent=use_traceparent_as_parent,
             )
 
         if model.status == ResearchJobStatus.RUNNING.value:
@@ -188,15 +195,56 @@ class SqlAlchemyResearchJobRepository:
             model.lease_expires_at = lease_expires_at
             job = to_domain(model)
             apply_domain_to_orm(job, model)
+            # A RUNNING-status claim is always a crash/lease reclaim of a row
+            # some earlier claim already started processing (this branch is
+            # never reached for a row's very first claim -- that is always
+            # PENDING, above). By the time any transaction reaches this
+            # branch, the row's first-ever PENDING claim already either
+            # consumed `initial_traceparent_consumed_at` in its own committed
+            # transaction (if it had a stored `traceparent`) or found none to
+            # consume -- either way this call is always a no-op here and
+            # always returns False. It is still routed through the same
+            # helper (rather than hardcoding `False`) so the one durable rule
+            # -- "consume at most once, ever" -- has exactly one
+            # implementation to audit instead of two that must agree.
+            use_traceparent_as_parent = self._maybe_consume_initial_traceparent(
+                model, now=now
+            )
             session.flush()
             return ClaimedResearchJob(
                 job=to_domain(model),
                 claim_token=claim_token,
                 continuation_mode=claimed_mode,
                 active_workflow_execution_id=model.active_workflow_execution_id,
+                traceparent=model.traceparent,
+                use_traceparent_as_parent=use_traceparent_as_parent,
             )
 
         return None
+
+    @staticmethod
+    def _maybe_consume_initial_traceparent(
+        model: ResearchJobModel, *, now: datetime
+    ) -> bool:
+        """Atomically grant first-parent eligibility to at most one claim, ever.
+
+        Safe without a separate ``UPDATE ... WHERE`` guard because the
+        caller (``claim_next``) already holds this row's exclusive lock
+        (``with_for_update(skip_locked=True)``) for the remainder of this
+        transaction -- no concurrent transaction can observe or mutate
+        ``initial_traceparent_consumed_at`` on this row until this one
+        commits or rolls back. Returns ``True`` only the one time this call
+        itself transitions the column from ``NULL`` to non-``NULL``; every
+        later call for the same row (regardless of ``continuation_mode``)
+        always returns ``False``. Returns ``False`` without any mutation when
+        the row has no stored ``traceparent`` to consume.
+        """
+        if model.traceparent is None:
+            return False
+        if model.initial_traceparent_consumed_at is not None:
+            return False
+        model.initial_traceparent_consumed_at = now
+        return True
 
     def finalize_completion(
         self,

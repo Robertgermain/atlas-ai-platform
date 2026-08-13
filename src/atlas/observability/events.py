@@ -209,6 +209,30 @@ class Event(StrEnum):
     #: class, when one was raised.
     METRICS_SERVER_SHUTDOWN_FAILED = "metrics_server_shutdown_failed"
 
+    #: A process's OpenTelemetry ``TracerProvider``/exporter/processor
+    #: construction failed at startup (Slice 15A3). Fail-open: the process
+    #: continues with tracing effectively disabled (spans are still created
+    #: in-process by the API, but never exported) rather than failing
+    #: startup. ``error_class`` the exception class.
+    TRACING_INIT_FAILED = "tracing_init_failed"
+
+    #: A process's bounded OpenTelemetry shutdown/flush
+    #: (``TracingProviderHandle.close()``) itself raised or did not complete
+    #: within its documented bound. Best-effort: the process continues
+    #: shutting down regardless. ``error_class`` the exception class, when
+    #: one was raised.
+    TRACING_SHUTDOWN_FAILED = "tracing_shutdown_failed"
+
+    #: The Atlas-owned internal Alertmanager webhook receiver
+    #: (``atlas.observability.alert_receiver``) accepted and recorded one
+    #: webhook delivery into its bounded in-memory ring buffer. ``outcome``
+    #: is the normalized alert status (``"firing"``/``"resolved"``/
+    #: ``"other"``). Never logs the request body, headers, annotations,
+    #: labels, URL, or alert fingerprint -- those are available only via the
+    #: receiver's own bounded ``GET /received`` endpoint, never through this
+    #: structured-log line.
+    ALERT_WEBHOOK_RECEIVED = "alert_webhook_received"
+
     #: A log record arrived from a logger Atlas does not control (a
     #: third-party dependency) or from an Atlas call site not yet converted
     #: to :func:`atlas.observability.logging.log_event`. Atlas records only
