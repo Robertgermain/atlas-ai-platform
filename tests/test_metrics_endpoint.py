@@ -16,6 +16,8 @@ from prometheus_client import CONTENT_TYPE_LATEST
 from pytest import MonkeyPatch
 from sqlalchemy.exc import OperationalError
 
+from atlas.api.deps import provide_evaluation_service, provide_research_job_service
+from atlas.application.exceptions import ResearchJobLookupError
 from atlas.main import app
 from atlas.observability.events import Event
 from atlas.observability.testing import capture_logs
@@ -101,22 +103,44 @@ def test_nested_v1_router_route_recorded_with_its_full_mounted_path() -> None:
     ``"/v1/research-jobs/{job_id}"``. The emitted ``route`` label must still
     be the full, human-readable mounted path, not the stripped template and
     not ``"other"``.
-    """
-    response = client.get("/v1/research-jobs/does-not-exist")
-    assert response.status_code == 404  # job not found, but the route matched
 
-    samples = _http_request_samples()
-    matching = [
-        labels
-        for labels, _ in samples
-        if labels.get("route") == "/v1/research-jobs/{job_id}"
-        and labels.get("method") == "GET"
-    ]
-    assert matching, samples
-    assert matching[0]["status"] == "404"
-    assert all(
-        labels.get("route") != "/research-jobs/{job_id}" for labels, _ in samples
+    The route is DB-backed in production; this isolated test overrides the
+    application services so a missing job returns 404 without PostgreSQL.
+    """
+
+    class _MissingJobService:
+        def get(self, job_id: str) -> None:
+            raise ResearchJobLookupError(job_id)
+
+    class _EmptyEvaluationService:
+        def get_by_job(self, job_id: str) -> list[object]:
+            return []
+
+    app.dependency_overrides[provide_research_job_service] = lambda: (
+        _MissingJobService()
     )
+    app.dependency_overrides[provide_evaluation_service] = lambda: (
+        _EmptyEvaluationService()
+    )
+    try:
+        response = client.get("/v1/research-jobs/does-not-exist")
+        assert response.status_code == 404  # job not found, but the route matched
+
+        samples = _http_request_samples()
+        matching = [
+            labels
+            for labels, _ in samples
+            if labels.get("route") == "/v1/research-jobs/{job_id}"
+            and labels.get("method") == "GET"
+            and labels.get("status") == "404"
+        ]
+        assert matching, samples
+        assert all(
+            labels.get("route") != "/research-jobs/{job_id}" for labels, _ in samples
+        )
+    finally:
+        app.dependency_overrides.pop(provide_research_job_service, None)
+        app.dependency_overrides.pop(provide_evaluation_service, None)
 
 
 def test_unmatched_route_recorded_as_unmatched_not_raw_path() -> None:
