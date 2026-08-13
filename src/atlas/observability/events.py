@@ -223,6 +223,23 @@ class Event(StrEnum):
     #: one was raised.
     TRACING_SHUTDOWN_FAILED = "tracing_shutdown_failed"
 
+    #: Worker LangSmith Client construction failed (Slice 15B). Fail-open:
+    #: the process continues with LangSmith export disabled rather than
+    #: failing startup. ``error_class`` the exception class.
+    LANGSMITH_INIT_FAILED = "langsmith_init_failed"
+
+    #: A LangSmith enqueue, context enter/exit, hide callback, or background
+    #: export failed. Contained: never fails a research job.
+    #: ``outcome`` names the phase (``"enqueue"``/``"export"``);
+    #: ``error_class`` the exception class.
+    LANGSMITH_EXPORT_FAILED = "langsmith_export_failed"
+
+    #: Bounded LangSmith ``Client.flush`` at process shutdown raised or did
+    #: not complete within its documented bound. Best-effort: the process
+    #: continues shutting down. ``error_class`` the exception class, when
+    #: one was raised.
+    LANGSMITH_SHUTDOWN_FAILED = "langsmith_shutdown_failed"
+
     #: The Atlas-owned internal Alertmanager webhook receiver
     #: (``atlas.observability.alert_receiver``) accepted and recorded one
     #: webhook delivery into its bounded in-memory ring buffer. ``outcome``

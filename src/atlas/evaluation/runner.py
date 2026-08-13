@@ -32,6 +32,7 @@ from atlas.evaluation.graders import (
     skipped_semantic_dimension,
 )
 from atlas.evaluation.service import EvaluationService
+from atlas.observability.langsmith import attach_run_metadata, trace_ai
 
 if TYPE_CHECKING:
     from atlas.evaluation.ports import SemanticGroundednessGrader
@@ -86,6 +87,37 @@ class EvaluationRunner:
         provenance_ok: bool = True,
         job_claim_token: str,
     ) -> EvaluationRunResult:
+        def _execute() -> EvaluationRunResult:
+            return self._run_owned(
+                candidate=candidate,
+                workflow_execution_id=workflow_execution_id,
+                deadline=deadline,
+                provenance_ok=provenance_ok,
+                job_claim_token=job_claim_token,
+            )
+
+        return trace_ai(
+            name="evaluation.run",
+            run_type="chain",
+            metadata={
+                "atlas.research_job_id": candidate.job_id,
+                "atlas.workflow_execution_id": workflow_execution_id,
+                "atlas.evaluation_profile": candidate.evaluation_profile,
+                "atlas.evaluation_attempt": candidate.evaluation_attempt,
+                "atlas.node_name": "evaluate",
+            },
+            fn=_execute,
+        )
+
+    def _run_owned(
+        self,
+        *,
+        candidate: EvaluationCandidateInput,
+        workflow_execution_id: str,
+        deadline: datetime,
+        provenance_ok: bool,
+        job_claim_token: str,
+    ) -> EvaluationRunResult:
         linked_ids = self._load_linked_ids(candidate, workflow_execution_id)
         tool_rows = self._load_tool_rows(candidate, workflow_execution_id)
         fingerprint = fingerprint_grading_snapshot(
@@ -105,7 +137,15 @@ class EvaluationRunner:
             job_claim_token=job_claim_token,
         )
         if replay is not None:
+            attach_run_metadata(
+                {
+                    "atlas.evaluation_run_id": run_id,
+                    "atlas.disposition_hint": "replay",
+                }
+            )
             return replay
+
+        attach_run_metadata({"atlas.evaluation_run_id": run_id})
 
         try:
             dimensions, versions = self._grade(
@@ -116,6 +156,12 @@ class EvaluationRunner:
             )
             aggregate, passed, stamped = aggregate_dimensions(dimensions)
             disposition = "complete" if passed else "terminal"
+            attach_run_metadata(
+                {
+                    "atlas.evaluation_passed": passed,
+                    "atlas.disposition_hint": disposition,
+                }
+            )
             return self._service.finalize_success(
                 run_id=run_id,
                 ownership_token=ownership_token,
@@ -180,33 +226,57 @@ class EvaluationRunner:
         )
 
         dimensions: list[DimensionResult] = [
-            grade_citation_integrity(
-                candidate,
-                linked_ids=linked_ids,
-                provenance_ok=provenance_ok,
+            self._trace_dimension(
+                "citation_integrity",
+                GRADER_VERSIONS["citation_integrity"],
+                lambda: grade_citation_integrity(
+                    candidate,
+                    linked_ids=linked_ids,
+                    provenance_ok=provenance_ok,
+                ),
             ),
-            grade_tool_use(
-                tool_rows,
-                max_logical_calls=self._max_logical_calls,
+            self._trace_dimension(
+                "tool_use",
+                GRADER_VERSIONS["tool_use"],
+                lambda: grade_tool_use(
+                    tool_rows,
+                    max_logical_calls=self._max_logical_calls,
+                ),
             ),
-            grade_report_structure(
-                preview,
-                draft=candidate.draft,
-                plan=list(candidate.plan),
+            self._trace_dimension(
+                "report_structure",
+                GRADER_VERSIONS["report_structure"],
+                lambda: grade_report_structure(
+                    preview,
+                    draft=candidate.draft,
+                    plan=list(candidate.plan),
+                ),
             ),
-            grade_coverage(
-                linked_count=len(linked_ids),
-                has_claims=bool(candidate.claims),
-                min_linked=self._min_linked,
-                golden_facets_hit=candidate.golden_facets_hit,
+            self._trace_dimension(
+                "coverage",
+                GRADER_VERSIONS["coverage"],
+                lambda: grade_coverage(
+                    linked_count=len(linked_ids),
+                    has_claims=bool(candidate.claims),
+                    min_linked=self._min_linked,
+                    golden_facets_hit=candidate.golden_facets_hit,
+                ),
             ),
-            grade_completeness(
-                plan=list(candidate.plan),
-                findings=list(candidate.findings),
-                draft=candidate.draft,
-                golden_ratio=candidate.golden_completeness_ratio,
+            self._trace_dimension(
+                "completeness",
+                GRADER_VERSIONS["completeness"],
+                lambda: grade_completeness(
+                    plan=list(candidate.plan),
+                    findings=list(candidate.findings),
+                    draft=candidate.draft,
+                    golden_ratio=candidate.golden_completeness_ratio,
+                ),
             ),
-            grade_lexical_id_groundedness(candidate.claims, linked_ids),
+            self._trace_dimension(
+                "lexical_id_groundedness",
+                GRADER_VERSIONS["lexical_id_groundedness"],
+                lambda: grade_lexical_id_groundedness(candidate.claims, linked_ids),
+            ),
         ]
 
         versions = {
@@ -222,26 +292,71 @@ class EvaluationRunner:
         }
 
         if self._semantic_grader is None:
-            dimensions.append(skipped_semantic_dimension())
+            dimensions.append(
+                self._trace_dimension(
+                    "semantic_groundedness",
+                    "skipped",
+                    skipped_semantic_dimension,
+                )
+            )
             versions["semantic_groundedness"] = "skipped"
         else:
-            semantic = self._semantic_grader.grade(
-                candidate,
-                linked_ids=linked_ids,
+            semantic_version = self._semantic_grader_version()
+            semantic = self._trace_dimension(
+                "semantic_groundedness",
+                semantic_version,
+                lambda: self._grade_semantic(candidate, linked_ids),
             )
-            if not isinstance(semantic, DimensionResult):
-                raise TypeError("semantic grader must return DimensionResult")
             dimensions.append(semantic)
-            version = getattr(self._semantic_grader, "version", None)
-            if isinstance(self._semantic_grader, FakeSemanticGroundednessGrader):
-                versions["semantic_groundedness"] = (
-                    FakeSemanticGroundednessGrader.version
-                )
-            elif isinstance(version, str) and version:
-                versions["semantic_groundedness"] = version
-            else:
-                versions["semantic_groundedness"] = GRADER_VERSIONS[
-                    "semantic_groundedness"
-                ]
+            versions["semantic_groundedness"] = semantic_version
 
         return dimensions, versions
+
+    def _semantic_grader_version(self) -> str:
+        if isinstance(self._semantic_grader, FakeSemanticGroundednessGrader):
+            return FakeSemanticGroundednessGrader.version
+        version = getattr(self._semantic_grader, "version", None)
+        if isinstance(version, str) and version:
+            return version
+        return GRADER_VERSIONS["semantic_groundedness"]
+
+    def _grade_semantic(
+        self,
+        candidate: EvaluationCandidateInput,
+        linked_ids: set[str],
+    ) -> DimensionResult:
+        assert self._semantic_grader is not None
+        semantic = self._semantic_grader.grade(
+            candidate,
+            linked_ids=linked_ids,
+        )
+        if not isinstance(semantic, DimensionResult):
+            raise TypeError("semantic grader must return DimensionResult")
+        return semantic
+
+    @staticmethod
+    def _trace_dimension(
+        name: str,
+        grader_version: str,
+        fn: Callable[[], DimensionResult],
+    ) -> DimensionResult:
+        def _run() -> DimensionResult:
+            result = fn()
+            attach_run_metadata(
+                {
+                    "atlas.evaluation_passed": result.passed,
+                    "atlas.evaluation_score": result.score,
+                    "atlas.grader_version": grader_version,
+                }
+            )
+            return result
+
+        return trace_ai(
+            name=f"dimension.{name}",
+            run_type="chain",
+            metadata={
+                "atlas.evaluation_dimension": name,
+                "atlas.node_name": "evaluate",
+            },
+            fn=_run,
+        )

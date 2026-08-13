@@ -109,6 +109,9 @@ def test_http_request_metric_registered_with_expected_labels() -> None:
         lambda m: m.observe_heartbeat_write(outcome="success"),
         lambda m: m.mark_heartbeat_last_success(at_epoch_seconds=1.0),
         lambda m: m.observe_database_readiness_failure(),
+        lambda m: m.observe_langsmith_operation(
+            operation="initialize", outcome="success"
+        ),
     ],
 )
 def test_every_observer_method_succeeds_without_raising(observe: object) -> None:

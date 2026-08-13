@@ -427,6 +427,8 @@ def test_legacy_record_with_unformattable_args_never_crashes() -> None:
         ("httpcore._sync.connection", "httpx_httpcore"),
         ("redis.client", "redis"),
         ("sqlalchemy.engine", "sqlalchemy"),
+        ("opentelemetry.sdk", "opentelemetry"),
+        ("langsmith", "langsmith"),
         ("atlas.some.unconverted.module", "atlas_unconverted"),
         ("some_unrecognized_vendor_lib", "other"),
     ],

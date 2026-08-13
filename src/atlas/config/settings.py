@@ -1,8 +1,9 @@
 """Application configuration loaded from the environment."""
 
 from typing import Literal, Self
+from urllib.parse import urlparse
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from atlas.config.timeout_math import (
@@ -175,6 +176,50 @@ class Settings(BaseSettings):
     otel_deployment_environment: Literal["local", "kind", "aws"] = Field(
         default="local"
     )
+
+    # LangSmith AI observability (Milestone 15 Slice 15B). Settings validates
+    # field types and API-URL syntax only. The mandatory key for live
+    # model/tool/embedding providers is enforced at worker AI composition
+    # (atlas.observability.langsmith.composition), not here, so the API can
+    # construct the same Settings class without receiving the LangSmith
+    # credential. None for langsmith_api_url means the SDK hosted default;
+    # Atlas never copies that URL into source.
+    langsmith_api_key: SecretStr | None = Field(default=None)
+    langsmith_api_url: str | None = Field(default=None)
+    langsmith_project: str = Field(default="atlas-local", min_length=1, max_length=128)
+    langsmith_timeout_ms: int = Field(default=5000, ge=1, le=60_000)
+
+    @field_validator("langsmith_api_url")
+    @classmethod
+    def _validate_langsmith_api_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        parsed = urlparse(stripped)
+        if parsed.username or parsed.password:
+            raise ValueError("langsmith_api_url must not include credentials")
+        host = (parsed.hostname or "").lower()
+        loopback = host in {"127.0.0.1", "localhost", "::1"}
+        if parsed.scheme == "https":
+            return stripped.rstrip("/")
+        if parsed.scheme == "http" and loopback:
+            return stripped.rstrip("/")
+        raise ValueError("langsmith_api_url must use HTTPS, or HTTP only on loopback")
+
+    @field_validator("langsmith_project")
+    @classmethod
+    def _validate_langsmith_project(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("langsmith_project must be non-empty")
+        allowed = set(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+        )
+        if any(ch not in allowed for ch in stripped):
+            raise ValueError("langsmith_project contains unsupported characters")
+        return stripped
 
     @model_validator(mode="after")
     def _validate_heartbeat_timing(self) -> Self:

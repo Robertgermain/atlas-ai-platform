@@ -10,6 +10,11 @@ from atlas.application.worker import ResearchJobWorker
 from atlas.config import get_settings
 from atlas.coordination.composition import build_heartbeat_recorder
 from atlas.observability.events import Event
+from atlas.observability.langsmith import (
+    configure_langsmith,
+    require_langsmith_for_live_ai,
+)
+from atlas.observability.langsmith.errors import LangSmithConfigurationError
 from atlas.observability.logging import (
     configure_logging,
     log_event,
@@ -32,6 +37,11 @@ def main() -> int:
     """Run the research-job worker until interrupted."""
     configure_logging(service_role="worker")
     settings = get_settings()
+    try:
+        require_langsmith_for_live_ai(settings)
+    except LangSmithConfigurationError as exc:
+        log_exception_boundary(logger, Event.STARTUP_FAILED, exc)
+        return 1
     tracing_handle = configure_tracing(
         service_name="atlas-worker",
         deployment_environment=settings.otel_deployment_environment,
@@ -59,6 +69,7 @@ def main() -> int:
         metrics_server.close()
         tracing_handle.close()
         return 1
+    langsmith_handle = configure_langsmith(settings)
     processor = LangGraphResearchProcessor(
         checkpointer=checkpoint_runtime.checkpointer,
         session_factory=session_factory,
@@ -88,6 +99,7 @@ def main() -> int:
     finally:
         checkpoint_runtime.close()
         metrics_server.close()
+        langsmith_handle.close()
         tracing_handle.close()
     log_event(logger, Event.PROCESS_STOPPED)
     return 0
