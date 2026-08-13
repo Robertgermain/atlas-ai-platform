@@ -298,6 +298,12 @@ _RATE_LIMIT_OUTCOMES: Final[frozenset[str]] = frozenset(
     {"allowed", "denied", "failed_open", _OTHER}
 )
 _HEARTBEAT_OUTCOMES: Final[frozenset[str]] = frozenset({"success", "failure", _OTHER})
+_LANGSMITH_OPERATIONS: Final[frozenset[str]] = frozenset(
+    {"initialize", "enqueue", "export", "flush", _OTHER}
+)
+_LANGSMITH_OUTCOMES: Final[frozenset[str]] = frozenset(
+    {"success", "error", "timeout", "disabled", _OTHER}
+)
 
 #: Mirrors ``atlas.recovery.policy.PolicyAction`` (the ``Literal`` Atlas
 #: itself defines and returns from every ``PolicyDecision``). Kept as an
@@ -585,6 +591,12 @@ class AtlasMetrics:
         self._database_readiness_failures_total = Counter(
             "atlas_database_readiness_failures_total",
             "API /ready checks that reported the database not ready.",
+            registry=registry,
+        )
+        self._langsmith_operations_total = Counter(
+            "atlas_langsmith_operations_total",
+            "LangSmith client operations by phase and bounded outcome.",
+            ("operation", "outcome"),
             registry=registry,
         )
 
@@ -943,6 +955,16 @@ class AtlasMetrics:
         self._contain(
             "database_readiness_failure",
             self._database_readiness_failures_total.inc,
+        )
+
+    def observe_langsmith_operation(self, *, operation: str, outcome: str) -> None:
+        o = _bounded(operation, _LANGSMITH_OPERATIONS)
+        c = _bounded(outcome, _LANGSMITH_OUTCOMES)
+        self._contain(
+            "langsmith_operation",
+            lambda: self._langsmith_operations_total.labels(
+                operation=o, outcome=c
+            ).inc(),
         )
 
 

@@ -13,6 +13,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from sqlalchemy.exc import IntegrityError
 
+from atlas.observability.langsmith import trace_ai
 from atlas.observability.metrics import AtlasMetrics, default_metrics
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.tool_invocation import (
@@ -395,7 +396,21 @@ class ToolInvocationService:
                 },
             ) as span:
                 try:
-                    result = tool.invoke(raw_input, context=context)
+                    result = trace_ai(
+                        name=f"tool.{tool_id.value}",
+                        run_type="tool",
+                        metadata={
+                            "atlas.research_job_id": context.research_job_id,
+                            "atlas.workflow_execution_id": (
+                                context.workflow_execution_id
+                            ),
+                            "atlas.node_name": context.node_name or "research",
+                            "atlas.tool_id": tool_id.value,
+                            "atlas.tool.provider": provider.value,
+                            "atlas.tool_policy_version": context.tool_policy_version,
+                        },
+                        fn=lambda: tool.invoke(raw_input, context=context),
+                    )
                 except Exception as exc:
                     span.set_status(Status(StatusCode.ERROR))
                     span.set_attribute("error.class", exc.__class__.__name__)

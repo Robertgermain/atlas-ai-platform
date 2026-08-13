@@ -242,6 +242,7 @@ _LOGGER_CATEGORIES: Final[frozenset[str]] = frozenset(
         "redis",
         "sqlalchemy",
         "opentelemetry",
+        "langsmith",
         "atlas_unconverted",
         "other",
     }
@@ -266,6 +267,7 @@ _LOGGER_CATEGORY_PREFIXES: Final[tuple[tuple[str, str], ...]] = (
     # every other unconverted logger regardless -- this prefix only makes
     # that occurrence's category honestly distinguishable from "other".
     ("opentelemetry", "opentelemetry"),
+    ("langsmith", "langsmith"),
     ("atlas", "atlas_unconverted"),
 )
 _DEFAULT_LOGGER_CATEGORY: Final[str] = "other"
@@ -418,6 +420,7 @@ def _configure_third_party_loggers() -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("redis").setLevel(logging.WARNING)
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("langsmith").setLevel(logging.WARNING)
 
 
 def log_event(

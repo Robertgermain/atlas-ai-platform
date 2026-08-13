@@ -19,6 +19,7 @@ from atlas.evidence.contracts import (
     EvidenceStrength,
     SourceKind,
 )
+from atlas.observability.langsmith import attach_run_metadata, trace_ai
 from atlas.persistence.db import session_scope
 from atlas.persistence.repositories.embedding import SqlAlchemyEmbeddingRepository
 
@@ -140,45 +141,60 @@ class EvidenceRetriever:
         if not cleaned:
             return []
         hard_k = min(max(k, 1), 8)
-        embedded = self._embedder.embed_texts(
-            EmbedTextsRequest(
-                texts=[cleaned],
-                embedding_profile=self._embedding_profile,
+
+        def _retrieve() -> list[RetrievedEvidence]:
+            embedded = self._embedder.embed_texts(
+                EmbedTextsRequest(
+                    texts=[cleaned],
+                    embedding_profile=self._embedding_profile,
+                )
             )
+            query_vector = embedded.embeddings[0]
+            kinds = [kind.value for kind in source_kinds] if source_kinds else None
+            strength_values = (
+                [strength.value for strength in strengths] if strengths else None
+            )
+            use_hnsw = self._use_hnsw if mode is None else mode == "hnsw"
+            with session_scope(self._session_factory) as session:
+                if use_hnsw:
+                    rows = self._repository.retrieve_hnsw(
+                        session,
+                        query_vector=query_vector,
+                        embedding_profile=self._embedding_profile,
+                        k=hard_k,
+                        source_kinds=kinds,
+                        strengths=strength_values,
+                        research_job_id=research_job_id,
+                        include_operator_corpus=include_operator_corpus,
+                    )
+                else:
+                    rows = self._repository.retrieve_exact(
+                        session,
+                        query_vector=query_vector,
+                        embedding_profile=self._embedding_profile,
+                        k=hard_k,
+                        source_kinds=kinds,
+                        strengths=strength_values,
+                        research_job_id=research_job_id,
+                        include_operator_corpus=include_operator_corpus,
+                    )
+            hits = [
+                RetrievedEvidence(evidence=row.evidence, distance=row.distance)
+                for row in rows
+            ]
+            attach_run_metadata({"atlas.retrieval_hit_count": len(hits)})
+            return hits
+
+        return trace_ai(
+            name="retrieval",
+            run_type="retriever",
+            metadata={
+                "atlas.research_job_id": research_job_id,
+                "atlas.embedding_profile": self._embedding_profile,
+                "atlas.retrieval_k": hard_k,
+            },
+            fn=_retrieve,
         )
-        query_vector = embedded.embeddings[0]
-        kinds = [kind.value for kind in source_kinds] if source_kinds else None
-        strength_values = (
-            [strength.value for strength in strengths] if strengths else None
-        )
-        use_hnsw = self._use_hnsw if mode is None else mode == "hnsw"
-        with session_scope(self._session_factory) as session:
-            if use_hnsw:
-                rows = self._repository.retrieve_hnsw(
-                    session,
-                    query_vector=query_vector,
-                    embedding_profile=self._embedding_profile,
-                    k=hard_k,
-                    source_kinds=kinds,
-                    strengths=strength_values,
-                    research_job_id=research_job_id,
-                    include_operator_corpus=include_operator_corpus,
-                )
-            else:
-                rows = self._repository.retrieve_exact(
-                    session,
-                    query_vector=query_vector,
-                    embedding_profile=self._embedding_profile,
-                    k=hard_k,
-                    source_kinds=kinds,
-                    strengths=strength_values,
-                    research_job_id=research_job_id,
-                    include_operator_corpus=include_operator_corpus,
-                )
-        return [
-            RetrievedEvidence(evidence=row.evidence, distance=row.distance)
-            for row in rows
-        ]
 
 
 def _load_texts(

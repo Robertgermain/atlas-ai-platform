@@ -12,8 +12,10 @@ are monkeypatched.
 from __future__ import annotations
 
 import signal
+from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
 import atlas.worker.__main__ as worker_main
 from atlas.config.settings import Settings
@@ -207,3 +209,35 @@ def test_main_starts_and_closes_metrics_server_on_startup_failure(
 
     assert _metrics_ports_requested == [_patched_composition.metrics_port]
     assert _metrics_handle.close_calls == 1
+
+
+def test_main_exits_before_checkpoint_when_live_ai_missing_langsmith_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("ATLAS_LANGSMITH_API_KEY", raising=False)
+    monkeypatch.delenv("ATLAS_LANGSMITH_PROJECT", raising=False)
+    monkeypatch.delenv("ATLAS_LANGSMITH_API_URL", raising=False)
+    monkeypatch.delenv("ATLAS_LANGSMITH_TIMEOUT_MS", raising=False)
+    monkeypatch.chdir(tmp_path)
+    settings = Settings(
+        model_provider="openai",
+        openai_api_key=SecretStr("sk-test-not-a-real-key"),
+    )
+    monkeypatch.setattr(worker_main, "get_settings", lambda: settings)
+    called = {"checkpoint": 0}
+
+    def _must_not_run(_database_url: str) -> _FakeCheckpointRuntime:
+        called["checkpoint"] += 1
+        return _FakeCheckpointRuntime()
+
+    monkeypatch.setattr(worker_main, "create_checkpoint_runtime", _must_not_run)
+    monkeypatch.setattr(signal, "signal", lambda *_args, **_kwargs: None)
+
+    with capture_logs("atlas.worker.__main__") as captured:
+        assert worker_main.main() == 1
+    assert called["checkpoint"] == 0
+    assert captured.events == [Event.STARTUP_FAILED.value]
+    assert captured.json(0)["error_class"] == "LangSmithConfigurationError"
+    assert "sk-test-not-a-real-key" not in captured.text
+    assert "lsv2" not in captured.text

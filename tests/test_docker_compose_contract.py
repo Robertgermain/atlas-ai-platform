@@ -21,6 +21,8 @@ subprocess output.
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -65,13 +67,16 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _load_rendered_config() -> dict[str, Any]:
+def _load_rendered_config(*, extra_env: dict[str, str] | None = None) -> dict[str, Any]:
     """Render docker-compose.yml via the real Compose CLI. Fails, never skips.
 
     Compose availability was already confirmed by the module-level skip
     check above, so a nonzero exit code or unparseable output here means
     the configuration itself is broken, not that the tool is missing.
     """
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
     result = subprocess.run(
         ["docker", "compose", "config", "--format", "json"],
         cwd=REPO_ROOT,
@@ -79,6 +84,7 @@ def _load_rendered_config() -> dict[str, Any]:
         text=True,
         timeout=30,
         check=False,
+        env=env,
     )
     if result.returncode != 0:
         pytest.fail(
@@ -162,3 +168,66 @@ def test_api_and_worker_depend_on_healthy_redis() -> None:
             f"Expected '{name}' to wait for redis: service_healthy, found "
             f"{depends_on['redis']!r}."
         )
+
+
+def _service_env(service: dict[str, Any]) -> dict[str, Any]:
+    raw = service.get("environment", {})
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        parsed: dict[str, Any] = {}
+        for item in raw:
+            if not isinstance(item, str) or "=" not in item:
+                continue
+            key, value = item.split("=", 1)
+            parsed[key] = value
+        return parsed
+    return {}
+
+
+_LANGSMITH_ENV_KEYS = (
+    "ATLAS_LANGSMITH_API_KEY",
+    "ATLAS_LANGSMITH_PROJECT",
+    "ATLAS_LANGSMITH_API_URL",
+    "ATLAS_LANGSMITH_TIMEOUT_MS",
+)
+_LITERAL_CREDENTIAL = re.compile(r"lsv2_[A-Za-z0-9]+|sk-[A-Za-z0-9]{20,}")
+
+
+def test_langsmith_api_key_is_mapped_only_on_worker() -> None:
+    """Slice 15B: LangSmith key and nonsecret config are worker-only."""
+    compose_text = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "ATLAS_LANGSMITH_API_KEY: ${ATLAS_LANGSMITH_API_KEY:-}" in compose_text
+    assert (
+        "ATLAS_LANGSMITH_PROJECT: ${ATLAS_LANGSMITH_PROJECT:-atlas-local}"
+        in compose_text
+    )
+    assert "ATLAS_LANGSMITH_API_URL: ${ATLAS_LANGSMITH_API_URL:-}" in compose_text
+    assert (
+        "ATLAS_LANGSMITH_TIMEOUT_MS: ${ATLAS_LANGSMITH_TIMEOUT_MS:-5000}"
+        in compose_text
+    )
+    assert _LITERAL_CREDENTIAL.search(compose_text) is None
+
+    config = _load_rendered_config(
+        extra_env={
+            "ATLAS_LANGSMITH_API_KEY": "",
+            "ATLAS_LANGSMITH_API_URL": "",
+        }
+    )
+    services = config["services"]
+    worker_env = _service_env(services["worker"])
+    for key in _LANGSMITH_ENV_KEYS:
+        assert key in worker_env
+    for name, service in services.items():
+        if name == "worker":
+            continue
+        env = _service_env(service)
+        for key in _LANGSMITH_ENV_KEYS:
+            assert key not in env
+    literal_langsmith_key = False
+    for service in services.values():
+        value = _service_env(service).get("ATLAS_LANGSMITH_API_KEY")
+        if isinstance(value, str) and _LITERAL_CREDENTIAL.search(value):
+            literal_langsmith_key = True
+    assert literal_langsmith_key is False

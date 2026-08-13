@@ -290,6 +290,38 @@ class LangGraphResearchProcessor:
             interrupt_after=interrupt_after,
         )
 
+    def _runnable_config(self, *, execution_id: str, job_id: str) -> RunnableConfig:
+        from atlas.observability.langsmith import correlation_metadata
+
+        return {
+            "configurable": {"thread_id": execution_id},
+            "run_name": "atlas.research_graph",
+            "tags": ["atlas", "research-job"],
+            "metadata": correlation_metadata(
+                **{
+                    "atlas.research_job_id": job_id,
+                    "atlas.workflow_execution_id": execution_id,
+                }
+            ),
+        }
+
+    def _invoke_graph(
+        self,
+        graph_input: ResearchGraphState | None,
+        config: RunnableConfig,
+        context: WorkflowRuntimeContext,
+        *,
+        job_id: str,
+        execution_id: str,
+    ) -> object:
+        from atlas.observability.langsmith import trace_research_job
+
+        return trace_research_job(
+            job_id=job_id,
+            workflow_execution_id=execution_id,
+            fn=lambda: self._graph.invoke(graph_input, config, context=context),
+        )
+
     def __call__(
         self,
         question: str,
@@ -357,7 +389,9 @@ class LangGraphResearchProcessor:
                 active_workflow_execution_id=active_workflow_execution_id,
             )
 
-            config: RunnableConfig = {"configurable": {"thread_id": execution_id}}
+            config: RunnableConfig = self._runnable_config(
+                execution_id=execution_id, job_id=job_id
+            )
 
             hooks = RepositoryNodeAuditHooks(
                 session_factory=self._session_factory,
@@ -382,7 +416,13 @@ class LangGraphResearchProcessor:
 
             snapshot = self._graph.get_state(config)
             if snapshot.values and snapshot.next:
-                final_state = self._graph.invoke(None, config, context=context)
+                final_state = self._invoke_graph(
+                    None,
+                    config,
+                    context,
+                    job_id=job_id,
+                    execution_id=execution_id,
+                )
             elif snapshot.values and not snapshot.next:
                 existing = snapshot.values.get("result")
                 if isinstance(existing, str) and existing.strip():
@@ -400,16 +440,20 @@ class LangGraphResearchProcessor:
                         result=existing,
                         workflow_execution_id=execution_id,
                     )
-                final_state = self._graph.invoke(
+                final_state = self._invoke_graph(
                     initial_graph_state(job_id=job_id, question=question),
                     config,
-                    context=context,
+                    context,
+                    job_id=job_id,
+                    execution_id=execution_id,
                 )
             else:
-                final_state = self._graph.invoke(
+                final_state = self._invoke_graph(
                     initial_graph_state(job_id=job_id, question=question),
                     config,
-                    context=context,
+                    context,
+                    job_id=job_id,
+                    execution_id=execution_id,
                 )
 
             return self._handle_post_invoke(
@@ -547,7 +591,13 @@ class LangGraphResearchProcessor:
                 workflow_execution_id=execution_id,
             )
 
-        final_state = self._graph.invoke(None, config, context=context)
+        final_state = self._invoke_graph(
+            None,
+            config,
+            context,
+            job_id=job_id,
+            execution_id=execution_id,
+        )
         if not isinstance(final_state, dict):
             raise RuntimeError("Workflow returned a non-mapping state")
 
@@ -885,6 +935,19 @@ class LangGraphResearchProcessor:
                 session_factory=self._session_factory,
                 workflow_execution_id=workflow_execution_id,
             )
+
+        from atlas.models.service import LedgerBackedDrafter, LedgerBackedPlanner
+        from atlas.observability.langsmith import (
+            TracedResearchDrafter,
+            TracedResearchPlanner,
+        )
+
+        planner = TracedResearchPlanner(
+            planner, native_llm=isinstance(planner, LedgerBackedPlanner)
+        )
+        drafter = TracedResearchDrafter(
+            drafter, native_llm=isinstance(drafter, LedgerBackedDrafter)
+        )
 
         evaluation_service = EvaluationService(session_factory=self._session_factory)
         citation_validator = CitationValidator(session_factory=self._session_factory)

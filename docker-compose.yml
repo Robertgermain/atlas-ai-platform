@@ -209,6 +209,14 @@ services:
       ATLAS_OPENAI_API_KEY: ${ATLAS_OPENAI_API_KEY:-}
       ATLAS_ANTHROPIC_API_KEY: ${ATLAS_ANTHROPIC_API_KEY:-}
       ATLAS_TAVILY_API_KEY: ${ATLAS_TAVILY_API_KEY:-}
+      # Worker-only LangSmith settings (Slice 15B). Never mapped on `api`
+      # or any other service: the API constructs the same Settings class
+      # without receiving the key. Unset key keeps fake-provider workers
+      # offline. Empty URL preserves the SDK hosted default.
+      ATLAS_LANGSMITH_API_KEY: ${ATLAS_LANGSMITH_API_KEY:-}
+      ATLAS_LANGSMITH_PROJECT: ${ATLAS_LANGSMITH_PROJECT:-atlas-local}
+      ATLAS_LANGSMITH_API_URL: ${ATLAS_LANGSMITH_API_URL:-}
+      ATLAS_LANGSMITH_TIMEOUT_MS: ${ATLAS_LANGSMITH_TIMEOUT_MS:-5000}
     depends_on:
       db-migrate:
         condition: service_completed_successfully
