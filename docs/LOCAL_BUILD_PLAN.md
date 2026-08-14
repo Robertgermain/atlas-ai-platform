@@ -293,14 +293,14 @@ Local verification's Tini-based fix directly addressed a genuine, pre-existing (
 
 ## Milestone 15 — Observability, LangSmith, semantic grading, and advisory operations analysis
 
-**Status:** Current (working branch `milestone-15-langsmith`, based on `8a25935`). Slice 15A is **Complete** through Pull Request #27 / `8a25935`. Slice 15B (mandatory LangSmith AI observability) is **Current**. Slice 15C remains **Pending**.
+**Status:** Current (working branch `milestone-15-semantic-evaluation`). Slice 15A is **Complete** through Pull Request #27 / `8a25935`. Slice 15B (mandatory LangSmith AI observability) is **Complete** through Pull Request #28 / `062fb92`, with green PR CI and resulting `main` CI. Slice 15C is **Current**. Slice 15C1 Phase 1 is checkpointed/frozen for calibration at commit `936a74a`. Slice 15C1 held-out labels were approved on 2026-08-13 before predictions and were not modified after predictions. Live held-out calibration ran on 2026-08-13 and the frozen calibration gate passed. On 2026-08-13 the project owner explicitly froze `evaluation.v1`, accepting the bounded-calibration limitations. Slice 15C1 is recorded locally and is not marked Complete pending review. Local complete-suite pre-PR gate (2026-08-14): isolated Pytest `1196 passed, 7 skipped`; full Pytest `1445 passed, 13 skipped`. Slice 15C2 has not started.
 
 **Goal:** Make the distributed local platform explainable and measurable — for both infrastructure and AI behavior — before defending it, and provide a bounded advisory analyst over that telemetry without granting it any control-plane power.
 
 **Existing agent, grading, repair, retry, and monitoring truth (for context, not new work in this milestone):**
 
 - Existing specialists (Milestone 11): planner specialist, governed research/retrieval specialist, report synthesizer, deterministic citation verifier.
-- Existing evaluation/grading (Milestone 12): citation-integrity grader, tool-use grader, report-structure grader, coverage grader, completeness grader, lexical groundedness grader, durable evaluation runs/results, evaluation ownership fencing, human-review routing, and provisional `evaluation.candidate.v1` (frozen `evaluation.v1` remains deferred).
+- Existing evaluation/grading (Milestone 12): citation-integrity grader, tool-use grader, report-structure grader, coverage grader, completeness grader, lexical groundedness grader, durable evaluation runs/results, evaluation ownership fencing, human-review routing, and frozen `evaluation.v1` (live semantic) plus historical `evaluation.candidate.v1` (skipped) and `evaluation.candidate.fake.v1` (fake) compatibility.
 - Existing repair/retry (Milestone 12): a deterministic recovery policy controls all loops; one bounded report-repair attempt is allowed for eligible structural failures and re-enters drafting/synthesis only (never planning, research, or tools automatically); transient failed jobs may receive at most two job-level retries with exponential backoff and bounded jitter; permanent, ownership, citation-integrity, and tool-policy failures fail closed; an AI component may generate a repaired draft, but deterministic policy — not an unconstrained retry agent — decides whether repair/retry is allowed.
 - Existing monitoring (Milestone 13 Slice 13A): a Redis-backed worker heartbeat exists, plus durable job, workflow, model, tool, evaluation, outbox, and consumer records. A dedicated monitoring agent does **not** exist yet. The heartbeat alone is not full monitoring or job health — full observability is this milestone.
 - Existing consumer retry/DLQ/replay (Milestone 13 Slice 13C2B): bounded, deterministic Kafka-consumer retry with a runtime processing deadline; permanent-poison classification into a PostgreSQL-backed dead-letter store; offset commit only after durable DLQ persistence; a local operator replay CLI with durable ownership fencing. **Complete** through Pull Request #25, merge commit `865023b` — this milestone adds telemetry/observability around that behavior (e.g. DLQ/retry metrics), not the retry/DLQ/replay mechanism itself.
@@ -326,7 +326,7 @@ Local verification's Tini-based fix directly addressed a genuine, pre-existing (
 
 ### Slice 15B — Mandatory LangSmith AI observability
 
-**Current** (working branch `milestone-15-langsmith`, based on `8a25935`). LangSmith is **mandatory** for Atlas AI observability — it must never be described as optional. Distinction to preserve: LangSmith is mandatory for LangGraph/LLM/RAG/tool/evaluation observability; OpenTelemetry, Prometheus, Grafana, Alertmanager, and structured logging remain mandatory for infrastructure and distributed-system observability; LangSmith does not replace operational monitoring; and LangSmith must never become an availability dependency — an export outage must not fail a research job.
+**Complete** through Pull Request #28 / `062fb92`, with green PR CI and resulting `main` CI. LangSmith is **mandatory** for Atlas AI observability — it must never be described as optional. Distinction to preserve: LangSmith is mandatory for LangGraph/LLM/RAG/tool/evaluation observability; OpenTelemetry, Prometheus, Grafana, Alertmanager, and structured logging remain mandatory for infrastructure and distributed-system observability; LangSmith does not replace operational monitoring; and LangSmith must never become an availability dependency — an export outage must not fail a research job.
 
 Demonstrated in this working tree (see `PROJECT_STATE.md` "Verification (Milestone 15 Slice 15B)"):
 
@@ -338,7 +338,7 @@ Demonstrated in this working tree (see `PROJECT_STATE.md` "Verification (Milesto
 - Fail-open enqueue/flush after successful config; fake/offline without a key stays network-free. Bounded `Client.flush(timeout=5)`.
 - Dataset/experiment orchestration is test-only (`tests/observability/langsmith_dataset_support.py` over `tests/evaluation/candidate_goldens.v1.json`). Production code does not import tests or golden fixture paths. Boolean compare against `grader_expected`. Unique live experiments are retained for manual cleanup.
 - Metric: `atlas_langsmith_operations_total{operation,outcome}` with closed allowlists. `operation=export` is error/timeout-only.
-- Offline tests require no key and must not inherit a developer `.env`: Settings/containment tests `delenv` `ATLAS_LANGSMITH_*` and `chdir` into `tmp_path` before constructing `Settings()`. Opt-in live tests require `ATLAS_ENABLE_LIVE_LANGSMITH_TESTS=1` and `ATLAS_LANGSMITH_API_KEY`; skipped in CI; fake Atlas providers only. The workflow live test polls `list_runs(trace_id=...)` until the required root/graph/native-node/explicit-boundary runs and in-trace parents are present rather than accepting the first partial snapshot. Local live verification (2026-08-13) passed in LangSmith project `atlas-slice-15b-live-20260813160447` (`7 passed, 0 skipped` on the two live modules). Local complete-suite gate (2026-08-13): isolated Pytest `1126 passed, 7 skipped`; full Pytest `1341 passed, 11 skipped`. Slice 15B remains Current, not Complete.
+- Offline tests require no key and must not inherit a developer `.env`: Settings/containment tests `delenv` `ATLAS_LANGSMITH_*` and `chdir` into `tmp_path` before constructing `Settings()`. Opt-in live tests require `ATLAS_ENABLE_LIVE_LANGSMITH_TESTS=1` and `ATLAS_LANGSMITH_API_KEY`; skipped in CI; fake Atlas providers only. The workflow live test polls `list_runs(trace_id=...)` until the required root/graph/native-node/explicit-boundary runs and in-trace parents are present rather than accepting the first partial snapshot. Local live verification (2026-08-13) passed in LangSmith project `atlas-slice-15b-live-20260813160447` (`7 passed, 0 skipped` on the two live modules). Local complete-suite gate (2026-08-13): isolated Pytest `1126 passed, 7 skipped`; full Pytest `1341 passed, 11 skipped`. Slice 15B is Complete through Pull Request #28 / `062fb92`.
 
 Not in this slice: live semantic grader, held-out calibration, `evaluation.v1` freeze, advisory analyst (all Slice 15C). No Alembic migration.
 
@@ -353,11 +353,35 @@ Not in this slice: live semantic grader, held-out calibration, `evaluation.v1` f
 
 ### Slice 15C — Live semantic grader, held-out calibration, and the bounded advisory analyst
 
-**Pending.** A live LangChain semantic groundedness grader; durable semantic-grading results in the Atlas evaluation system; the independent held-out human-labeled calibration set; and the resulting `evaluation.v1` freeze decision.
+**Current** (working branch `milestone-15-semantic-evaluation`). Slice 15C1 Phase 1 (live semantic-grader foundation) is checkpointed and frozen for calibration at commit `936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8`. Slice 15C1 Phase 2 held-out labels were approved on 2026-08-13 before predictions and were not modified after predictions. Slice 15C1 live held-out calibration ran on 2026-08-13 (`openai`/`gpt-4o-mini`; LangSmith experiment `atlas.15c1.heldout.67ff260be9b8-53559ce0`); automated criteria passed; human systematic-failure review passed; the frozen calibration gate passed. On 2026-08-13 the project owner explicitly froze `evaluation.v1`, accepting the bounded-calibration limitations. Slice 15C1 is recorded locally and is not marked Complete pending review. Local complete-suite pre-PR gate (2026-08-14): isolated Pytest `1196 passed, 7 skipped`; full Pytest `1445 passed, 13 skipped`. Slice 15C2 and the bounded advisory analyst have not started. This 20-case / 23-claim run is a bounded calibration, not statistical proof.
 
-- A live LangChain semantic groundedness grader with durable semantic-grading results persisted in the Atlas evaluation system.
-- An independent held-out human-labeled validation set, distinct from `candidate_goldens.v1`, used for calibration.
-- `evaluation.candidate.v1` must remain provisional until this documented held-out/live-semantic calibration gate passes; only then may `evaluation.v1` be frozen, and only as an explicit, separately reviewed decision — landing the live grader itself does not automatically freeze `evaluation.v1`.
+Slice 15C1 Phase 1 checkpoint (`936a74a`; see `PROJECT_STATE.md` "Verification (Milestone 15 Slice 15C1)"):
+
+- Explicit `ATLAS_SEMANTIC_GRADER_MODE=skipped|fake|live`, default `skipped`. Live is never inferred from provider selection. Worker startup rejects `live` plus a fake model provider. Not a global API availability requirement.
+- Bounded typed semantic input (claims + job-linked excerpts only), deterministic assembly, fingerprint extension, `LangChainSemanticGroundednessGrader` via existing model composition, malformed-only two-attempt ledger cap, and quality-versus-availability evaluation outcomes.
+- Pass threshold remains exactly `0.70`. Prompt version remains `semantic_groundedness.v1`. No per-claim semantic SQL tables.
+
+Slice 15C1 Phase 2 demonstrated in this working tree:
+
+- Independent held-out dataset `tests/evaluation/held_out_semantic.v1.json`, distinct from `candidate_goldens.v1`. Proposed labels were authored before predictions against the frozen Phase 1 contract. The project owner approved those labels on 2026-08-13 (`human_reviewed: true`). Approval occurred before predictions. Labels were not modified after predictions. The grader remains frozen at checkpoint `936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8`.
+- Test-only calibration harness. Frozen promotion criteria (supported precision/recall ≥ 0.80, macro-F1 ≥ 0.75, report F1 ≥ 0.80, no safety or availability failure, plus explicit human `no_unexplained_systematic_failure`) do not automatically create `evaluation.v1`. `summarize_predictions` reports `automated_criteria_met` only; the final `promotion_criteria_met` stays pending until `finalize_promotion_gate`.
+
+Slice 15C1 Phase 3 live calibration recorded (2026-08-13; not a live rerun):
+
+- Provider/model `openai`/`gpt-4o-mini`. LangSmith project `atlas-local`, experiment `atlas.15c1.heldout.67ff260be9b8-53559ce0`. 20/20 quality outcomes; availability 0; safety-boundary false; supported P/R/F1 1.000; unclear 0.500; unsupported 0.917; macro-F1 0.806; score MAE 0.0804; report F1 1.000. Automated criteria passed. Human systematic-failure review passed. Final calibration gate passed. Fingerprint `0bd236a522847cc9f0996fbe3be71d389ca4af15ed48c8990054cf301e34433b` unchanged. Bounded 20-case / 23-claim set; unclear class has two human labels; one OpenAI configuration.
+
+Remaining Slice 15C work (not started):
+
+- Bounded advisory analyst (Slice 15C2). Slice 15C2 remains Pending.
+
+Owner freeze of `evaluation.v1` (2026-08-13; same working tree; not a live rerun):
+
+- Explicit owner decision, accepting the bounded 20-case / 23-claim calibration (unclear n=2; one OpenAI configuration; labels unchanged after predictions; passing the gate does not rewrite historical evaluation rows).
+- Durable job-level profile binding (`research_jobs.evaluation_profile`, Alembic `20260813_0015`); existing jobs backfilled to `evaluation.candidate.v1`; historical evaluation runs unchanged.
+- Identities: `evaluation.v1` (live only), `evaluation.candidate.v1` (skipped only), `evaluation.candidate.fake.v1` (fake only). When `ATLAS_EVALUATION_PROFILE` is unset, the worker derives the profile from `ATLAS_SEMANTIC_GRADER_MODE`; an explicit pair must agree. Default CI/Compose remain skipped + `evaluation.candidate.v1` (Compose still sets both env vars explicitly).
+- Live pins at worker startup: `live` / `openai` / `gpt-4o-mini` / temperature `0` / OpenAI and LangSmith credentials. `gpt-4o-mini` is a provider alias (configuration freeze, not immutable weights).
+- Live fingerprints include provider, resolved model name, and temperature. Historical candidate fingerprints are not rewritten.
+- Domain-to-ORM mapping remains profile-neutral; `claim_next` is the only production binder. Local complete-suite pre-PR gate (2026-08-14): isolated Pytest `1196 passed, 7 skipped`; full Pytest `1445 passed, 13 skipped`; Alembic head `20260813_0015`. Slice 15C1 is not Complete pending PR and resulting `main` CI.
 
 An advisory AI analyst that consumes sanitized, bounded telemetry summaries (never unrestricted raw production data) to: summarize incidents; cluster recurring failures; suggest likely causes and remediation; and explain job, agent, model, tool, retrieval, Kafka, and evaluation failures.
 

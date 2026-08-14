@@ -222,6 +222,19 @@ class ResearchJobModel(Base):
             "initial_traceparent_consumed_at IS NULL OR traceparent IS NOT NULL",
             name="ck_research_jobs_initial_traceparent_consumed_pair",
         ),
+        CheckConstraint(
+            "evaluation_profile IS NULL OR evaluation_profile IN ("
+            "'evaluation.candidate.v1', "
+            "'evaluation.candidate.fake.v1', "
+            "'evaluation.v1'"
+            ")",
+            name="ck_research_jobs_evaluation_profile_allowed",
+        ),
+        CheckConstraint(
+            "(status = 'PENDING' AND started_at IS NULL) "
+            "OR evaluation_profile IS NOT NULL",
+            name="ck_research_jobs_started_has_evaluation_profile",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
@@ -284,3 +297,7 @@ class ResearchJobModel(Base):
     initial_traceparent_consumed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    #: Durable evaluation profile bound on the first successful worker claim.
+    #: Never-started PENDING jobs may be NULL; started and terminal jobs must
+    #: have one of the three approved profiles. Written once and never changed.
+    evaluation_profile: Mapped[str | None] = mapped_column(String(64), nullable=True)

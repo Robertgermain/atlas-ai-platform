@@ -9,11 +9,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.domain import ResearchJob
+from atlas.evaluation.contracts import EVALUATION_PROFILE_CANDIDATE
 from atlas.persistence.db import session_scope
 from atlas.persistence.exceptions import (
     IdempotencyKeyConflictError,
     ResearchJobAlreadyExistsError,
 )
+from atlas.persistence.models import ResearchJobModel
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
 
 T0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=UTC)
@@ -63,6 +65,9 @@ def test_save_persists_lifecycle_updates(
             idempotency_key="key-job-2",
             request_fingerprint="b" * 64,
         )
+        model = session.get(ResearchJobModel, "job-2")
+        assert model is not None
+        model.evaluation_profile = EVALUATION_PROFILE_CANDIDATE
 
     with session_scope(session_factory) as session:
         repo.save(session, job)

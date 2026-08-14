@@ -44,6 +44,12 @@ def _create_job_and_execution(
             idempotency_key=f"key-{job_id}",
             request_fingerprint="a" * 64,
         )
+        session.execute(
+            text(
+                "UPDATE research_jobs SET evaluation_profile = :profile WHERE id = :id"
+            ),
+            {"profile": EVALUATION_PROFILE, "id": job_id},
+        )
         return workflow_repo.create_execution(
             session,
             research_job_id=job_id,

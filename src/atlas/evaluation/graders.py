@@ -15,6 +15,14 @@ from atlas.evaluation.contracts import (
     EvaluationCandidateInput,
     ToolSummaryRow,
 )
+from atlas.evaluation.semantic_contracts import (
+    FAKE_SEMANTIC_GRADER_VERSION,
+    SEMANTIC_FAILURE_UNCLEAR,
+    SEMANTIC_FAILURE_UNSUPPORTED,
+    SEMANTIC_FAILURE_WEAK,
+    SemanticGradeRequest,
+    support_label_for_score,
+)
 
 _SIGNIFICANT_TOKEN = re.compile(r"[a-z0-9]{4,}")
 
@@ -25,7 +33,7 @@ GRADER_VERSIONS: dict[str, str] = {
     "coverage": "provisional.deterministic.v1",
     "completeness": "provisional.deterministic.v1",
     "lexical_id_groundedness": "provisional.deterministic.v1",
-    "semantic_groundedness": "fake.llm.v1",
+    "semantic_groundedness": FAKE_SEMANTIC_GRADER_VERSION,
 }
 
 
@@ -344,25 +352,29 @@ def grade_lexical_id_groundedness(
 class FakeSemanticGroundednessGrader:
     """Offline semantic grader; never calls a network provider."""
 
-    version: str = GRADER_VERSIONS["semantic_groundedness"]
+    version: str = FAKE_SEMANTIC_GRADER_VERSION
 
-    def grade(
-        self,
-        candidate: EvaluationCandidateInput,
-        *,
-        linked_ids: set[str] | None = None,
-    ) -> DimensionResult:
-        ids = linked_ids if linked_ids is not None else set(candidate.evidence_item_ids)
-        claims = candidate.claims
+    def grade(self, request: SemanticGradeRequest) -> DimensionResult:
+        excerpt_ids = {item.evidence_item_id for item in request.excerpts}
+        claims = request.claims
         if not claims:
             score = 1.0
-            codes: list[str] = []
-        elif all(set(claim.evidence_item_ids).issubset(ids) for claim in claims):
+        elif all(
+            set(claim.evidence_item_ids).issubset(excerpt_ids) for claim in claims
+        ):
             score = 1.0
-            codes = []
         else:
             score = 0.5
-            codes = ["SEMANTIC_GROUNDEDNESS_WEAK"]
+        passed = _soft_passed(score)
+        codes: list[str] = []
+        if not passed:
+            label = support_label_for_score(score)
+            if label == "unsupported":
+                codes = [SEMANTIC_FAILURE_UNSUPPORTED]
+            elif label == "unclear":
+                codes = [SEMANTIC_FAILURE_UNCLEAR]
+            else:
+                codes = [SEMANTIC_FAILURE_WEAK]
 
         return DimensionResult(
             name="semantic_groundedness",

@@ -56,6 +56,7 @@ def test_build_openai_uses_responses_api_flag() -> None:
         kwargs = mock_cls.call_args.kwargs
         assert kwargs["use_responses_api"] is True
         assert kwargs["model"] == "gpt-4o-mini"
+        assert kwargs["temperature"] == 0
         assert kwargs["max_retries"] == 0
         assert kwargs["request_timeout"] == 25.0
 

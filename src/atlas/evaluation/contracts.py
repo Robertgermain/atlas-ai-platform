@@ -1,8 +1,12 @@
-"""Typed contracts for candidate evaluation (Slice 12A).
+"""Typed contracts for evaluation profiles (Slice 12A / Slice 15C1 freeze).
 
-Profile ``evaluation.candidate.v1`` is provisional and not a frozen
-``evaluation.v1`` calibration. Soft dimensions are heuristics pending human
-golden approval.
+Profile identity uniquely determines semantic-grader composition:
+
+- ``evaluation.v1`` — frozen live semantic grading
+- ``evaluation.candidate.v1`` — skipped semantic grading (default CI)
+- ``evaluation.candidate.fake.v1`` — fake semantic grading (offline tests)
+
+Soft dimensions remain pass-blocking heuristics with known limitations.
 """
 
 from __future__ import annotations
@@ -13,9 +17,41 @@ from pydantic import BaseModel, Field, field_validator
 
 from atlas.evidence.contracts import ClaimStructured
 
-EVALUATION_PROFILE: Literal["evaluation.candidate.v1"] = "evaluation.candidate.v1"
+EVALUATION_PROFILE_CANDIDATE: Literal["evaluation.candidate.v1"] = (
+    "evaluation.candidate.v1"
+)
+EVALUATION_PROFILE_CANDIDATE_FAKE: Literal["evaluation.candidate.fake.v1"] = (
+    "evaluation.candidate.fake.v1"
+)
+EVALUATION_PROFILE_V1: Literal["evaluation.v1"] = "evaluation.v1"
+EVALUATION_PROFILE: Literal["evaluation.candidate.v1"] = EVALUATION_PROFILE_CANDIDATE
 
-EvaluationProfile = Literal["evaluation.candidate.v1"]
+EvaluationProfile = Literal[
+    "evaluation.candidate.v1",
+    "evaluation.candidate.fake.v1",
+    "evaluation.v1",
+]
+ALLOWED_EVALUATION_PROFILES: frozenset[str] = frozenset(
+    {
+        EVALUATION_PROFILE_CANDIDATE,
+        EVALUATION_PROFILE_CANDIDATE_FAKE,
+        EVALUATION_PROFILE_V1,
+    }
+)
+SEMANTIC_MODE_FOR_PROFILE: dict[
+    EvaluationProfile, Literal["skipped", "fake", "live"]
+] = {
+    EVALUATION_PROFILE_CANDIDATE: "skipped",
+    EVALUATION_PROFILE_CANDIDATE_FAKE: "fake",
+    EVALUATION_PROFILE_V1: "live",
+}
+PROFILE_FOR_SEMANTIC_MODE: dict[
+    Literal["skipped", "fake", "live"], EvaluationProfile
+] = {
+    "skipped": EVALUATION_PROFILE_CANDIDATE,
+    "fake": EVALUATION_PROFILE_CANDIDATE_FAKE,
+    "live": EVALUATION_PROFILE_V1,
+}
 
 DimensionName = Literal[
     "citation_integrity",

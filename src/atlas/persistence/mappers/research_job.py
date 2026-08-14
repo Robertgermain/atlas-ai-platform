@@ -22,7 +22,12 @@ def to_orm(job: ResearchJob) -> ResearchJobModel:
 
 
 def apply_domain_to_orm(job: ResearchJob, model: ResearchJobModel) -> None:
-    """Copy domain fields onto an existing ORM row."""
+    """Copy domain fields onto an existing ORM row.
+
+    Evaluation-profile identity is persistence-only and is not a domain
+    field. This mapper never invents a profile; an existing ORM value is
+    preserved. Production binding happens in ``claim_next``.
+    """
     model.question = job.question
     model.status = job.status.value
     model.created_at = job.created_at

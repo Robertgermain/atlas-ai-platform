@@ -126,7 +126,10 @@ def test_completed_workflow_is_not_unexpectedly_rerun(
                     started_at = NOW(),
                     updated_at = NOW(),
                     claim_token = :token,
-                    lease_expires_at = NOW() + interval '5 minutes'
+                    lease_expires_at = NOW() + interval '5 minutes',
+                    evaluation_profile = COALESCE(
+                        evaluation_profile, 'evaluation.candidate.v1'
+                    )
                 WHERE id = :job_id
                 """
             ),

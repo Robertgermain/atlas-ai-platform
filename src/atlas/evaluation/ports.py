@@ -11,18 +11,16 @@ from atlas.evaluation.contracts import (
     EvaluationProfile,
     EvaluationRunResult,
 )
+from atlas.evaluation.semantic_contracts import SemanticGradeRequest
 from atlas.evidence.contracts import ClaimStructured
 
 
 class SemanticGroundednessGrader(Protocol):
-    """Optional semantic groundedness grader (fake today; live deferred)."""
+    """Optional semantic groundedness grader (fake or live)."""
 
-    def grade(
-        self,
-        candidate: EvaluationCandidateInput,
-        *,
-        linked_ids: set[str] | None = None,
-    ) -> DimensionResult: ...
+    version: str
+
+    def grade(self, request: SemanticGradeRequest) -> DimensionResult: ...
 
 
 class EvaluationServicePort(Protocol):

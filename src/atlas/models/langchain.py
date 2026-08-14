@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, ValidationError
 
 from atlas.config.settings import Settings
+from atlas.evaluation.semantic_contracts import FROZEN_LIVE_SEMANTIC_TEMPERATURE
 from atlas.models.contracts import (
     FinishOutcome,
     ModelCallMeta,
@@ -59,7 +60,7 @@ def _build_openai(settings: Settings) -> BaseChatModel:
     return ChatOpenAI(  # type: ignore[call-arg]
         model=model_name,
         api_key=key,
-        temperature=0,
+        temperature=FROZEN_LIVE_SEMANTIC_TEMPERATURE,
         use_responses_api=True,
         request_timeout=settings.model_call_timeout_seconds,
         max_retries=0,

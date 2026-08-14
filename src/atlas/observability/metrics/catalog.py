@@ -229,7 +229,9 @@ _WORKFLOW_NODE_NAMES: Final[frozenset[str]] = frozenset(
 )
 _NODE_OUTCOMES: Final[frozenset[str]] = frozenset({"completed", "failed", _OTHER})
 _MODEL_PROVIDERS: Final[frozenset[str]] = frozenset({"openai", "anthropic", _OTHER})
-_MODEL_NODE_NAMES: Final[frozenset[str]] = frozenset({"plan", "draft", _OTHER})
+_MODEL_NODE_NAMES: Final[frozenset[str]] = frozenset(
+    {"plan", "draft", "evaluate", _OTHER}
+)
 _ATTEMPT_OUTCOMES: Final[frozenset[str]] = frozenset({"succeeded", "failed", _OTHER})
 _RETRY_CLASSES: Final[frozenset[str]] = frozenset(
     {
@@ -253,7 +255,12 @@ _TOKEN_TYPES: Final[frozenset[str]] = frozenset({"input", "output"})
 _TOOL_IDS: Final[frozenset[str]] = frozenset({"web_search", "fetch_url", _OTHER})
 _TOOL_PROVIDERS: Final[frozenset[str]] = frozenset({"fake", "tavily", "httpx", _OTHER})
 _EVALUATION_PROFILES: Final[frozenset[str]] = frozenset(
-    {"evaluation.candidate.v1", _OTHER}
+    {
+        "evaluation.candidate.v1",
+        "evaluation.candidate.fake.v1",
+        "evaluation.v1",
+        _OTHER,
+    }
 )
 _EVALUATION_RUN_OUTCOMES: Final[frozenset[str]] = frozenset(
     {"succeeded", "failed", _OTHER}
@@ -271,6 +278,23 @@ _EVALUATION_DIMENSIONS: Final[frozenset[str]] = frozenset(
     }
 )
 _DIMENSION_OUTCOMES: Final[frozenset[str]] = frozenset({"passed", "failed", _OTHER})
+_SEMANTIC_GRADER_OUTCOMES: Final[frozenset[str]] = frozenset(
+    {
+        "quality_pass",
+        "quality_fail",
+        "unavailable",
+        "timeout",
+        "rate_limited",
+        "auth_config",
+        "malformed",
+        "refusal",
+        "ownership_lost",
+        "skipped",
+        "config",
+        "other",
+        _OTHER,
+    }
+)
 _REVIEW_DECISIONS: Final[frozenset[str]] = frozenset({"approve", "reject", _OTHER})
 _OUTBOX_PUBLICATION_OUTCOMES: Final[frozenset[str]] = frozenset(
     {
@@ -502,6 +526,12 @@ class AtlasMetrics:
             "atlas_evaluation_dimension_outcomes_total",
             "Graded evaluation dimensions by dimension and pass/fail outcome.",
             ("dimension", "outcome"),
+            registry=registry,
+        )
+        self._semantic_grader_outcomes_total = Counter(
+            "atlas_semantic_grader_outcomes_total",
+            "Semantic grader outcomes by closed availability/quality label.",
+            ("outcome",),
             registry=registry,
         )
         self._human_review_decisions_total = Counter(
@@ -814,6 +844,13 @@ class AtlasMetrics:
             lambda: self._evaluation_dimension_outcomes_total.labels(
                 dimension=d, outcome=o
             ).inc(),
+        )
+
+    def observe_semantic_grader_outcome(self, *, outcome: str) -> None:
+        o = _bounded(outcome, _SEMANTIC_GRADER_OUTCOMES)
+        self._contain(
+            "semantic_grader_outcome",
+            lambda: self._semantic_grader_outcomes_total.labels(outcome=o).inc(),
         )
 
     # -- Recovery / human review ---------------------------------------------

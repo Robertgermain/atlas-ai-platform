@@ -29,6 +29,7 @@ from atlas.evaluation.graders import (
 )
 from atlas.evidence.contracts import ClaimStructured
 from atlas.workflow.fakes import format_research_report
+from tests.evaluation.semantic_helpers import semantic_request_for_candidate
 
 DATASET_NAME = "atlas.candidate_goldens.v1"
 GOLDENS_PATH = (
@@ -146,7 +147,9 @@ def grade_case_booleans(case: dict[str, Any]) -> dict[str, object]:
             golden_ratio=candidate.golden_completeness_ratio,
         ),
         grade_lexical_id_groundedness(candidate.claims, linked_ids),
-        FakeSemanticGroundednessGrader().grade(candidate, linked_ids=linked_ids),
+        FakeSemanticGroundednessGrader().grade(
+            semantic_request_for_candidate(candidate, linked_ids)
+        ),
     ]
     _, overall_passed, stamped = aggregate_dimensions(dimensions)
     dimension_passed: dict[DimensionName, bool] = {

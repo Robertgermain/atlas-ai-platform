@@ -92,6 +92,7 @@ def test_http_request_metric_registered_with_expected_labels() -> None:
         lambda m: m.observe_evaluation_dimension(
             dimension="coverage", outcome="passed"
         ),
+        lambda m: m.observe_semantic_grader_outcome(outcome="quality_pass"),
         lambda m: m.observe_human_review_decision(decision="approve"),
         lambda m: m.observe_outbox_relay_run(outcome="published"),
         lambda m: m.observe_outbox_published_events(count=3),

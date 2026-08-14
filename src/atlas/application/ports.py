@@ -39,6 +39,7 @@ class ClaimedResearchJob:
     active_workflow_execution_id: str | None
     traceparent: str | None = None
     use_traceparent_as_parent: bool = False
+    evaluation_profile: str | None = None
 
 
 class ResearchJobRepository(Protocol):
@@ -81,8 +82,14 @@ class ResearchJobRepository(Protocol):
         now: datetime,
         lease_expires_at: datetime,
         claim_token: str,
+        evaluation_profile: str | None = None,
     ) -> ClaimedResearchJob | None:
-        """Atomically claim the next eligible job and attach claim metadata."""
+        """Atomically claim the next eligible job and attach claim metadata.
+
+        ``evaluation_profile`` is the worker's composed profile. Unbound jobs
+        are bound to it in this transaction. Jobs bound to a different profile
+        are not claimed.
+        """
 
     def finalize_completion(
         self,

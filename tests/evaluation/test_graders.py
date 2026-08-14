@@ -24,6 +24,7 @@ from atlas.evaluation.graders import (
 )
 from atlas.evidence.contracts import ClaimStructured
 from atlas.workflow.fakes import format_research_report
+from tests.evaluation.semantic_helpers import semantic_request_for_candidate
 
 
 def _candidate(**overrides: object) -> EvaluationCandidateInput:
@@ -489,8 +490,7 @@ def test_fake_semantic_grader_used_in_isolation() -> None:
         evidence_item_ids=["ev-1"],
     )
     result = FakeSemanticGroundednessGrader().grade(
-        candidate,
-        linked_ids={"ev-1"},
+        semantic_request_for_candidate(candidate, {"ev-1"}),
     )
     assert result.name == "semantic_groundedness"
     assert result.method == "llm"

@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.domain import ResearchJob
 from atlas.persistence.db import session_scope
-from atlas.persistence.mappers.research_job import apply_domain_to_orm, to_domain
 from atlas.persistence.models import ResearchJobModel
 from atlas.persistence.models.recovery import (
     JobRecoveryAttemptModel,
@@ -22,6 +21,7 @@ from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRep
 from atlas.persistence.repositories.workflow import SqlAlchemyWorkflowRepository
 from atlas.recovery.errors import PolicyDecisionConflictError
 from atlas.recovery.fingerprint import fingerprint_policy_decision
+from tests.integration.research_job_fixtures import bind_profile_and_start_claimed_job
 
 CLAIM = "a" * 64
 
@@ -42,12 +42,13 @@ def _setup_claimed_job(
         )
         model = session.get(ResearchJobModel, job_id)
         assert model is not None
-        job = to_domain(model)
         at = datetime.now(UTC)
-        job.start(at=at)
-        apply_domain_to_orm(job, model)
-        model.claim_token = CLAIM
-        model.lease_expires_at = at + timedelta(hours=1)
+        bind_profile_and_start_claimed_job(
+            model,
+            at=at,
+            claim_token=CLAIM,
+            lease_expires_at=at + timedelta(hours=1),
+        )
         execution_id = workflow_repo.create_execution(
             session, research_job_id=job_id, at=at
         )

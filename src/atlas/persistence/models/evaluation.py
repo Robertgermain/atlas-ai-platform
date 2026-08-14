@@ -35,7 +35,11 @@ class EvaluationRunModel(Base):
             name="ck_evaluation_runs_status",
         ),
         CheckConstraint(
-            "evaluation_profile = 'evaluation.candidate.v1'",
+            "evaluation_profile IN ("
+            "'evaluation.candidate.v1', "
+            "'evaluation.candidate.fake.v1', "
+            "'evaluation.v1'"
+            ")",
             name="ck_evaluation_runs_profile",
         ),
         CheckConstraint(

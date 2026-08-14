@@ -33,6 +33,7 @@ ALLOWED_METADATA_KEYS: Final[frozenset[str]] = frozenset(
         "atlas.evaluation_score",
         "atlas.disposition_hint",
         "atlas.grader_version",
+        "atlas.semantic_grader_outcome",
         "atlas.embedding_profile",
         "atlas.retrieval_k",
         "atlas.retrieval_hit_count",

@@ -144,6 +144,7 @@ class _LedgerAttributedProcessor(LangGraphResearchProcessor):
         hooks: object,
         job_claim_token: str,
         job_id: str = "",
+        evaluation_profile: str | None = None,
     ) -> WorkflowRuntimeContext:
         from dataclasses import replace
 
@@ -152,6 +153,7 @@ class _LedgerAttributedProcessor(LangGraphResearchProcessor):
             hooks=hooks,  # type: ignore[arg-type]
             job_claim_token=job_claim_token,
             job_id=job_id,
+            evaluation_profile=evaluation_profile,  # type: ignore[arg-type]
         )
         settings = self._settings
         service = ModelInvocationService(

@@ -29,6 +29,7 @@ from atlas.application.ports import ClaimedResearchJob, ResearchJobRepository
 from atlas.coordination.contracts import HeartbeatRecorder
 from atlas.coordination.heartbeat_thread import HeartbeatThread
 from atlas.coordination.noop import NoopHeartbeatRecorder
+from atlas.evaluation.errors import EvaluationProfileMismatchError
 from atlas.eventing.builders import (
     build_research_job_completed,
     build_research_job_failed,
@@ -98,6 +99,7 @@ class ResearchJobWorker:
         worker_id: str | None = None,
         outbox: OutboxEnqueuer | None = None,
         metrics: AtlasMetrics | None = None,
+        evaluation_profile: str | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = repository
@@ -129,6 +131,7 @@ class ResearchJobWorker:
             interval_seconds=heartbeat_interval_seconds,
         )
         self._heartbeat_thread.start()
+        self._evaluation_profile = evaluation_profile
 
     @property
     def processor_wait_abandoned(self) -> bool:
@@ -209,6 +212,7 @@ class ResearchJobWorker:
                 now=now,
                 lease_expires_at=lease_expires_at,
                 claim_token=claim_token,
+                evaluation_profile=self._evaluation_profile,
             )
 
     def _process_claimed(self, claimed: ClaimedResearchJob) -> None:
@@ -293,6 +297,17 @@ class ResearchJobWorker:
                     reason_class=CLAIM_OWNERSHIP_LOST_REASON_CLASS,
                     duration_seconds=time.perf_counter() - started_at,
                 ),
+            )
+            self._inflight_future = None
+            self._ignore_late_result(future)
+            return
+        except EvaluationProfileMismatchError:
+            log_event(
+                logger,
+                Event.CLAIM_OWNERSHIP_LOST,
+                level=logging.WARNING,
+                research_job_id=claimed.job.id,
+                outcome="profile_mismatch",
             )
             self._inflight_future = None
             self._ignore_late_result(future)
