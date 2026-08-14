@@ -25,9 +25,23 @@ from atlas.application.job_processing import (
     TerminalFailed,
 )
 from atlas.config.settings import Settings, get_settings
-from atlas.evaluation.composition import build_semantic_grader
-from atlas.evaluation.contracts import EvaluationCandidateInput, ToolSummaryRow
-from atlas.evaluation.errors import EvaluationError, EvaluationTerminalError
+from atlas.evaluation.composition import (
+    build_semantic_grader,
+    frozen_live_semantic_identity,
+    resolved_evaluation_profile,
+)
+from atlas.evaluation.contracts import (
+    EVALUATION_PROFILE_CANDIDATE_FAKE,
+    EVALUATION_PROFILE_V1,
+    EvaluationCandidateInput,
+    EvaluationProfile,
+    ToolSummaryRow,
+)
+from atlas.evaluation.errors import (
+    EvaluationError,
+    EvaluationProfileMismatchError,
+    EvaluationTerminalError,
+)
 from atlas.evaluation.runner import EvaluationRunner
 from atlas.evaluation.semantic_contracts import SemanticExcerptSource
 from atlas.evaluation.service import EvaluationService
@@ -373,6 +387,8 @@ class LangGraphResearchProcessor:
                         workflow_execution_id=completed_id,
                     )
 
+        bound_profile = self._require_bound_profile(job_id)
+
         # Idempotent short-circuit: already-completed active execution under this job.
         if continuation_mode == ContinuationMode.NONE and active_workflow_execution_id:
             short = self._completed_execution_result(
@@ -406,6 +422,7 @@ class LangGraphResearchProcessor:
                 hooks=hooks,
                 job_claim_token=claim_token,
                 job_id=job_id,
+                evaluation_profile=bound_profile,
             )
 
             if continuation_mode == ContinuationMode.REVIEW_COMPLETE:
@@ -477,6 +494,22 @@ class LangGraphResearchProcessor:
                 claim_token=claim_token,
                 execution_id=execution_id,
             )
+
+    def _require_bound_profile(self, job_id: str) -> EvaluationProfile:
+        """Fail closed when the durable job profile is missing or mismatched."""
+        with session_scope(self._session_factory) as session:
+            from atlas.persistence.models import ResearchJobModel
+
+            job_model = session.get(ResearchJobModel, job_id)
+            stored = None if job_model is None else job_model.evaluation_profile
+        worker_profile = resolved_evaluation_profile(self._settings)
+        if stored is None or stored != worker_profile:
+            raise EvaluationProfileMismatchError()
+        if stored == EVALUATION_PROFILE_V1:
+            return EVALUATION_PROFILE_V1
+        if stored == EVALUATION_PROFILE_CANDIDATE_FAKE:
+            return EVALUATION_PROFILE_CANDIDATE_FAKE
+        return "evaluation.candidate.v1"
 
     def _bind(
         self,
@@ -885,6 +918,7 @@ class LangGraphResearchProcessor:
         hooks: NodeAuditHooks | None,
         job_claim_token: str,
         job_id: str = "",
+        evaluation_profile: EvaluationProfile | None = None,
     ) -> WorkflowRuntimeContext:
         from atlas.embeddings.composition import build_text_embedder
         from atlas.evidence.retrieve import EvidenceEmbeddingService, EvidenceRetriever
@@ -1014,6 +1048,7 @@ class LangGraphResearchProcessor:
                 for view in views
             ]
 
+        live_identity = frozen_live_semantic_identity()
         evaluation_runner = _BoundEvaluationRunner(
             runner=EvaluationRunner(
                 evaluation_service=evaluation_service,
@@ -1026,6 +1061,9 @@ class LangGraphResearchProcessor:
                     workflow_execution_id=workflow_execution_id,
                 ),
                 max_logical_calls=self._settings.tool_max_logical_calls_per_research_node,
+                semantic_model_provider=str(live_identity["provider"]),
+                semantic_model_name=str(live_identity["model_name"]),
+                semantic_temperature=float(live_identity["temperature"]),
             ),
             citation_validator=citation_validator,
             evidence_ingest=evidence_ingest,
@@ -1152,4 +1190,9 @@ class LangGraphResearchProcessor:
             policy_callback=_policy_callback,
             completion_auth_checker=_completion_auth_checker,
             metrics=self._metrics,
+            evaluation_profile=(
+                evaluation_profile
+                if evaluation_profile is not None
+                else resolved_evaluation_profile(self._settings)
+            ),
         )

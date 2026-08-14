@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 from atlas.evaluation.contracts import EvaluationCandidateInput
 from atlas.evaluation.fingerprint import fingerprint_grading_snapshot
 from atlas.evaluation.semantic_contracts import (
     FAKE_SEMANTIC_GRADER_VERSION,
+    FROZEN_LIVE_SEMANTIC_MODEL,
+    FROZEN_LIVE_SEMANTIC_PROVIDER,
+    FROZEN_LIVE_SEMANTIC_TEMPERATURE,
     LIVE_SEMANTIC_GRADER_VERSION,
     SEMANTIC_PROMPT_VERSION,
     SKIPPED_SEMANTIC_GRADER_VERSION,
@@ -61,10 +66,25 @@ def _fingerprint(
     prompt_version: SemanticPromptVersion = SKIPPED_SEMANTIC_GRADER_VERSION,
     request: SemanticGradeRequest | None = None,
     linked: set[str] | None = None,
+    profile: str | None = None,
+    provider: str | None = None,
+    model_name: str | None = None,
+    temperature: float | None = None,
 ) -> str:
     candidate = _candidate()
+    if profile is not None:
+        candidate = candidate.model_copy(update={"evaluation_profile": profile})
     claims = None if request is None else request.claims
     excerpts = None if request is None else request.excerpts
+    live_provider: str | None = None
+    live_model: str | None = None
+    live_temperature: float | None = None
+    if grader_version == LIVE_SEMANTIC_GRADER_VERSION:
+        live_provider = FROZEN_LIVE_SEMANTIC_PROVIDER if provider is None else provider
+        live_model = FROZEN_LIVE_SEMANTIC_MODEL if model_name is None else model_name
+        live_temperature = (
+            FROZEN_LIVE_SEMANTIC_TEMPERATURE if temperature is None else temperature
+        )
     return fingerprint_grading_snapshot(
         candidate,
         linked_evidence_ids=linked if linked is not None else {"ev-a", "ev-b"},
@@ -75,6 +95,9 @@ def _fingerprint(
         semantic_prompt_version=prompt_version,
         semantic_claims=claims,
         semantic_excerpts=excerpts,
+        semantic_model_provider=live_provider,
+        semantic_model_name=live_model,
+        semantic_temperature=live_temperature,
     )
 
 
@@ -200,7 +223,7 @@ def test_changed_grader_or_prompt_version_differs() -> None:
     assert live != fake_grader
     # Prompt version is part of the payload for non-skipped modes.
     skipped_prompt_on_live = fingerprint_grading_snapshot(
-        _candidate(),
+        _candidate().model_copy(update={"evaluation_profile": "evaluation.v1"}),
         linked_evidence_ids={"ev-a", "ev-b"},
         tool_rows=[],
         provenance_ok=True,
@@ -209,5 +232,93 @@ def test_changed_grader_or_prompt_version_differs() -> None:
         semantic_prompt_version=SKIPPED_SEMANTIC_GRADER_VERSION,
         semantic_claims=request.claims,
         semantic_excerpts=request.excerpts,
+        semantic_model_provider=FROZEN_LIVE_SEMANTIC_PROVIDER,
+        semantic_model_name=FROZEN_LIVE_SEMANTIC_MODEL,
+        semantic_temperature=FROZEN_LIVE_SEMANTIC_TEMPERATURE,
     )
     assert live != skipped_prompt_on_live
+
+
+def test_live_identity_changes_cannot_replay() -> None:
+    request = _request()
+    base = _fingerprint(
+        grader_version=LIVE_SEMANTIC_GRADER_VERSION,
+        prompt_version=SEMANTIC_PROMPT_VERSION,
+        request=request,
+        profile="evaluation.v1",
+    )
+    assert base != _fingerprint(
+        grader_version=LIVE_SEMANTIC_GRADER_VERSION,
+        prompt_version=SEMANTIC_PROMPT_VERSION,
+        request=request,
+        profile="evaluation.v1",
+        provider="anthropic",
+    )
+    assert base != _fingerprint(
+        grader_version=LIVE_SEMANTIC_GRADER_VERSION,
+        prompt_version=SEMANTIC_PROMPT_VERSION,
+        request=request,
+        profile="evaluation.v1",
+        model_name="gpt-4o",
+    )
+    assert base != _fingerprint(
+        grader_version=LIVE_SEMANTIC_GRADER_VERSION,
+        prompt_version=SEMANTIC_PROMPT_VERSION,
+        request=request,
+        profile="evaluation.v1",
+        temperature=0.2,
+    )
+
+
+def test_live_fingerprint_requires_identity() -> None:
+    request = _request()
+    with pytest.raises(ValueError, match="provider/model/temperature"):
+        fingerprint_grading_snapshot(
+            _candidate().model_copy(update={"evaluation_profile": "evaluation.v1"}),
+            linked_evidence_ids={"ev-a", "ev-b"},
+            tool_rows=[],
+            provenance_ok=True,
+            max_logical_calls=6,
+            semantic_grader_version=LIVE_SEMANTIC_GRADER_VERSION,
+            semantic_prompt_version=SEMANTIC_PROMPT_VERSION,
+            semantic_claims=request.claims,
+            semantic_excerpts=request.excerpts,
+        )
+
+
+def test_skipped_and_fake_omit_live_identity() -> None:
+    request = _request()
+    skipped = _fingerprint()
+    skipped_with_unused = fingerprint_grading_snapshot(
+        _candidate(),
+        linked_evidence_ids={"ev-a", "ev-b"},
+        tool_rows=[],
+        provenance_ok=True,
+        max_logical_calls=6,
+        semantic_grader_version=SKIPPED_SEMANTIC_GRADER_VERSION,
+        semantic_prompt_version=SKIPPED_SEMANTIC_GRADER_VERSION,
+        semantic_model_provider="openai",
+        semantic_model_name="gpt-4o",
+        semantic_temperature=0.9,
+    )
+    assert skipped == skipped_with_unused
+    fake = _fingerprint(
+        grader_version=FAKE_SEMANTIC_GRADER_VERSION,
+        prompt_version=SEMANTIC_PROMPT_VERSION,
+        request=request,
+    )
+    fake_with_unused = fingerprint_grading_snapshot(
+        _candidate(),
+        linked_evidence_ids={"ev-a", "ev-b"},
+        tool_rows=[],
+        provenance_ok=True,
+        max_logical_calls=6,
+        semantic_grader_version=FAKE_SEMANTIC_GRADER_VERSION,
+        semantic_prompt_version=SEMANTIC_PROMPT_VERSION,
+        semantic_claims=request.claims,
+        semantic_excerpts=request.excerpts,
+        semantic_model_provider="openai",
+        semantic_model_name="gpt-4o",
+        semantic_temperature=0.9,
+    )
+    assert fake == fake_with_unused

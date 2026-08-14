@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import signal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import SecretStr
@@ -51,6 +52,7 @@ class _FakeCheckpointRuntime:
 
     def __init__(self) -> None:
         self.closed = False
+        self.checkpointer = object()
         _FakeCheckpointRuntime.instances.append(self)
 
     def close(self) -> None:
@@ -248,9 +250,14 @@ def test_main_exits_when_live_semantic_grader_uses_fake_provider(
     tmp_path: Path,
 ) -> None:
     monkeypatch.delenv("ATLAS_SEMANTIC_GRADER_MODE", raising=False)
+    monkeypatch.delenv("ATLAS_EVALUATION_PROFILE", raising=False)
     monkeypatch.delenv("ATLAS_LANGSMITH_API_KEY", raising=False)
     monkeypatch.chdir(tmp_path)
-    settings = Settings(semantic_grader_mode="live", model_provider="fake")
+    settings = Settings(
+        semantic_grader_mode="live",
+        evaluation_profile="evaluation.v1",
+        model_provider="fake",
+    )
     monkeypatch.setattr(worker_main, "get_settings", lambda: settings)
     called = {"checkpoint": 0}
 
@@ -268,3 +275,62 @@ def test_main_exits_when_live_semantic_grader_uses_fake_provider(
     assert captured.json(0)["error_class"] == "SemanticGraderConfigurationError"
     assert "sk-" not in captured.text
     assert "openai" not in captured.text.lower()
+
+
+def test_main_passes_resolved_non_null_evaluation_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("ATLAS_SEMANTIC_GRADER_MODE", raising=False)
+    monkeypatch.delenv("ATLAS_EVALUATION_PROFILE", raising=False)
+    monkeypatch.delenv("ATLAS_MODEL_PROVIDER", raising=False)
+    monkeypatch.delenv("ATLAS_LANGSMITH_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    settings = Settings()
+    monkeypatch.setattr(worker_main, "get_settings", lambda: settings)
+    monkeypatch.setattr(worker_main, "get_session_factory", lambda: object())
+    monkeypatch.setattr(
+        worker_main,
+        "create_checkpoint_runtime",
+        lambda _database_url: _FakeCheckpointRuntime(),
+    )
+    monkeypatch.setattr(worker_main, "initialize_checkpointer_schema", lambda _r: None)
+    monkeypatch.setattr(signal, "signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        worker_main,
+        "configure_tracing",
+        lambda **_kwargs: SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(
+        worker_main,
+        "start_metrics_http_server",
+        lambda **_kwargs: _RecordingMetricsServerHandle(),
+    )
+    monkeypatch.setattr(
+        worker_main,
+        "configure_langsmith",
+        lambda _settings: SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(worker_main, "build_heartbeat_recorder", lambda _settings: None)
+    monkeypatch.setattr(
+        worker_main, "LangGraphResearchProcessor", lambda **_kwargs: object()
+    )
+    captured: dict[str, object] = {}
+
+    class _FakeWorker:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def request_shutdown(self) -> None:
+            return None
+
+        def run_forever(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(worker_main, "ResearchJobWorker", _FakeWorker)
+    assert worker_main.main() == 0
+    assert captured["evaluation_profile"] == "evaluation.candidate.v1"
+    assert captured["evaluation_profile"] is not None

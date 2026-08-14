@@ -47,6 +47,8 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
     assert "ck_research_jobs_claim_lease_pair" in constraint_names
     assert "ck_research_jobs_traceparent_format" in constraint_names
     assert "ck_research_jobs_initial_traceparent_consumed_pair" in constraint_names
+    assert "ck_research_jobs_evaluation_profile_allowed" in constraint_names
+    assert "ck_research_jobs_started_has_evaluation_profile" in constraint_names
 
     unique_names = {
         constraint["name"]
@@ -61,12 +63,13 @@ def test_empty_database_migrates_to_head(engine: Engine) -> None:
     assert "claim_token" in columns
     assert "traceparent" in columns
     assert "initial_traceparent_consumed_at" in columns
+    assert "evaluation_profile" in columns
 
     with engine.connect() as connection:
         version = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-    assert version == "20260812_0014"
+    assert version == "20260813_0015"
     assert inspector.has_table("workflow_executions")
     assert inspector.has_table("workflow_node_executions")
     assert inspector.has_table("model_invocations")
@@ -298,7 +301,7 @@ def test_legacy_row_survives_upgrade_from_0001(
                         """
                     SELECT id, question, status, idempotency_key, request_fingerprint,
                            lease_expires_at, claim_token, traceparent,
-                           initial_traceparent_consumed_at
+                           initial_traceparent_consumed_at, evaluation_profile
                     FROM research_jobs
                     WHERE id = :id
                     """
@@ -312,7 +315,7 @@ def test_legacy_row_survives_upgrade_from_0001(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
 
-        assert version == "20260812_0014"
+        assert version == "20260813_0015"
         assert row["id"] == "legacy-job"
         assert row["question"] == "legacy question"
         assert row["status"] == "PENDING"
@@ -322,6 +325,7 @@ def test_legacy_row_survives_upgrade_from_0001(
         assert row["claim_token"] is None
         assert row["traceparent"] is None
         assert row["initial_traceparent_consumed_at"] is None
+        assert row["evaluation_profile"] == "evaluation.candidate.v1"
 
         factory = sessionmaker(
             bind=engine,
@@ -677,6 +681,108 @@ def test_upgrade_downgrade_0014_and_0013(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
         assert version == "20260812_0014"
+    finally:
+        try:
+            _reset_public_schema(engine)
+            command.upgrade(config, "head")
+            initialize_langgraph_checkpoint_schema(test_database_url)
+        finally:
+            if previous is None:
+                os.environ.pop("ATLAS_DATABASE_URL", None)
+            else:
+                os.environ["ATLAS_DATABASE_URL"] = previous
+
+
+def test_upgrade_downgrade_0015_and_0014(
+    test_database_url: str,
+    engine: Engine,
+) -> None:
+    """Explicit 0015 ↔ 0014 round-trip for durable evaluation-profile binding."""
+    assert_safe_test_database(test_database_url)
+    previous = os.environ.get("ATLAS_DATABASE_URL")
+    os.environ["ATLAS_DATABASE_URL"] = test_database_url
+    config = _alembic_config(test_database_url)
+
+    try:
+        _reset_public_schema(engine)
+        command.upgrade(config, "20260812_0014")
+        inspector = inspect(engine)
+        columns = {column["name"] for column in inspector.get_columns("research_jobs")}
+        constraints = {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("research_jobs")
+        }
+        eval_constraints = {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("evaluation_runs")
+        }
+        assert "evaluation_profile" not in columns
+        assert "ck_research_jobs_evaluation_profile_allowed" not in constraints
+        assert "ck_evaluation_runs_profile" in eval_constraints
+
+        created_at = datetime(2026, 8, 12, 12, 0, 0, tzinfo=UTC)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO research_jobs (
+                        id, question, status, created_at, updated_at,
+                        started_at, finished_at, result, failure_reason,
+                        idempotency_key, request_fingerprint
+                    ) VALUES (
+                        :id, :question, :status, :created_at, :updated_at,
+                        NULL, NULL, NULL, NULL, :idempotency_key, :fingerprint
+                    )
+                    """
+                ),
+                {
+                    "id": "pre-freeze-job",
+                    "question": "legacy candidate job",
+                    "status": "PENDING",
+                    "created_at": created_at,
+                    "updated_at": created_at,
+                    "idempotency_key": "pre-freeze-key",
+                    "fingerprint": "a" * 64,
+                },
+            )
+
+        command.upgrade(config, "20260813_0015")
+        inspector = inspect(engine)
+        columns = {column["name"] for column in inspector.get_columns("research_jobs")}
+        constraints = {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("research_jobs")
+        }
+        assert "evaluation_profile" in columns
+        assert "ck_research_jobs_evaluation_profile_allowed" in constraints
+        assert "ck_research_jobs_started_has_evaluation_profile" in constraints
+        with engine.connect() as connection:
+            job_profile = connection.execute(
+                text("SELECT evaluation_profile FROM research_jobs WHERE id = :id"),
+                {"id": "pre-freeze-job"},
+            ).scalar_one()
+            version = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert job_profile == "evaluation.candidate.v1"
+        assert version == "20260813_0015"
+
+        command.downgrade(config, "20260812_0014")
+        inspector = inspect(engine)
+        columns = {column["name"] for column in inspector.get_columns("research_jobs")}
+        assert "evaluation_profile" not in columns
+
+        command.upgrade(config, "20260813_0015")
+        with engine.connect() as connection:
+            version = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+            job_profile = connection.execute(
+                text("SELECT evaluation_profile FROM research_jobs WHERE id = :id"),
+                {"id": "pre-freeze-job"},
+            ).scalar_one()
+        assert version == "20260813_0015"
+        assert job_profile == "evaluation.candidate.v1"
     finally:
         try:
             _reset_public_schema(engine)

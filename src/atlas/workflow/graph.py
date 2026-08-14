@@ -19,6 +19,7 @@ from opentelemetry.trace import Status, StatusCode
 from atlas.evaluation.contracts import (
     EVALUATION_PROFILE,
     EvaluationCandidateInput,
+    EvaluationProfile,
     EvaluationRunResult,
     ToolSummaryRow,
 )
@@ -143,6 +144,7 @@ class WorkflowRuntimeContext:
     evaluation_runner: EvaluationNodeRunner | None = None
     job_claim_token: str | None = None
     policy_callback: PolicyCallback | None = None
+    evaluation_profile: EvaluationProfile = EVALUATION_PROFILE
     # Never checkpointed. Validates human-review override for complete.
     completion_auth_checker: Callable[..., bool] | None = None
     # ``None`` (not a mutable default) resolves to the process-wide
@@ -214,6 +216,7 @@ def default_fake_runtime_context(
     evaluation_runner: EvaluationNodeRunner | None = None,
     job_claim_token: str = UNIT_TEST_JOB_CLAIM_TOKEN,
     metrics: AtlasMetrics | None = None,
+    evaluation_profile: EvaluationProfile = EVALUATION_PROFILE,
 ) -> WorkflowRuntimeContext:
     """Build a deterministic fake specialist runtime context."""
     from atlas.config.settings import Settings
@@ -265,6 +268,7 @@ def default_fake_runtime_context(
         ),
         job_claim_token=job_claim_token,
         metrics=metrics,
+        evaluation_profile=evaluation_profile,
     )
 
 
@@ -470,7 +474,7 @@ def evaluate_node(
         tool_summary=_candidate_tool_summary(state),
         repair_count=repair_count,
         evaluation_attempt=evaluation_attempt,
-        evaluation_profile=EVALUATION_PROFILE,
+        evaluation_profile=runtime.context.evaluation_profile,
     )
     try:
         provenance_ok = runner.provenance_ok_for_claims(

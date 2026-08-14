@@ -70,6 +70,9 @@ def fingerprint_grading_snapshot(
     semantic_prompt_version: SemanticPromptVersion = SKIPPED_SEMANTIC_GRADER_VERSION,
     semantic_claims: Sequence[SemanticClaimInput] | None = None,
     semantic_excerpts: Sequence[SemanticExcerptInput] | None = None,
+    semantic_model_provider: str | None = None,
+    semantic_model_name: str | None = None,
+    semantic_temperature: float | None = None,
 ) -> str:
     """Return a 64-hex SHA-256 of the complete durable grading snapshot.
 
@@ -78,6 +81,10 @@ def fingerprint_grading_snapshot(
     rows, logical-call budget summary, provenance outcome, semantic grader
     identity, and (when not skipped) ordinal claim-text hashes plus hashes of
     the exact truncated excerpt bytes that would be sent.
+
+    Live profiles additionally hash provider, resolved model name, and
+    temperature. Skipped and fake fingerprints omit those fields so
+    historical ``evaluation.candidate.v1`` hashes stay valid.
 
     Skipped mode does not load or hash unused semantic excerpts. Grader
     version still distinguishes skipped from fake/live so a skipped run
@@ -94,6 +101,24 @@ def fingerprint_grading_snapshot(
         claim_hashes = claim_text_hashes_in_ordinal_order(list(semantic_claims or ()))
         excerpt_rows = excerpt_fingerprint_rows(list(semantic_excerpts or ()))
         prompt_version = semantic_prompt_version
+    semantic_payload: dict[str, Any] = {
+        "claim_text_sha256": claim_hashes,
+        "excerpts": excerpt_rows,
+        "grader_version": semantic_grader_version,
+        "prompt_version": prompt_version,
+    }
+    if semantic_grader_version == "semantic_groundedness.v1":
+        if (
+            semantic_model_provider is None
+            or semantic_model_name is None
+            or semantic_temperature is None
+        ):
+            raise ValueError(
+                "live semantic fingerprints require provider/model/temperature"
+            )
+        semantic_payload["provider"] = semantic_model_provider
+        semantic_payload["model_name"] = semantic_model_name
+        semantic_payload["temperature"] = semantic_temperature
     payload: dict[str, Any] = {
         "claims": _claims_canonical(candidate),
         "draft_sha256": _hash_text(candidate.draft),
@@ -105,12 +130,7 @@ def fingerprint_grading_snapshot(
         "profile": candidate.evaluation_profile,
         "provenance_ok": bool(provenance_ok),
         "repair_count": candidate.repair_count,
-        "semantic": {
-            "claim_text_sha256": claim_hashes,
-            "excerpts": excerpt_rows,
-            "grader_version": semantic_grader_version,
-            "prompt_version": prompt_version,
-        },
+        "semantic": semantic_payload,
         "tool_budget": {
             "logical_call_count": logical_call_count,
             "max_logical_calls": int(max_logical_calls),

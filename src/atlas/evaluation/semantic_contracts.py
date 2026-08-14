@@ -28,6 +28,13 @@ LIVE_SEMANTIC_GRADER_VERSION: Literal["semantic_groundedness.v1"] = (
 FAKE_SEMANTIC_GRADER_VERSION: Literal["fake.llm.v1"] = "fake.llm.v1"
 SKIPPED_SEMANTIC_GRADER_VERSION: Literal["skipped"] = "skipped"
 
+#: Frozen live semantic configuration for ``evaluation.v1``.
+#: ``gpt-4o-mini`` is a provider alias: Atlas freezes provider/model/temperature
+#: configuration, not immutable provider model weights.
+FROZEN_LIVE_SEMANTIC_PROVIDER: Literal["openai"] = "openai"
+FROZEN_LIVE_SEMANTIC_MODEL: Literal["gpt-4o-mini"] = "gpt-4o-mini"
+FROZEN_LIVE_SEMANTIC_TEMPERATURE: float = 0.0
+
 SemanticGraderVersion = Literal[
     "skipped",
     "fake.llm.v1",

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.domain.research_job import ResearchJob
 from atlas.persistence.db import session_scope
+from atlas.persistence.models import ResearchJobModel
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
 from atlas.persistence.repositories.tool_invocation import (
     SqlAlchemyToolInvocationRepository,
@@ -31,6 +32,7 @@ from atlas.tools.fakes import FakeWebSearchTool
 from atlas.tools.ports import ResearchTool
 from atlas.tools.registry import ToolRegistry, default_permission_policy
 from atlas.tools.service import ToolInvocationService, fingerprint_payload
+from tests.integration.research_job_fixtures import bind_profile_and_start_claimed_job
 
 
 def _seed_job_and_execution(
@@ -43,36 +45,28 @@ def _seed_job_and_execution(
     repo = SqlAlchemyResearchJobRepository()
     workflow = SqlAlchemyWorkflowRepository()
     now = datetime.now(UTC)
-    if lease_expires_at is None and claim_token is not None:
-        lease_expires_at = now + timedelta(seconds=90)
     with session_scope(session_factory) as session:
         job = ResearchJob.create(
             id=job_id,
             question="tool ledger question",
             at=now,
         )
-        if claim_token is not None:
-            job.start(at=now)
         repo.add(
             session,
             job,
             idempotency_key=f"idem-{job_id}",
             request_fingerprint="b" * 64,
         )
+        model = session.get(ResearchJobModel, job_id)
+        assert model is not None
         if claim_token is not None:
-            session.execute(
-                text(
-                    """
-                    UPDATE research_jobs
-                    SET claim_token = :token, lease_expires_at = :lease
-                    WHERE id = :id
-                    """
-                ),
-                {
-                    "token": claim_token,
-                    "lease": lease_expires_at,
-                    "id": job_id,
-                },
+            if lease_expires_at is None:
+                lease_expires_at = now + timedelta(seconds=90)
+            bind_profile_and_start_claimed_job(
+                model,
+                at=now,
+                claim_token=claim_token,
+                lease_expires_at=lease_expires_at,
             )
         return workflow.create_execution(
             session,

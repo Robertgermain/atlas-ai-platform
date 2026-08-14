@@ -217,9 +217,11 @@ services:
       ATLAS_LANGSMITH_PROJECT: ${ATLAS_LANGSMITH_PROJECT:-atlas-local}
       ATLAS_LANGSMITH_API_URL: ${ATLAS_LANGSMITH_API_URL:-}
       ATLAS_LANGSMITH_TIMEOUT_MS: ${ATLAS_LANGSMITH_TIMEOUT_MS:-5000}
-      # Worker-only semantic grader mode (Slice 15C1). Default skipped
-      # preserves current zero-weight behavior. Live is never inferred
-      # from provider selection.
+      # Worker-only evaluation profile and semantic mode (Slice 15C1 freeze).
+      # Default candidate + skipped keeps CI/Compose offline. Profile identity
+      # uniquely determines semantic mode; disagreement fails worker startup.
+      # Live evaluation.v1 is never inferred from provider selection.
+      ATLAS_EVALUATION_PROFILE: ${ATLAS_EVALUATION_PROFILE:-evaluation.candidate.v1}
       ATLAS_SEMANTIC_GRADER_MODE: ${ATLAS_SEMANTIC_GRADER_MODE:-skipped}
     depends_on:
       db-migrate:

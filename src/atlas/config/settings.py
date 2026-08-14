@@ -38,9 +38,20 @@ class Settings(BaseSettings):
     plan_prompt_version: str = Field(default="plan.v1")
     draft_prompt_version: str = Field(default="draft.v2")
     # Explicit worker composition only. Never inferred from model_provider.
-    # Live + fake provider is rejected at worker startup, not here, so the
-    # API can construct Settings with this combination.
+    # When evaluation_profile is unset, worker composition derives it from
+    # semantic_grader_mode. An explicitly supplied profile must agree with
+    # the mode or worker startup fails closed. Not validated here, so the
+    # API can construct Settings with any combination (including live
+    # without credentials).
     semantic_grader_mode: Literal["skipped", "fake", "live"] = Field(default="skipped")
+    evaluation_profile: (
+        Literal[
+            "evaluation.candidate.v1",
+            "evaluation.candidate.fake.v1",
+            "evaluation.v1",
+        ]
+        | None
+    ) = Field(default=None)
     openai_api_key: SecretStr | None = Field(default=None)
     anthropic_api_key: SecretStr | None = Field(default=None)
 

@@ -64,8 +64,8 @@ def test_meta_records_held_out_scope_and_frozen_phase1_checkpoint() -> None:
     assert meta["reviewed_at"] == "2026-08-13"
     assert meta["labels_established_before_predictions"] is True
     assert meta["live_calibration_run"] is True
-    assert meta["frozen_profile"] is False
-    assert meta["evaluation_profile"] == "evaluation.candidate.v1"
+    assert meta["frozen_profile"] is True
+    assert meta["evaluation_profile"] == "evaluation.v1"
     assert (
         meta["prompt_version"] == SEMANTIC_PROMPT_VERSION == "semantic_groundedness.v1"
     )
@@ -76,7 +76,7 @@ def test_meta_records_held_out_scope_and_frozen_phase1_checkpoint() -> None:
     assert dataset.meta.live_calibration_run is True
     assert dataset.meta.human_reviewed is True
     assert dataset.meta.human_reviewer == "project_owner"
-    assert dataset.meta.frozen_profile is False
+    assert dataset.meta.frozen_profile is True
     cal = dataset.meta.live_calibration
     assert cal.experiment == LIVE_CALIBRATION_EXPERIMENT
     assert cal.provider == "openai"
@@ -85,6 +85,8 @@ def test_meta_records_held_out_scope_and_frozen_phase1_checkpoint() -> None:
     assert cal.promotion_criteria_met is True
     assert cal.evaluation_v1_remains_separate_decision is True
     assert cal.does_not_freeze_evaluation_v1 is True
+    assert cal.owner_froze_evaluation_v1 is True
+    assert cal.owner_freeze_at == "2026-08-13"
     assert cal.substantive_fingerprint == SUBSTANTIVE_CALIBRATION_FINGERPRINT
     assert "do not copy candidate_goldens.v1" in meta["methodology"]
     assert (
@@ -93,9 +95,11 @@ def test_meta_records_held_out_scope_and_frozen_phase1_checkpoint() -> None:
     assert "Approval occurred before predictions" in meta["methodology"]
     assert "Labels must not change after predictions" in meta["methodology"]
     assert "not automatically freeze evaluation.v1" in meta["methodology"]
+    assert "explicitly froze evaluation.v1" in meta["methodology"]
     assert "bounded calibration, not statistical proof" in meta["methodology"]
     assert "only two human-labeled claims" in meta["methodology"]
     assert "not automatically create evaluation.v1" in meta["note"]
+    assert "separately froze evaluation.v1" in meta["note"]
     assert "Live calibration has run" in meta["note"]
     assert "Labels were not modified after predictions" in meta["note"]
 

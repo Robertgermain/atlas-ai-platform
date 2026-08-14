@@ -255,7 +255,12 @@ _TOKEN_TYPES: Final[frozenset[str]] = frozenset({"input", "output"})
 _TOOL_IDS: Final[frozenset[str]] = frozenset({"web_search", "fetch_url", _OTHER})
 _TOOL_PROVIDERS: Final[frozenset[str]] = frozenset({"fake", "tavily", "httpx", _OTHER})
 _EVALUATION_PROFILES: Final[frozenset[str]] = frozenset(
-    {"evaluation.candidate.v1", _OTHER}
+    {
+        "evaluation.candidate.v1",
+        "evaluation.candidate.fake.v1",
+        "evaluation.v1",
+        _OTHER,
+    }
 )
 _EVALUATION_RUN_OUTCOMES: Final[frozenset[str]] = frozenset(
     {"succeeded", "failed", _OTHER}

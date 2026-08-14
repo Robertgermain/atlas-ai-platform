@@ -8,11 +8,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.domain import ResearchJob, ResearchJobStatus
 from atlas.persistence.db import session_scope
-from atlas.persistence.mappers.research_job import apply_domain_to_orm, to_domain
 from atlas.persistence.models import ResearchJobModel
 from atlas.persistence.models.workflow import WorkflowExecutionModel
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
 from atlas.persistence.repositories.workflow import SqlAlchemyWorkflowRepository
+from tests.integration.research_job_fixtures import bind_profile_and_start_claimed_job
 
 CLAIM_A = "a" * 64
 CLAIM_B = "b" * 64
@@ -30,12 +30,13 @@ def _setup_owned_by_a(session_factory: sessionmaker[Session], job_id: str) -> st
         )
         model = session.get(ResearchJobModel, job_id)
         assert model is not None
-        job = to_domain(model)
         at = datetime.now(UTC)
-        job.start(at=at)
-        apply_domain_to_orm(job, model)
-        model.claim_token = CLAIM_A
-        model.lease_expires_at = at + timedelta(hours=1)
+        bind_profile_and_start_claimed_job(
+            model,
+            at=at,
+            claim_token=CLAIM_A,
+            lease_expires_at=at + timedelta(hours=1),
+        )
         execution_id = workflow_repo.create_execution(
             session, research_job_id=job_id, at=at
         )

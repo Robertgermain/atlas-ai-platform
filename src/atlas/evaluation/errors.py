@@ -67,7 +67,7 @@ class EvaluationStaleError(EvaluationError):
 
 
 class SemanticGraderConfigurationError(EvaluationError):
-    """Worker refused live semantic grading due to invalid composition.
+    """Worker refused evaluation composition due to invalid settings.
 
     Raised at worker startup, not from global Settings, so the API can
     construct Settings with ``semantic_grader_mode=live`` without failing.
@@ -75,6 +75,19 @@ class SemanticGraderConfigurationError(EvaluationError):
 
     def __init__(self, message: str | None = None) -> None:
         super().__init__(message or "Live semantic grader configuration is invalid.")
+
+
+class EvaluationProfileMismatchError(EvaluationError):
+    """Worker profile does not match the job's durable bound profile.
+
+    Raised before evaluation or workflow mutation. The durable job profile
+    is never overwritten.
+    """
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(
+            message or "Evaluation profile does not match the bound job profile."
+        )
 
 
 def sanitize_evaluation_error(exc: Exception) -> str:

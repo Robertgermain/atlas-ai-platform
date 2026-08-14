@@ -101,7 +101,9 @@ class _FakeRepository:
         now: datetime,
         lease_expires_at: datetime,
         claim_token: str,
+        evaluation_profile: str | None = None,
     ) -> ClaimedResearchJob | None:
+        del evaluation_profile
         del session, lease_expires_at
         self.claim_calls += 1
         if not self._pending:

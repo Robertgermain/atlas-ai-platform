@@ -293,14 +293,14 @@ Local verification's Tini-based fix directly addressed a genuine, pre-existing (
 
 ## Milestone 15 — Observability, LangSmith, semantic grading, and advisory operations analysis
 
-**Status:** Current (working branch `milestone-15-semantic-evaluation`). Slice 15A is **Complete** through Pull Request #27 / `8a25935`. Slice 15B (mandatory LangSmith AI observability) is **Complete** through Pull Request #28 / `062fb92`, with green PR CI and resulting `main` CI. Slice 15C is **Current**. Slice 15C1 Phase 1 is checkpointed/frozen for calibration at commit `936a74a`. Slice 15C1 held-out labels were approved on 2026-08-13 before predictions and were not modified after predictions. Live held-out calibration ran on 2026-08-13 and the frozen calibration gate passed. Slice 15C1 is recorded locally and is not marked Complete pending review. Slice 15C2 has not started. `evaluation.candidate.v1` remains provisional.
+**Status:** Current (working branch `milestone-15-semantic-evaluation`). Slice 15A is **Complete** through Pull Request #27 / `8a25935`. Slice 15B (mandatory LangSmith AI observability) is **Complete** through Pull Request #28 / `062fb92`, with green PR CI and resulting `main` CI. Slice 15C is **Current**. Slice 15C1 Phase 1 is checkpointed/frozen for calibration at commit `936a74a`. Slice 15C1 held-out labels were approved on 2026-08-13 before predictions and were not modified after predictions. Live held-out calibration ran on 2026-08-13 and the frozen calibration gate passed. On 2026-08-13 the project owner explicitly froze `evaluation.v1`, accepting the bounded-calibration limitations. Slice 15C1 is recorded locally and is not marked Complete pending review. Local complete-suite pre-PR gate (2026-08-14): isolated Pytest `1196 passed, 7 skipped`; full Pytest `1445 passed, 13 skipped`. Slice 15C2 has not started.
 
 **Goal:** Make the distributed local platform explainable and measurable — for both infrastructure and AI behavior — before defending it, and provide a bounded advisory analyst over that telemetry without granting it any control-plane power.
 
 **Existing agent, grading, repair, retry, and monitoring truth (for context, not new work in this milestone):**
 
 - Existing specialists (Milestone 11): planner specialist, governed research/retrieval specialist, report synthesizer, deterministic citation verifier.
-- Existing evaluation/grading (Milestone 12): citation-integrity grader, tool-use grader, report-structure grader, coverage grader, completeness grader, lexical groundedness grader, durable evaluation runs/results, evaluation ownership fencing, human-review routing, and provisional `evaluation.candidate.v1` (frozen `evaluation.v1` remains deferred).
+- Existing evaluation/grading (Milestone 12): citation-integrity grader, tool-use grader, report-structure grader, coverage grader, completeness grader, lexical groundedness grader, durable evaluation runs/results, evaluation ownership fencing, human-review routing, and frozen `evaluation.v1` (live semantic) plus historical `evaluation.candidate.v1` (skipped) and `evaluation.candidate.fake.v1` (fake) compatibility.
 - Existing repair/retry (Milestone 12): a deterministic recovery policy controls all loops; one bounded report-repair attempt is allowed for eligible structural failures and re-enters drafting/synthesis only (never planning, research, or tools automatically); transient failed jobs may receive at most two job-level retries with exponential backoff and bounded jitter; permanent, ownership, citation-integrity, and tool-policy failures fail closed; an AI component may generate a repaired draft, but deterministic policy — not an unconstrained retry agent — decides whether repair/retry is allowed.
 - Existing monitoring (Milestone 13 Slice 13A): a Redis-backed worker heartbeat exists, plus durable job, workflow, model, tool, evaluation, outbox, and consumer records. A dedicated monitoring agent does **not** exist yet. The heartbeat alone is not full monitoring or job health — full observability is this milestone.
 - Existing consumer retry/DLQ/replay (Milestone 13 Slice 13C2B): bounded, deterministic Kafka-consumer retry with a runtime processing deadline; permanent-poison classification into a PostgreSQL-backed dead-letter store; offset commit only after durable DLQ persistence; a local operator replay CLI with durable ownership fencing. **Complete** through Pull Request #25, merge commit `865023b` — this milestone adds telemetry/observability around that behavior (e.g. DLQ/retry metrics), not the retry/DLQ/replay mechanism itself.
@@ -353,13 +353,13 @@ Not in this slice: live semantic grader, held-out calibration, `evaluation.v1` f
 
 ### Slice 15C — Live semantic grader, held-out calibration, and the bounded advisory analyst
 
-**Current** (working branch `milestone-15-semantic-evaluation`). Slice 15C1 Phase 1 (live semantic-grader foundation) is checkpointed and frozen for calibration at commit `936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8`. Slice 15C1 Phase 2 held-out labels were approved on 2026-08-13 before predictions and were not modified after predictions. Slice 15C1 live held-out calibration ran on 2026-08-13 (`openai`/`gpt-4o-mini`; LangSmith experiment `atlas.15c1.heldout.67ff260be9b8-53559ce0`); automated criteria passed; human systematic-failure review passed; the frozen calibration gate passed. Slice 15C1 is recorded locally and is not marked Complete pending review. Slice 15C2 and the bounded advisory analyst have not started. `evaluation.candidate.v1` remains provisional. Passing calibration does not automatically create `evaluation.v1`. This 20-case / 23-claim run is a bounded calibration, not statistical proof.
+**Current** (working branch `milestone-15-semantic-evaluation`). Slice 15C1 Phase 1 (live semantic-grader foundation) is checkpointed and frozen for calibration at commit `936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8`. Slice 15C1 Phase 2 held-out labels were approved on 2026-08-13 before predictions and were not modified after predictions. Slice 15C1 live held-out calibration ran on 2026-08-13 (`openai`/`gpt-4o-mini`; LangSmith experiment `atlas.15c1.heldout.67ff260be9b8-53559ce0`); automated criteria passed; human systematic-failure review passed; the frozen calibration gate passed. On 2026-08-13 the project owner explicitly froze `evaluation.v1`, accepting the bounded-calibration limitations. Slice 15C1 is recorded locally and is not marked Complete pending review. Local complete-suite pre-PR gate (2026-08-14): isolated Pytest `1196 passed, 7 skipped`; full Pytest `1445 passed, 13 skipped`. Slice 15C2 and the bounded advisory analyst have not started. This 20-case / 23-claim run is a bounded calibration, not statistical proof.
 
 Slice 15C1 Phase 1 checkpoint (`936a74a`; see `PROJECT_STATE.md` "Verification (Milestone 15 Slice 15C1)"):
 
 - Explicit `ATLAS_SEMANTIC_GRADER_MODE=skipped|fake|live`, default `skipped`. Live is never inferred from provider selection. Worker startup rejects `live` plus a fake model provider. Not a global API availability requirement.
 - Bounded typed semantic input (claims + job-linked excerpts only), deterministic assembly, fingerprint extension, `LangChainSemanticGroundednessGrader` via existing model composition, malformed-only two-attempt ledger cap, and quality-versus-availability evaluation outcomes.
-- Pass threshold remains exactly `0.70`. Prompt version remains `semantic_groundedness.v1`. No `evaluation.v1` freeze. No Alembic migration. No per-claim semantic SQL tables.
+- Pass threshold remains exactly `0.70`. Prompt version remains `semantic_groundedness.v1`. No per-claim semantic SQL tables.
 
 Slice 15C1 Phase 2 demonstrated in this working tree:
 
@@ -372,8 +372,16 @@ Slice 15C1 Phase 3 live calibration recorded (2026-08-13; not a live rerun):
 
 Remaining Slice 15C work (not started):
 
-- Bounded advisory analyst (Slice 15C2).
-- `evaluation.candidate.v1` remains provisional. Freezing `evaluation.v1` is a separate, explicitly reviewed decision — passing this held-out/live-semantic calibration gate does not automatically freeze `evaluation.v1`.
+- Bounded advisory analyst (Slice 15C2). Slice 15C2 remains Pending.
+
+Owner freeze of `evaluation.v1` (2026-08-13; same working tree; not a live rerun):
+
+- Explicit owner decision, accepting the bounded 20-case / 23-claim calibration (unclear n=2; one OpenAI configuration; labels unchanged after predictions; passing the gate does not rewrite historical evaluation rows).
+- Durable job-level profile binding (`research_jobs.evaluation_profile`, Alembic `20260813_0015`); existing jobs backfilled to `evaluation.candidate.v1`; historical evaluation runs unchanged.
+- Identities: `evaluation.v1` (live only), `evaluation.candidate.v1` (skipped only), `evaluation.candidate.fake.v1` (fake only). When `ATLAS_EVALUATION_PROFILE` is unset, the worker derives the profile from `ATLAS_SEMANTIC_GRADER_MODE`; an explicit pair must agree. Default CI/Compose remain skipped + `evaluation.candidate.v1` (Compose still sets both env vars explicitly).
+- Live pins at worker startup: `live` / `openai` / `gpt-4o-mini` / temperature `0` / OpenAI and LangSmith credentials. `gpt-4o-mini` is a provider alias (configuration freeze, not immutable weights).
+- Live fingerprints include provider, resolved model name, and temperature. Historical candidate fingerprints are not rewritten.
+- Domain-to-ORM mapping remains profile-neutral; `claim_next` is the only production binder. Local complete-suite pre-PR gate (2026-08-14): isolated Pytest `1196 passed, 7 skipped`; full Pytest `1445 passed, 13 skipped`; Alembic head `20260813_0015`. Slice 15C1 is not Complete pending PR and resulting `main` CI.
 
 An advisory AI analyst that consumes sanitized, bounded telemetry summaries (never unrestricted raw production data) to: summarize incidents; cluster recurring failures; suggest likely causes and remediation; and explain job, agent, model, tool, retrieval, Kafka, and evaluation failures.
 

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from atlas.application.job_processing import ContinuationMode
 from atlas.application.ports import ClaimedResearchJob, ResearchJobIdempotencyRecord
 from atlas.domain import ResearchJob, ResearchJobStatus
+from atlas.evaluation.contracts import EVALUATION_PROFILE_CANDIDATE
 from atlas.persistence.exceptions import (
     IdempotencyKeyConflictError,
     ResearchJobAlreadyExistsError,
@@ -122,8 +123,15 @@ class SqlAlchemyResearchJobRepository:
         now: datetime,
         lease_expires_at: datetime,
         claim_token: str,
+        evaluation_profile: str | None = None,
     ) -> ClaimedResearchJob | None:
-        """Atomically claim the next eligible job and attach claim metadata."""
+        """Atomically claim the next eligible job and attach claim metadata.
+
+        Binds ``evaluation_profile`` on previously unbound jobs in the same
+        locked transaction. Jobs already bound to a different profile are
+        not selected.
+        """
+        worker_profile = evaluation_profile or EVALUATION_PROFILE_CANDIDATE
         statement = (
             select(ResearchJobModel)
             .where(
@@ -140,7 +148,11 @@ class SqlAlchemyResearchJobRepository:
                         ResearchJobModel.lease_expires_at.is_not(None),
                         ResearchJobModel.lease_expires_at < now,
                     ),
-                )
+                ),
+                or_(
+                    ResearchJobModel.evaluation_profile.is_(None),
+                    ResearchJobModel.evaluation_profile == worker_profile,
+                ),
             )
             .order_by(ResearchJobModel.created_at.asc())
             .limit(1)
@@ -148,6 +160,10 @@ class SqlAlchemyResearchJobRepository:
         )
         model = session.execute(statement).scalar_one_or_none()
         if model is None:
+            return None
+
+        bound = self._bind_evaluation_profile(model, worker_profile)
+        if bound is None:
             return None
 
         if model.status == ResearchJobStatus.PENDING.value:
@@ -181,6 +197,7 @@ class SqlAlchemyResearchJobRepository:
                 active_workflow_execution_id=model.active_workflow_execution_id,
                 traceparent=model.traceparent,
                 use_traceparent_as_parent=use_traceparent_as_parent,
+                evaluation_profile=bound,
             )
 
         if model.status == ResearchJobStatus.RUNNING.value:
@@ -218,9 +235,28 @@ class SqlAlchemyResearchJobRepository:
                 active_workflow_execution_id=model.active_workflow_execution_id,
                 traceparent=model.traceparent,
                 use_traceparent_as_parent=use_traceparent_as_parent,
+                evaluation_profile=bound,
             )
 
         return None
+
+    @staticmethod
+    def _bind_evaluation_profile(
+        model: ResearchJobModel, worker_profile: str
+    ) -> str | None:
+        """Bind an unbound job or confirm an already-bound matching profile.
+
+        Must run while the caller holds this row's ``FOR UPDATE`` lock.
+        Never overwrites a different bound profile; returns ``None`` so the
+        caller can skip the claim without mutating workflow state.
+        """
+        current = model.evaluation_profile
+        if current is None:
+            model.evaluation_profile = worker_profile
+            return worker_profile
+        if current != worker_profile:
+            return None
+        return current
 
     @staticmethod
     def _maybe_consume_initial_traceparent(

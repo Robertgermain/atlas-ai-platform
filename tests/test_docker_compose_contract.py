@@ -191,7 +191,10 @@ _LANGSMITH_ENV_KEYS = (
     "ATLAS_LANGSMITH_API_URL",
     "ATLAS_LANGSMITH_TIMEOUT_MS",
 )
-_SEMANTIC_GRADER_ENV_KEYS = ("ATLAS_SEMANTIC_GRADER_MODE",)
+_SEMANTIC_GRADER_ENV_KEYS = (
+    "ATLAS_SEMANTIC_GRADER_MODE",
+    "ATLAS_EVALUATION_PROFILE",
+)
 _LITERAL_CREDENTIAL = re.compile(r"lsv2_[A-Za-z0-9]+|sk-[A-Za-z0-9]{20,}")
 
 
@@ -241,12 +244,15 @@ def test_semantic_grader_mode_is_mapped_only_on_worker() -> None:
         "ATLAS_SEMANTIC_GRADER_MODE: ${ATLAS_SEMANTIC_GRADER_MODE:-skipped}"
         in compose_text
     )
+    assert (
+        "ATLAS_EVALUATION_PROFILE: ${ATLAS_EVALUATION_PROFILE:-evaluation.candidate.v1}"
+        in compose_text
+    )
     config = _load_rendered_config()
     services = config["services"]
     worker_env = _service_env(services["worker"])
-    for key in _SEMANTIC_GRADER_ENV_KEYS:
-        assert key in worker_env
-        assert worker_env[key] == "skipped"
+    assert worker_env["ATLAS_SEMANTIC_GRADER_MODE"] == "skipped"
+    assert worker_env["ATLAS_EVALUATION_PROFILE"] == "evaluation.candidate.v1"
     for name, service in services.items():
         if name == "worker":
             continue

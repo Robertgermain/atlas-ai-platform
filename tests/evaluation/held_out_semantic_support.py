@@ -185,6 +185,8 @@ class LiveCalibrationEvidence(BaseModel):
     promotion_criteria_met: Literal[True]
     does_not_freeze_evaluation_v1: Literal[True]
     evaluation_v1_remains_separate_decision: Literal[True]
+    owner_froze_evaluation_v1: Literal[True]
+    owner_freeze_at: Literal["2026-08-13"]
     substantive_fingerprint: Literal[
         "0bd236a522847cc9f0996fbe3be71d389ca4af15ed48c8990054cf301e34433b"
     ]
@@ -280,8 +282,8 @@ class HeldOutMeta(BaseModel):
     labels_established_before_predictions: Literal[True]
     live_calibration_run: Literal[True]
     live_calibration: LiveCalibrationEvidence
-    frozen_profile: Literal[False]
-    evaluation_profile: Literal["evaluation.candidate.v1"]
+    frozen_profile: Literal[True]
+    evaluation_profile: Literal["evaluation.v1"]
     prompt_version: Literal["semantic_groundedness.v1"]
     pass_threshold: float
     checkpoint_commit: str

@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING
 
 from atlas.evaluation.aggregation import aggregate_dimensions
 from atlas.evaluation.contracts import (
+    EVALUATION_PROFILE_CANDIDATE,
+    EVALUATION_PROFILE_CANDIDATE_FAKE,
+    EVALUATION_PROFILE_V1,
     DimensionResult,
     EvaluationCandidateInput,
     EvaluationRunResult,
@@ -17,6 +20,7 @@ from atlas.evaluation.errors import (
     EvaluationError,
     EvaluationOwnershipLostError,
     EvaluationTerminalError,
+    EvaluationValidationError,
     sanitize_evaluation_error,
 )
 from atlas.evaluation.fingerprint import fingerprint_grading_snapshot
@@ -106,6 +110,9 @@ class EvaluationRunner:
         min_linked: int = 1,
         max_logical_calls: int = DEFAULT_MAX_LOGICAL_CALLS,
         metrics: AtlasMetrics | None = None,
+        semantic_model_provider: str | None = None,
+        semantic_model_name: str | None = None,
+        semantic_temperature: float | None = None,
     ) -> None:
         self._service = evaluation_service
         self._load_linked_ids = load_linked_ids or self._default_linked_ids
@@ -115,6 +122,9 @@ class EvaluationRunner:
         self._min_linked = min_linked
         self._max_logical_calls = max_logical_calls
         self._metrics = metrics or default_metrics()
+        self._semantic_model_provider = semantic_model_provider
+        self._semantic_model_name = semantic_model_name
+        self._semantic_temperature = semantic_temperature
 
     @staticmethod
     def _default_linked_ids(
@@ -172,8 +182,12 @@ class EvaluationRunner:
     ) -> EvaluationRunResult:
         linked_ids = self._load_linked_ids(candidate, workflow_execution_id)
         tool_rows = self._load_tool_rows(candidate, workflow_execution_id)
+        self._assert_profile_matches_grader(candidate.evaluation_profile)
         semantic_request, grader_version, prompt_version = (
             self._semantic_fingerprint_inputs(candidate, linked_ids)
+        )
+        live_provider, live_model, live_temperature = self._live_fingerprint_identity(
+            grader_version
         )
         fingerprint = fingerprint_grading_snapshot(
             candidate,
@@ -189,6 +203,9 @@ class EvaluationRunner:
             semantic_excerpts=(
                 None if semantic_request is None else semantic_request.excerpts
             ),
+            semantic_model_provider=live_provider,
+            semantic_model_name=live_model,
+            semantic_temperature=live_temperature,
         )
         run_id, ownership_token, replay = self._service.begin_or_resume(
             execution_id=workflow_execution_id,
@@ -420,6 +437,42 @@ class EvaluationRunner:
         else:
             grader_version = LIVE_SEMANTIC_GRADER_VERSION
         return request, grader_version, SEMANTIC_PROMPT_VERSION
+
+    def _assert_profile_matches_grader(self, profile: str) -> None:
+        grader = self._semantic_grader
+        if profile == EVALUATION_PROFILE_CANDIDATE:
+            if grader is not None:
+                raise EvaluationValidationError(
+                    "evaluation.candidate.v1 requires skipped semantic grading"
+                )
+            return
+        if profile == EVALUATION_PROFILE_CANDIDATE_FAKE:
+            if not isinstance(grader, FakeSemanticGroundednessGrader):
+                raise EvaluationValidationError(
+                    "evaluation.candidate.fake.v1 requires fake semantic grading"
+                )
+            return
+        if profile == EVALUATION_PROFILE_V1:
+            if grader is None or isinstance(grader, FakeSemanticGroundednessGrader):
+                raise EvaluationValidationError(
+                    "evaluation.v1 requires live semantic grading"
+                )
+            return
+        raise EvaluationValidationError("Unsupported evaluation profile")
+
+    def _live_fingerprint_identity(
+        self, grader_version: SemanticGraderVersion
+    ) -> tuple[str | None, str | None, float | None]:
+        if grader_version != LIVE_SEMANTIC_GRADER_VERSION:
+            return None, None, None
+        provider = self._semantic_model_provider
+        model_name = self._semantic_model_name
+        temperature = self._semantic_temperature
+        if provider is None or model_name is None or temperature is None:
+            raise EvaluationValidationError(
+                "live semantic fingerprints require provider/model/temperature"
+            )
+        return provider, model_name, temperature
 
     def _assemble_semantic_request(
         self,

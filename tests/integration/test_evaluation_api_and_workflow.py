@@ -176,12 +176,14 @@ class _FailingEvalProcessor(LangGraphResearchProcessor):
         hooks: object,
         job_claim_token: str,
         job_id: str = "",
+        evaluation_profile: str | None = None,
     ) -> Any:
         base = super()._build_context(
             workflow_execution_id=workflow_execution_id,
             hooks=hooks,  # type: ignore[arg-type]
             job_claim_token=job_claim_token,
             job_id=job_id,
+            evaluation_profile=evaluation_profile,  # type: ignore[arg-type]
         )
         return replace(base, evaluation_runner=_FailingEvaluationRunner())
 

@@ -6,12 +6,13 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from atlas.domain import ResearchJob
 from atlas.evaluation.contracts import (
     EVALUATION_PROFILE,
+    EVALUATION_PROFILE_V1,
     DimensionResult,
     EvaluationCandidateInput,
     ToolSummaryRow,
@@ -22,6 +23,11 @@ from atlas.evaluation.errors import (
     EvaluationValidationError,
 )
 from atlas.evaluation.runner import EvaluationRunner
+from atlas.evaluation.semantic_contracts import (
+    FROZEN_LIVE_SEMANTIC_MODEL,
+    FROZEN_LIVE_SEMANTIC_PROVIDER,
+    FROZEN_LIVE_SEMANTIC_TEMPERATURE,
+)
 from atlas.evaluation.service import EvaluationService
 from atlas.persistence.db import session_scope
 from atlas.persistence.models.evaluation import EvaluationRunModel
@@ -34,6 +40,7 @@ def _create_job_and_execution(
     session_factory: sessionmaker[Session],
     *,
     job_id: str,
+    evaluation_profile: str = EVALUATION_PROFILE,
 ) -> str:
     job_repo = SqlAlchemyResearchJobRepository()
     workflow_repo = SqlAlchemyWorkflowRepository()
@@ -44,6 +51,12 @@ def _create_job_and_execution(
             ResearchJob.create(job_id, "Evaluation runner question"),
             idempotency_key=f"key-{job_id}",
             request_fingerprint="a" * 64,
+        )
+        session.execute(
+            text(
+                "UPDATE research_jobs SET evaluation_profile = :profile WHERE id = :id"
+            ),
+            {"profile": evaluation_profile, "id": job_id},
         )
         return workflow_repo.create_execution(
             session,
@@ -72,7 +85,10 @@ def _set_job_claim(
                     started_at = COALESCE(started_at, NOW()),
                     updated_at = NOW(),
                     claim_token = :token,
-                    lease_expires_at = :lease
+                    lease_expires_at = :lease,
+                    evaluation_profile = COALESCE(
+                        evaluation_profile, 'evaluation.candidate.v1'
+                    )
                 WHERE id = :job_id
                 """
             ),
@@ -132,7 +148,11 @@ def test_typed_evaluation_error_finalizes_failed(
     session_factory: sessionmaker[Session],
 ) -> None:
     job_id = "eval-runner-typed-fail"
-    execution_id = _create_job_and_execution(session_factory, job_id=job_id)
+    execution_id = _create_job_and_execution(
+        session_factory,
+        job_id=job_id,
+        evaluation_profile=EVALUATION_PROFILE_V1,
+    )
     claim = _claim_for_job(session_factory, job_id=job_id)
     service = EvaluationService(session_factory=session_factory)
     runner = EvaluationRunner(
@@ -140,10 +160,15 @@ def test_typed_evaluation_error_finalizes_failed(
         semantic_grader=_RaisingSemanticGrader(
             EvaluationValidationError("sanitized validation failure")
         ),
+        semantic_model_provider=FROZEN_LIVE_SEMANTIC_PROVIDER,
+        semantic_model_name=FROZEN_LIVE_SEMANTIC_MODEL,
+        semantic_temperature=FROZEN_LIVE_SEMANTIC_TEMPERATURE,
     )
     with pytest.raises(EvaluationValidationError):
         runner.run(
-            candidate=_candidate(job_id),
+            candidate=_candidate(job_id).model_copy(
+                update={"evaluation_profile": EVALUATION_PROFILE_V1}
+            ),
             workflow_execution_id=execution_id,
             deadline=datetime.now(UTC) + timedelta(minutes=5),
             job_claim_token=claim,
@@ -159,7 +184,11 @@ def test_unexpected_grader_error_sanitized_failed(
     session_factory: sessionmaker[Session],
 ) -> None:
     job_id = "eval-runner-unexpected"
-    execution_id = _create_job_and_execution(session_factory, job_id=job_id)
+    execution_id = _create_job_and_execution(
+        session_factory,
+        job_id=job_id,
+        evaluation_profile=EVALUATION_PROFILE_V1,
+    )
     claim = _claim_for_job(session_factory, job_id=job_id)
     service = EvaluationService(session_factory=session_factory)
     runner = EvaluationRunner(
@@ -167,10 +196,15 @@ def test_unexpected_grader_error_sanitized_failed(
         semantic_grader=_RaisingSemanticGrader(
             RuntimeError("raw provider secret must not persist")
         ),
+        semantic_model_provider=FROZEN_LIVE_SEMANTIC_PROVIDER,
+        semantic_model_name=FROZEN_LIVE_SEMANTIC_MODEL,
+        semantic_temperature=FROZEN_LIVE_SEMANTIC_TEMPERATURE,
     )
     with pytest.raises(EvaluationTerminalError):
         runner.run(
-            candidate=_candidate(job_id),
+            candidate=_candidate(job_id).model_copy(
+                update={"evaluation_profile": EVALUATION_PROFILE_V1}
+            ),
             workflow_execution_id=execution_id,
             deadline=datetime.now(UTC) + timedelta(minutes=5),
             job_claim_token=claim,
@@ -247,6 +281,12 @@ def test_previous_execution_tool_rows_do_not_affect_current(
             ResearchJob.create(job_id, "Tool scope question"),
             idempotency_key=f"key-{job_id}",
             request_fingerprint="b" * 64,
+        )
+        session.execute(
+            text(
+                "UPDATE research_jobs SET evaluation_profile = :profile WHERE id = :id"
+            ),
+            {"profile": EVALUATION_PROFILE, "id": job_id},
         )
         old_execution = workflow_repo.create_execution(
             session,

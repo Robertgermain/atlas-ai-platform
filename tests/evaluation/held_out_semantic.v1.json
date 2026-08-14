@@ -56,10 +56,12 @@
       "promotion_criteria_met": true,
       "does_not_freeze_evaluation_v1": true,
       "evaluation_v1_remains_separate_decision": true,
+      "owner_froze_evaluation_v1": true,
+      "owner_freeze_at": "2026-08-13",
       "substantive_fingerprint": "0bd236a522847cc9f0996fbe3be71d389ca4af15ed48c8990054cf301e34433b"
     },
-    "frozen_profile": false,
-    "evaluation_profile": "evaluation.candidate.v1",
+    "frozen_profile": true,
+    "evaluation_profile": "evaluation.v1",
     "prompt_version": "semantic_groundedness.v1",
     "pass_threshold": 0.7,
     "checkpoint_commit": "936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8",
@@ -74,8 +76,8 @@
       "no_unexplained_systematic_failure": true,
       "does_not_freeze_evaluation_v1": true
     },
-    "methodology": "Independent held-out semantic-groundedness set created after Slice 15C1 Phase 1 commit 936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8 froze the grader contract, prompt semantic_groundedness.v1, closed score-to-label mapping, and 0.70 mean threshold. Cases are newly authored research-style claim/excerpt pairs and do not copy candidate_goldens.v1. Proposed labels were assigned to the assembled grader input (including truncation) using only the committed mapping, before any live model prediction. The project owner approved these labels on 2026-08-13. Approval occurred before predictions. Labels must not change after predictions. Report-level pass is the Atlas arithmetic mean of per-claim approved scores, with empty claims scoring 1.00. No private data, secrets, URLs, or production logs are included. Live calibration ran on 2026-08-13 against openai/gpt-4o-mini; LangSmith experiment atlas.15c1.heldout.67ff260be9b8-53559ce0. This 20-case / 23-claim set is a bounded calibration, not statistical proof. The unclear class has only two human-labeled claims. One OpenAI model/configuration was evaluated. Passing the calibration gate does not automatically freeze evaluation.v1.",
-    "note": "Held out from grader development. The project owner approved the proposed labels on 2026-08-13 (human_reviewed is true). Approval occurred before predictions. Labels were not modified after predictions. Live calibration has run. Automated criteria passed. Human systematic-failure review passed (no unexplained systematic failure). The frozen calibration gate passed. Not a production freeze of evaluation.v1; promotion remains a separate decision. Promotion criteria must not automatically create evaluation.v1."
+    "methodology": "Independent held-out semantic-groundedness set created after Slice 15C1 Phase 1 commit 936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8 froze the grader contract, prompt semantic_groundedness.v1, closed score-to-label mapping, and 0.70 mean threshold. Cases are newly authored research-style claim/excerpt pairs and do not copy candidate_goldens.v1. Proposed labels were assigned to the assembled grader input (including truncation) using only the committed mapping, before any live model prediction. The project owner approved these labels on 2026-08-13. Approval occurred before predictions. Labels must not change after predictions. Report-level pass is the Atlas arithmetic mean of per-claim approved scores, with empty claims scoring 1.00. No private data, secrets, URLs, or production logs are included. Live calibration ran on 2026-08-13 against openai/gpt-4o-mini; LangSmith experiment atlas.15c1.heldout.67ff260be9b8-53559ce0. This 20-case / 23-claim set is a bounded calibration, not statistical proof. The unclear class has only two human-labeled claims. One OpenAI model/configuration was evaluated. Passing the calibration gate does not automatically freeze evaluation.v1. On 2026-08-13 the project owner explicitly froze evaluation.v1, accepting those bounded-calibration limitations.",
+    "note": "Held out from grader development. The project owner approved the proposed labels on 2026-08-13 (human_reviewed is true). Approval occurred before predictions. Labels were not modified after predictions. Live calibration has run. Automated criteria passed. Human systematic-failure review passed (no unexplained systematic failure). The frozen calibration gate passed. Promotion criteria must not automatically create evaluation.v1. The project owner separately froze evaluation.v1 on 2026-08-13, accepting the bounded calibration evidence and limitations."
   },
   "cases": [
     {

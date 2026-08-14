@@ -34,6 +34,7 @@ from atlas.specialists.citation_verifier import DurableCitationVerifier
 from atlas.specialists.contracts import CitationVerifierInput, SynthesizerInput
 from atlas.specialists.errors import SpecialistCitationError
 from atlas.specialists.synthesizer import BoundedReportSynthesizer
+from tests.integration.research_job_fixtures import bind_profile_and_start_claimed_job
 
 CLAIM = "a" * 64
 
@@ -47,18 +48,12 @@ def _claim_job(
     with session_scope(session_factory) as session:
         model = session.get(ResearchJobModel, job_id)
         assert model is not None
-        if model.status == "PENDING":
-            from atlas.persistence.mappers.research_job import (
-                apply_domain_to_orm,
-                to_domain,
-            )
-
-            job = to_domain(model)
-            job.start(at=at)
-            apply_domain_to_orm(job, model)
-        model.claim_token = claim_token
-        model.lease_expires_at = at + timedelta(hours=1)
-        session.flush()
+        bind_profile_and_start_claimed_job(
+            model,
+            at=at,
+            claim_token=claim_token,
+            lease_expires_at=at + timedelta(hours=1),
+        )
 
 
 def test_ablation_verifier_catches_unlinked_citation(

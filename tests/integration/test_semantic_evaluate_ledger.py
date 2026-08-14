@@ -41,8 +41,10 @@ from atlas.models.errors import (
 )
 from atlas.models.service import ModelInvocationService
 from atlas.persistence.db import session_scope
+from atlas.persistence.models import ResearchJobModel
 from atlas.persistence.repositories.research_job import SqlAlchemyResearchJobRepository
 from atlas.persistence.repositories.workflow import SqlAlchemyWorkflowRepository
+from tests.integration.research_job_fixtures import bind_profile_and_start_claimed_job
 
 
 def _seed_job_and_execution(
@@ -55,26 +57,19 @@ def _seed_job_and_execution(
     now = datetime.now(UTC)
     with session_scope(session_factory) as session:
         job = ResearchJob.create(id=job_id, question="semantic ledger", at=now)
-        job.start(at=now)
         repo.add(
             session,
             job,
             idempotency_key=f"idem-{job_id}",
             request_fingerprint="a" * 64,
         )
-        session.execute(
-            text(
-                """
-                UPDATE research_jobs
-                SET claim_token = :token, lease_expires_at = :lease
-                WHERE id = :id
-                """
-            ),
-            {
-                "token": "b" * 64,
-                "lease": now + timedelta(seconds=90),
-                "id": job_id,
-            },
+        model = session.get(ResearchJobModel, job_id)
+        assert model is not None
+        bind_profile_and_start_claimed_job(
+            model,
+            at=now,
+            claim_token="b" * 64,
+            lease_expires_at=now + timedelta(seconds=90),
         )
         return workflow.create_execution(
             session,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import TypedDict
 from uuid import uuid4
 
 import pytest
@@ -15,12 +16,19 @@ from atlas.api.schemas.evaluation import EvaluationDetailResponse
 from atlas.domain import ResearchJob
 from atlas.evaluation.contracts import (
     EVALUATION_PROFILE,
+    EVALUATION_PROFILE_CANDIDATE_FAKE,
+    EVALUATION_PROFILE_V1,
     DimensionResult,
     EvaluationCandidateInput,
 )
 from atlas.evaluation.graders import FakeSemanticGroundednessGrader
 from atlas.evaluation.runner import EvaluationRunner
-from atlas.evaluation.semantic_contracts import SemanticGradeRequest
+from atlas.evaluation.semantic_contracts import (
+    FROZEN_LIVE_SEMANTIC_MODEL,
+    FROZEN_LIVE_SEMANTIC_PROVIDER,
+    FROZEN_LIVE_SEMANTIC_TEMPERATURE,
+    SemanticGradeRequest,
+)
 from atlas.evaluation.service import EvaluationService
 from atlas.evidence.contracts import ClaimStructured
 from atlas.models.errors import (
@@ -42,6 +50,7 @@ def _create_job_and_execution(
     session_factory: sessionmaker[Session],
     *,
     job_id: str,
+    evaluation_profile: str = EVALUATION_PROFILE,
 ) -> str:
     job_repo = SqlAlchemyResearchJobRepository()
     workflow_repo = SqlAlchemyWorkflowRepository()
@@ -53,12 +62,31 @@ def _create_job_and_execution(
             idempotency_key=f"key-{job_id}",
             request_fingerprint="a" * 64,
         )
+        session.execute(
+            text(
+                "UPDATE research_jobs SET evaluation_profile = :profile WHERE id = :id"
+            ),
+            {"profile": evaluation_profile, "id": job_id},
+        )
         return workflow_repo.create_execution(
             session,
             research_job_id=job_id,
             thread_id=job_id,
             at=at,
         )
+
+
+class _LiveFingerprintKwargs(TypedDict):
+    semantic_model_provider: str
+    semantic_model_name: str
+    semantic_temperature: float
+
+
+_LIVE_FINGERPRINT: _LiveFingerprintKwargs = {
+    "semantic_model_provider": FROZEN_LIVE_SEMANTIC_PROVIDER,
+    "semantic_model_name": FROZEN_LIVE_SEMANTIC_MODEL,
+    "semantic_temperature": FROZEN_LIVE_SEMANTIC_TEMPERATURE,
+}
 
 
 def _claim_for_job(
@@ -78,7 +106,10 @@ def _claim_for_job(
                     started_at = COALESCE(started_at, NOW()),
                     updated_at = NOW(),
                     claim_token = :token,
-                    lease_expires_at = :lease
+                    lease_expires_at = :lease,
+                    evaluation_profile = COALESCE(
+                        evaluation_profile, 'evaluation.candidate.v1'
+                    )
                 WHERE id = :job_id
                 """
             ),
@@ -130,7 +161,11 @@ def test_valid_quality_fail_succeeds_with_semantic_dimension(
     session_factory: sessionmaker[Session],
 ) -> None:
     job_id = f"sem-quality-fail-{uuid4()}"
-    execution_id = _create_job_and_execution(session_factory, job_id=job_id)
+    execution_id = _create_job_and_execution(
+        session_factory,
+        job_id=job_id,
+        evaluation_profile=EVALUATION_PROFILE_CANDIDATE_FAKE,
+    )
     claim = _claim_for_job(session_factory, job_id=job_id)
     metrics = AtlasMetrics(CollectorRegistry())
     service = EvaluationService(session_factory=session_factory, metrics=metrics)
@@ -150,7 +185,7 @@ def test_valid_quality_fail_succeeds_with_semantic_dimension(
             ClaimStructured(text="Unsupported claim text", evidence_item_ids=["ev-1"])
         ],
         evidence_item_ids=["ev-1"],
-        evaluation_profile=EVALUATION_PROFILE,
+        evaluation_profile=EVALUATION_PROFILE_CANDIDATE_FAKE,
     )
     result = runner.run(
         candidate=candidate,
@@ -188,7 +223,11 @@ def test_timeout_fails_evaluation_without_semantic_dimension(
     session_factory: sessionmaker[Session],
 ) -> None:
     job_id = f"sem-timeout-{uuid4()}"
-    execution_id = _create_job_and_execution(session_factory, job_id=job_id)
+    execution_id = _create_job_and_execution(
+        session_factory,
+        job_id=job_id,
+        evaluation_profile=EVALUATION_PROFILE_V1,
+    )
     claim = _claim_for_job(session_factory, job_id=job_id)
     metrics = AtlasMetrics(CollectorRegistry())
     service = EvaluationService(session_factory=session_factory, metrics=metrics)
@@ -196,10 +235,13 @@ def test_timeout_fails_evaluation_without_semantic_dimension(
         evaluation_service=service,
         semantic_grader=_RaisingSemanticGrader(ModelTimeoutError()),
         metrics=metrics,
+        **_LIVE_FINGERPRINT,
     )
     with pytest.raises(ModelTimeoutError):
         runner.run(
-            candidate=_candidate(job_id),
+            candidate=_candidate(job_id).model_copy(
+                update={"evaluation_profile": EVALUATION_PROFILE_V1}
+            ),
             workflow_execution_id=execution_id,
             deadline=datetime.now(UTC) + timedelta(minutes=5),
             job_claim_token=claim,
@@ -235,7 +277,7 @@ def test_timeout_fails_evaluation_without_semantic_dimension(
         _sample_count(
             metrics,
             "atlas_evaluation_runs_total",
-            profile="evaluation.candidate.v1",
+            profile="evaluation.v1",
             outcome="failed",
         )
         == 1
@@ -258,7 +300,11 @@ def test_auth_and_repeated_malformed_are_permanent(
     assert malformed.action == "terminal"
 
     job_id = f"sem-auth-{uuid4()}"
-    execution_id = _create_job_and_execution(session_factory, job_id=job_id)
+    execution_id = _create_job_and_execution(
+        session_factory,
+        job_id=job_id,
+        evaluation_profile=EVALUATION_PROFILE_V1,
+    )
     claim = _claim_for_job(session_factory, job_id=job_id)
     metrics = AtlasMetrics(CollectorRegistry())
     service = EvaluationService(session_factory=session_factory, metrics=metrics)
@@ -266,10 +312,13 @@ def test_auth_and_repeated_malformed_are_permanent(
         evaluation_service=service,
         semantic_grader=_RaisingSemanticGrader(ModelAuthConfigError()),
         metrics=metrics,
+        **_LIVE_FINGERPRINT,
     )
     with pytest.raises(ModelAuthConfigError):
         runner.run(
-            candidate=_candidate(job_id),
+            candidate=_candidate(job_id).model_copy(
+                update={"evaluation_profile": EVALUATION_PROFILE_V1}
+            ),
             workflow_execution_id=execution_id,
             deadline=datetime.now(UTC) + timedelta(minutes=5),
             job_claim_token=claim,
@@ -294,7 +343,11 @@ def test_ownership_lost_does_not_finalize_failure(
     session_factory: sessionmaker[Session],
 ) -> None:
     job_id = f"sem-own-run-{uuid4()}"
-    execution_id = _create_job_and_execution(session_factory, job_id=job_id)
+    execution_id = _create_job_and_execution(
+        session_factory,
+        job_id=job_id,
+        evaluation_profile=EVALUATION_PROFILE_V1,
+    )
     claim = _claim_for_job(session_factory, job_id=job_id)
     metrics = AtlasMetrics(CollectorRegistry())
     service = EvaluationService(session_factory=session_factory, metrics=metrics)
@@ -302,10 +355,13 @@ def test_ownership_lost_does_not_finalize_failure(
         evaluation_service=service,
         semantic_grader=_RaisingSemanticGrader(ModelAttemptOwnershipLostError()),
         metrics=metrics,
+        **_LIVE_FINGERPRINT,
     )
     with pytest.raises(ModelAttemptOwnershipLostError):
         runner.run(
-            candidate=_candidate(job_id),
+            candidate=_candidate(job_id).model_copy(
+                update={"evaluation_profile": EVALUATION_PROFILE_V1}
+            ),
             workflow_execution_id=execution_id,
             deadline=datetime.now(UTC) + timedelta(minutes=5),
             job_claim_token=claim,
@@ -390,6 +446,7 @@ def test_evaluate_node_does_not_wrap_model_error() -> None:
             evaluation_runner=_Runner(),
             workflow_execution_id="exec-node",
             job_claim_token="c" * 64,
+            evaluation_profile=EVALUATION_PROFILE,
         )
     )
     with pytest.raises(ModelTimeoutError):

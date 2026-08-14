@@ -9,10 +9,15 @@ from atlas.evaluation.aggregation import (
 from atlas.evaluation.claim_fingerprint import fingerprint_job_claim_token
 from atlas.evaluation.composition import (
     build_semantic_grader,
+    require_evaluation_composition,
     require_semantic_grader_mode,
+    resolved_evaluation_profile,
 )
 from atlas.evaluation.contracts import (
     EVALUATION_PROFILE,
+    EVALUATION_PROFILE_CANDIDATE,
+    EVALUATION_PROFILE_CANDIDATE_FAKE,
+    EVALUATION_PROFILE_V1,
     DimensionResult,
     EvaluationCandidateInput,
     EvaluationRunResult,
@@ -24,6 +29,7 @@ from atlas.evaluation.errors import (
     EvaluationInProgressError,
     EvaluationNotFoundError,
     EvaluationOwnershipLostError,
+    EvaluationProfileMismatchError,
     EvaluationStaleError,
     EvaluationTerminalError,
     EvaluationValidationError,
@@ -55,6 +61,9 @@ from atlas.evaluation.ports import (
 from atlas.evaluation.repository import SqlAlchemyEvaluationRepository
 from atlas.evaluation.runner import EvaluationRunner
 from atlas.evaluation.semantic_contracts import (
+    FROZEN_LIVE_SEMANTIC_MODEL,
+    FROZEN_LIVE_SEMANTIC_PROVIDER,
+    FROZEN_LIVE_SEMANTIC_TEMPERATURE,
     SEMANTIC_PROMPT_VERSION,
     SemanticGradeRequest,
 )
@@ -62,6 +71,12 @@ from atlas.evaluation.service import EvaluationService
 
 __all__ = [
     "EVALUATION_PROFILE",
+    "EVALUATION_PROFILE_CANDIDATE",
+    "EVALUATION_PROFILE_CANDIDATE_FAKE",
+    "EVALUATION_PROFILE_V1",
+    "FROZEN_LIVE_SEMANTIC_MODEL",
+    "FROZEN_LIVE_SEMANTIC_PROVIDER",
+    "FROZEN_LIVE_SEMANTIC_TEMPERATURE",
     "HARD_DIMENSIONS",
     "PROVISIONAL_SOFT_DIMENSIONS",
     "PROVISIONAL_SOFT_PASS_THRESHOLD",
@@ -74,6 +89,7 @@ __all__ = [
     "EvaluationNodeRunner",
     "EvaluationNotFoundError",
     "EvaluationOwnershipLostError",
+    "EvaluationProfileMismatchError",
     "EvaluationRunner",
     "EvaluationRunResult",
     "EvaluationService",
@@ -101,5 +117,7 @@ __all__ = [
     "grade_lexical_id_groundedness",
     "grade_report_structure",
     "grade_tool_use",
+    "require_evaluation_composition",
+    "resolved_evaluation_profile",
     "require_semantic_grader_mode",
 ]

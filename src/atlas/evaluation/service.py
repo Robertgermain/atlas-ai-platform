@@ -22,6 +22,7 @@ from atlas.evaluation.errors import (
     EvaluationInProgressError,
     EvaluationNotFoundError,
     EvaluationOwnershipLostError,
+    EvaluationProfileMismatchError,
     EvaluationValidationError,
 )
 from atlas.evaluation.repository import SqlAlchemyEvaluationRepository
@@ -129,6 +130,9 @@ class EvaluationService:
                 workflow_execution_id=execution_id,
                 research_job_id=job_id,
             )
+            job_row = session.get(ResearchJobModel, job_id)
+            if job_row is None or job_row.evaluation_profile != profile:
+                raise EvaluationProfileMismatchError()
             existing = self._repository.get_by_execution_key(
                 session,
                 workflow_execution_id=execution_id,
