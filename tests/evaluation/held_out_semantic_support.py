@@ -100,6 +100,13 @@ class PromotionCriteria(TypedDict):
     does_not_freeze_evaluation_v1: bool
 
 
+SystematicReviewStatus = Literal["pending", "pass", "fail"]
+SUBSTANTIVE_CALIBRATION_FINGERPRINT = (
+    "0bd236a522847cc9f0996fbe3be71d389ca4af15ed48c8990054cf301e34433b"
+)
+LIVE_CALIBRATION_EXPERIMENT = "atlas.15c1.heldout.67ff260be9b8-53559ce0"
+LIVE_CALIBRATION_RAN_AT = "2026-08-13"
+
 PROMOTION_CRITERIA: PromotionCriteria = {
     "min_supported_precision": 0.80,
     "min_supported_recall": 0.80,
@@ -110,6 +117,77 @@ PROMOTION_CRITERIA: PromotionCriteria = {
     "no_unexplained_systematic_failure": True,
     "does_not_freeze_evaluation_v1": True,
 }
+
+
+class ConfusionRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    supported: int = Field(ge=0)
+    unclear: int = Field(ge=0)
+    unsupported: int = Field(ge=0)
+
+
+class RecordedClassScores(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    precision: float = Field(ge=0.0, le=1.0)
+    recall: float = Field(ge=0.0, le=1.0)
+    f1: float = Field(ge=0.0, le=1.0)
+
+
+class RecordedReportScores(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tp: int = Field(ge=0)
+    tn: int = Field(ge=0)
+    fp: int = Field(ge=0)
+    fn: int = Field(ge=0)
+    precision: float = Field(ge=0.0, le=1.0)
+    recall: float = Field(ge=0.0, le=1.0)
+    f1: float = Field(ge=0.0, le=1.0)
+
+
+class RecordedDisagreement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    case_id: str = Field(min_length=1)
+    reason: Literal["label_mismatch"]
+    determination: str = Field(min_length=1)
+
+
+class LiveCalibrationEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ran_at: Literal["2026-08-13"]
+    provider: Literal["openai"]
+    model_name: Literal["gpt-4o-mini"]
+    langsmith_project: Literal["atlas-local"]
+    experiment: Literal["atlas.15c1.heldout.67ff260be9b8-53559ce0"]
+    cases_attempted: Literal[20]
+    quality_outcomes: Literal[20]
+    availability_failures: Literal[0]
+    safety_boundary_failure: Literal[False]
+    per_claim_confusion: dict[
+        Literal["supported", "unclear", "unsupported"], ConfusionRow
+    ]
+    supported: RecordedClassScores
+    unclear: RecordedClassScores
+    unsupported: RecordedClassScores
+    macro_f1: float = Field(ge=0.0, le=1.0)
+    score_mae: float = Field(ge=0.0)
+    report: RecordedReportScores
+    disagreements: list[RecordedDisagreement]
+    automated_criteria_met: Literal[True]
+    systematic_review_status: Literal["pass"]
+    systematic_reviewer: Literal["project_owner"]
+    systematic_review_at: Literal["2026-08-13"]
+    no_unexplained_systematic_failure: Literal[True]
+    promotion_criteria_met: Literal[True]
+    does_not_freeze_evaluation_v1: Literal[True]
+    evaluation_v1_remains_separate_decision: Literal[True]
+    substantive_fingerprint: Literal[
+        "0bd236a522847cc9f0996fbe3be71d389ca4af15ed48c8990054cf301e34433b"
+    ]
 
 
 class HeldOutClaim(BaseModel):
@@ -200,7 +278,8 @@ class HeldOutMeta(BaseModel):
     reviewed_at: str
     held_out: Literal[True]
     labels_established_before_predictions: Literal[True]
-    live_calibration_run: Literal[False]
+    live_calibration_run: Literal[True]
+    live_calibration: LiveCalibrationEvidence
     frozen_profile: Literal[False]
     evaluation_profile: Literal["evaluation.candidate.v1"]
     prompt_version: Literal["semantic_groundedness.v1"]
@@ -447,7 +526,7 @@ def summarize_predictions(
         tp=report_tp, fp=report_fp, fn=report_fn, tn=report_tn
     )
     availability_failures = sum(availability.values())
-    criteria_met = (
+    automated_criteria_met = (
         not safety_failure
         and availability_failures == 0
         and supported["precision"]
@@ -467,9 +546,79 @@ def summarize_predictions(
         "disagreements": disagreements,
         "availability": availability,
         "safety_boundary_failure": safety_failure,
-        "promotion_criteria_met": criteria_met,
+        "automated_criteria_met": automated_criteria_met,
+        "systematic_review_status": "pending",
+        "promotion_criteria_met": None,
         "does_not_freeze_evaluation_v1": True,
     }
+
+
+def finalize_promotion_gate(
+    summary: Mapping[str, Any],
+    *,
+    systematic_review_status: Literal["pass", "fail"],
+) -> dict[str, Any]:
+    """Apply an explicit human systematic-failure determination.
+
+    ``summarize_predictions`` never sets the final gate. Pending review cannot
+    yield ``promotion_criteria_met=True``. A human pass yields True only when
+    automated criteria also passed. A human fail keeps the final gate False.
+    """
+    if systematic_review_status not in {"pass", "fail"}:
+        raise ValueError("systematic review must be an explicit pass or fail")
+    finalized = dict(summary)
+    automated = bool(summary["automated_criteria_met"])
+    finalized["systematic_review_status"] = systematic_review_status
+    finalized["promotion_criteria_met"] = (
+        automated and systematic_review_status == "pass"
+    )
+    return finalized
+
+
+def recorded_live_label_predictions(
+    cases: Sequence[HeldOutCase],
+) -> list[dict[str, Any]]:
+    """Offline reconstruction of the live run's per-claim labels, not scores.
+
+    Used only to prove confusion-matrix identity. Does not reproduce MAE.
+    """
+    label_overrides: dict[str, SupportLabel] = {
+        "hos_partial_glacier_mass": "unsupported",
+        "hos_conflicting_phosphorus": "unclear",
+    }
+    score_for: dict[SupportLabel, float] = {
+        "unsupported": 0.15,
+        "unclear": 0.50,
+        "supported": 0.90,
+    }
+    rows: list[dict[str, Any]] = []
+    for case in cases:
+        if not case.human.claims:
+            rows.append(
+                {
+                    "case_id": case.id,
+                    "outcome": "quality",
+                    "predicted_labels": [],
+                    "predicted_scores": [],
+                    "predicted_passed": True,
+                }
+            )
+            continue
+        predicted_labels = [
+            label_overrides.get(case.id, item.support) for item in case.human.claims
+        ]
+        predicted_scores = [score_for[label] for label in predicted_labels]
+        mean_score = sum(predicted_scores) / len(predicted_scores)
+        rows.append(
+            {
+                "case_id": case.id,
+                "outcome": "quality",
+                "predicted_labels": predicted_labels,
+                "predicted_scores": predicted_scores,
+                "predicted_passed": mean_score >= SEMANTIC_PASS_THRESHOLD,
+            }
+        )
+    return rows
 
 
 def prediction_record(
@@ -647,11 +796,12 @@ def held_out_fingerprint(dataset: HeldOutDataset) -> str:
 
 
 def substantive_calibration_content(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Canonical calibration content excluding approval metadata.
+    """Canonical calibration content excluding approval and live-run metadata.
 
     Approval fields (human_reviewed, human_reviewer, reviewed_at, per-case
-    reviewer, labeled_at, methodology, note) are omitted so an approval-only
-    metadata update cannot change this fingerprint.
+    reviewer, labeled_at, methodology, note) and live-calibration recording
+    fields (live_calibration_run, live_calibration) are omitted so metadata
+    updates cannot change this fingerprint.
     """
     meta = payload.get("_meta") or payload.get("meta") or {}
     if not isinstance(meta, Mapping):

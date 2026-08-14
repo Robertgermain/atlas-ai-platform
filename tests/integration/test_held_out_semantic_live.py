@@ -118,6 +118,8 @@ def _sanitized_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "score_mae": summary["score_mae"],
         "availability": summary["availability"],
         "safety_boundary_failure": summary["safety_boundary_failure"],
+        "automated_criteria_met": summary["automated_criteria_met"],
+        "systematic_review_status": summary["systematic_review_status"],
         "promotion_criteria_met": summary["promotion_criteria_met"],
         "does_not_freeze_evaluation_v1": summary["does_not_freeze_evaluation_v1"],
         "disagreement_ids": [
@@ -220,7 +222,10 @@ def test_live_held_out_semantic_calibration(
         )
         rows = list(results)
         assert len(rows) == len(dataset.cases)
-        assert _sanitized_summary(summary)["does_not_freeze_evaluation_v1"] is True
+        sanitized = _sanitized_summary(summary)
+        assert sanitized["does_not_freeze_evaluation_v1"] is True
+        assert sanitized["systematic_review_status"] == "pending"
+        assert sanitized["promotion_criteria_met"] is not True
     finally:
         if handle is not None:
             handle.close()

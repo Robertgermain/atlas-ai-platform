@@ -293,7 +293,7 @@ Local verification's Tini-based fix directly addressed a genuine, pre-existing (
 
 ## Milestone 15 — Observability, LangSmith, semantic grading, and advisory operations analysis
 
-**Status:** Current (working branch `milestone-15-semantic-evaluation`). Slice 15A is **Complete** through Pull Request #27 / `8a25935`. Slice 15B (mandatory LangSmith AI observability) is **Complete** through Pull Request #28 / `062fb92`, with green PR CI and resulting `main` CI. Slice 15C is **Current**. Slice 15C1 Phase 1 is checkpointed/frozen for calibration at commit `936a74a`. Slice 15C1 Phase 2 held-out labels were approved by the project owner on 2026-08-13 before predictions; labels must not change after predictions; live calibration has not run. Slice 15C2 has not started. `evaluation.candidate.v1` remains provisional.
+**Status:** Current (working branch `milestone-15-semantic-evaluation`). Slice 15A is **Complete** through Pull Request #27 / `8a25935`. Slice 15B (mandatory LangSmith AI observability) is **Complete** through Pull Request #28 / `062fb92`, with green PR CI and resulting `main` CI. Slice 15C is **Current**. Slice 15C1 Phase 1 is checkpointed/frozen for calibration at commit `936a74a`. Slice 15C1 held-out labels were approved on 2026-08-13 before predictions and were not modified after predictions. Live held-out calibration ran on 2026-08-13 and the frozen calibration gate passed. Slice 15C1 is recorded locally and is not marked Complete pending review. Slice 15C2 has not started. `evaluation.candidate.v1` remains provisional.
 
 **Goal:** Make the distributed local platform explainable and measurable — for both infrastructure and AI behavior — before defending it, and provide a bounded advisory analyst over that telemetry without granting it any control-plane power.
 
@@ -353,7 +353,7 @@ Not in this slice: live semantic grader, held-out calibration, `evaluation.v1` f
 
 ### Slice 15C — Live semantic grader, held-out calibration, and the bounded advisory analyst
 
-**Current** (working branch `milestone-15-semantic-evaluation`). Slice 15C1 Phase 1 (live semantic-grader foundation) is checkpointed and frozen for calibration at commit `936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8`. Slice 15C1 Phase 2 adds the independent held-out set and calibration harness in this working tree; the project owner approved the labels on 2026-08-13; approval occurred before predictions; labels must not change after predictions; live calibration has not run. Slice 15C2 and the bounded advisory analyst have not started. `evaluation.candidate.v1` remains provisional. Passing calibration will not automatically create `evaluation.v1`.
+**Current** (working branch `milestone-15-semantic-evaluation`). Slice 15C1 Phase 1 (live semantic-grader foundation) is checkpointed and frozen for calibration at commit `936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8`. Slice 15C1 Phase 2 held-out labels were approved on 2026-08-13 before predictions and were not modified after predictions. Slice 15C1 live held-out calibration ran on 2026-08-13 (`openai`/`gpt-4o-mini`; LangSmith experiment `atlas.15c1.heldout.67ff260be9b8-53559ce0`); automated criteria passed; human systematic-failure review passed; the frozen calibration gate passed. Slice 15C1 is recorded locally and is not marked Complete pending review. Slice 15C2 and the bounded advisory analyst have not started. `evaluation.candidate.v1` remains provisional. Passing calibration does not automatically create `evaluation.v1`. This 20-case / 23-claim run is a bounded calibration, not statistical proof.
 
 Slice 15C1 Phase 1 checkpoint (`936a74a`; see `PROJECT_STATE.md` "Verification (Milestone 15 Slice 15C1)"):
 
@@ -361,15 +361,19 @@ Slice 15C1 Phase 1 checkpoint (`936a74a`; see `PROJECT_STATE.md` "Verification (
 - Bounded typed semantic input (claims + job-linked excerpts only), deterministic assembly, fingerprint extension, `LangChainSemanticGroundednessGrader` via existing model composition, malformed-only two-attempt ledger cap, and quality-versus-availability evaluation outcomes.
 - Pass threshold remains exactly `0.70`. Prompt version remains `semantic_groundedness.v1`. No `evaluation.v1` freeze. No Alembic migration. No per-claim semantic SQL tables.
 
-Slice 15C1 Phase 2 demonstrated in this working tree (not Complete):
+Slice 15C1 Phase 2 demonstrated in this working tree:
 
-- Independent held-out dataset `tests/evaluation/held_out_semantic.v1.json`, distinct from `candidate_goldens.v1`. Proposed labels were authored before predictions against the frozen Phase 1 contract. The project owner approved those labels on 2026-08-13 (`human_reviewed: true`). Approval occurred before predictions. Labels must not change after predictions. The grader remains frozen at checkpoint `936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8`. Live calibration has not run. Passing calibration will not automatically create `evaluation.v1`.
-- Test-only calibration harness and skipped opt-in live module. Frozen promotion criteria (supported precision/recall ≥ 0.80, macro-F1 ≥ 0.75, report F1 ≥ 0.80, no safety or availability failure) do not automatically create `evaluation.v1`.
+- Independent held-out dataset `tests/evaluation/held_out_semantic.v1.json`, distinct from `candidate_goldens.v1`. Proposed labels were authored before predictions against the frozen Phase 1 contract. The project owner approved those labels on 2026-08-13 (`human_reviewed: true`). Approval occurred before predictions. Labels were not modified after predictions. The grader remains frozen at checkpoint `936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8`.
+- Test-only calibration harness. Frozen promotion criteria (supported precision/recall ≥ 0.80, macro-F1 ≥ 0.75, report F1 ≥ 0.80, no safety or availability failure, plus explicit human `no_unexplained_systematic_failure`) do not automatically create `evaluation.v1`. `summarize_predictions` reports `automated_criteria_met` only; the final `promotion_criteria_met` stays pending until `finalize_promotion_gate`.
+
+Slice 15C1 Phase 3 live calibration recorded (2026-08-13; not a live rerun):
+
+- Provider/model `openai`/`gpt-4o-mini`. LangSmith project `atlas-local`, experiment `atlas.15c1.heldout.67ff260be9b8-53559ce0`. 20/20 quality outcomes; availability 0; safety-boundary false; supported P/R/F1 1.000; unclear 0.500; unsupported 0.917; macro-F1 0.806; score MAE 0.0804; report F1 1.000. Automated criteria passed. Human systematic-failure review passed. Final calibration gate passed. Fingerprint `0bd236a522847cc9f0996fbe3be71d389ca4af15ed48c8990054cf301e34433b` unchanged. Bounded 20-case / 23-claim set; unclear class has two human labels; one OpenAI configuration.
 
 Remaining Slice 15C work (not started):
 
-- Live held-out calibration run (opt-in). Approved labels must not change after predictions. Passing calibration will not automatically create `evaluation.v1`.
-- `evaluation.candidate.v1` must remain provisional until this documented held-out/live-semantic calibration gate passes; only then may `evaluation.v1` be frozen, and only as an explicit, separately reviewed decision — landing the live grader foundation itself does not automatically freeze `evaluation.v1`.
+- Bounded advisory analyst (Slice 15C2).
+- `evaluation.candidate.v1` remains provisional. Freezing `evaluation.v1` is a separate, explicitly reviewed decision — passing this held-out/live-semantic calibration gate does not automatically freeze `evaluation.v1`.
 
 An advisory AI analyst that consumes sanitized, bounded telemetry summaries (never unrestricted raw production data) to: summarize incidents; cluster recurring failures; suggest likely causes and remediation; and explain job, agent, model, tool, retrieval, Kafka, and evaluation failures.
 

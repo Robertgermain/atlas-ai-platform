@@ -6,7 +6,58 @@
     "reviewed_at": "2026-08-13",
     "held_out": true,
     "labels_established_before_predictions": true,
-    "live_calibration_run": false,
+    "live_calibration_run": true,
+    "live_calibration": {
+      "ran_at": "2026-08-13",
+      "provider": "openai",
+      "model_name": "gpt-4o-mini",
+      "langsmith_project": "atlas-local",
+      "experiment": "atlas.15c1.heldout.67ff260be9b8-53559ce0",
+      "cases_attempted": 20,
+      "quality_outcomes": 20,
+      "availability_failures": 0,
+      "safety_boundary_failure": false,
+      "per_claim_confusion": {
+        "supported": {"supported": 9, "unclear": 0, "unsupported": 0},
+        "unclear": {"supported": 0, "unclear": 1, "unsupported": 1},
+        "unsupported": {"supported": 0, "unclear": 1, "unsupported": 11}
+      },
+      "supported": {"precision": 1.0, "recall": 1.0, "f1": 1.0},
+      "unclear": {"precision": 0.5, "recall": 0.5, "f1": 0.5},
+      "unsupported": {"precision": 0.917, "recall": 0.917, "f1": 0.917},
+      "macro_f1": 0.806,
+      "score_mae": 0.0804,
+      "report": {
+        "tp": 7,
+        "tn": 13,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "disagreements": [
+        {
+          "case_id": "hos_partial_glacier_mass",
+          "reason": "label_mismatch",
+          "determination": "compound-claim severity disagreement; human unclear, model unsupported"
+        },
+        {
+          "case_id": "hos_conflicting_phosphorus",
+          "reason": "label_mismatch",
+          "determination": "conflicting-evidence boundary disagreement; human unsupported, model unclear"
+        }
+      ],
+      "automated_criteria_met": true,
+      "systematic_review_status": "pass",
+      "systematic_reviewer": "project_owner",
+      "systematic_review_at": "2026-08-13",
+      "no_unexplained_systematic_failure": true,
+      "promotion_criteria_met": true,
+      "does_not_freeze_evaluation_v1": true,
+      "evaluation_v1_remains_separate_decision": true,
+      "substantive_fingerprint": "0bd236a522847cc9f0996fbe3be71d389ca4af15ed48c8990054cf301e34433b"
+    },
     "frozen_profile": false,
     "evaluation_profile": "evaluation.candidate.v1",
     "prompt_version": "semantic_groundedness.v1",
@@ -23,8 +74,8 @@
       "no_unexplained_systematic_failure": true,
       "does_not_freeze_evaluation_v1": true
     },
-    "methodology": "Independent held-out semantic-groundedness set created after Slice 15C1 Phase 1 commit 936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8 froze the grader contract, prompt semantic_groundedness.v1, closed score-to-label mapping, and 0.70 mean threshold. Cases are newly authored research-style claim/excerpt pairs and do not copy candidate_goldens.v1. Proposed labels were assigned to the assembled grader input (including truncation) using only the committed mapping, before any live model prediction. The project owner approved these labels on 2026-08-13. Approval occurred before predictions. Labels must not change after predictions. Report-level pass is the Atlas arithmetic mean of per-claim approved scores, with empty claims scoring 1.00. No private data, secrets, URLs, or production logs are included.",
-    "note": "Held out from grader development. The project owner approved the proposed labels on 2026-08-13 (human_reviewed is true). Approval occurred before predictions. Labels must not change after predictions. Not a production freeze of evaluation.v1. Live calibration has not run. Promotion criteria below are evaluation gates for a later human review; meeting them must not automatically create evaluation.v1."
+    "methodology": "Independent held-out semantic-groundedness set created after Slice 15C1 Phase 1 commit 936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8 froze the grader contract, prompt semantic_groundedness.v1, closed score-to-label mapping, and 0.70 mean threshold. Cases are newly authored research-style claim/excerpt pairs and do not copy candidate_goldens.v1. Proposed labels were assigned to the assembled grader input (including truncation) using only the committed mapping, before any live model prediction. The project owner approved these labels on 2026-08-13. Approval occurred before predictions. Labels must not change after predictions. Report-level pass is the Atlas arithmetic mean of per-claim approved scores, with empty claims scoring 1.00. No private data, secrets, URLs, or production logs are included. Live calibration ran on 2026-08-13 against openai/gpt-4o-mini; LangSmith experiment atlas.15c1.heldout.67ff260be9b8-53559ce0. This 20-case / 23-claim set is a bounded calibration, not statistical proof. The unclear class has only two human-labeled claims. One OpenAI model/configuration was evaluated. Passing the calibration gate does not automatically freeze evaluation.v1.",
+    "note": "Held out from grader development. The project owner approved the proposed labels on 2026-08-13 (human_reviewed is true). Approval occurred before predictions. Labels were not modified after predictions. Live calibration has run. Automated criteria passed. Human systematic-failure review passed (no unexplained systematic failure). The frozen calibration gate passed. Not a production freeze of evaluation.v1; promotion remains a separate decision. Promotion criteria must not automatically create evaluation.v1."
   },
   "cases": [
     {

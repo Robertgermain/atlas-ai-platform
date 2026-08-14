@@ -24,27 +24,25 @@ from tests.evaluation.held_out_semantic_support import (
     FORBIDDEN_FIXTURE_FIELDS,
     GOLDENS_PATH,
     HELD_OUT_PATH,
+    LIVE_CALIBRATION_EXPERIMENT,
     LIVE_FLAG,
     PROMOTION_CRITERIA,
     REQUIRED_CATEGORIES,
+    SUBSTANTIVE_CALIBRATION_FINGERPRINT,
     assemble_case,
     case_text_blob,
     classify_model_error,
     dataset_examples,
     example_inputs,
     example_outputs,
+    finalize_promotion_gate,
     golden_text_blob,
     held_out_fingerprint,
     load_held_out_dataset,
     load_held_out_payload,
+    recorded_live_label_predictions,
     substantive_calibration_fingerprint,
     summarize_predictions,
-)
-
-# Captured from held_out_semantic.v1.json immediately before the
-# approval-metadata update. Must remain unchanged after that update.
-SUBSTANTIVE_FINGERPRINT_BEFORE_APPROVAL = (
-    "0bd236a522847cc9f0996fbe3be71d389ca4af15ed48c8990054cf301e34433b"
 )
 
 
@@ -65,7 +63,7 @@ def test_meta_records_held_out_scope_and_frozen_phase1_checkpoint() -> None:
     assert meta["human_reviewer"] == "project_owner"
     assert meta["reviewed_at"] == "2026-08-13"
     assert meta["labels_established_before_predictions"] is True
-    assert meta["live_calibration_run"] is False
+    assert meta["live_calibration_run"] is True
     assert meta["frozen_profile"] is False
     assert meta["evaluation_profile"] == "evaluation.candidate.v1"
     assert (
@@ -75,17 +73,31 @@ def test_meta_records_held_out_scope_and_frozen_phase1_checkpoint() -> None:
     assert meta["checkpoint_commit"] == CHECKPOINT_COMMIT
     assert meta["distinct_from"] == "candidate_goldens.v1"
     assert meta["promotion_criteria"] == PROMOTION_CRITERIA
-    assert dataset.meta.live_calibration_run is False
+    assert dataset.meta.live_calibration_run is True
     assert dataset.meta.human_reviewed is True
     assert dataset.meta.human_reviewer == "project_owner"
+    assert dataset.meta.frozen_profile is False
+    cal = dataset.meta.live_calibration
+    assert cal.experiment == LIVE_CALIBRATION_EXPERIMENT
+    assert cal.provider == "openai"
+    assert cal.model_name == "gpt-4o-mini"
+    assert cal.langsmith_project == "atlas-local"
+    assert cal.promotion_criteria_met is True
+    assert cal.evaluation_v1_remains_separate_decision is True
+    assert cal.does_not_freeze_evaluation_v1 is True
+    assert cal.substantive_fingerprint == SUBSTANTIVE_CALIBRATION_FINGERPRINT
     assert "do not copy candidate_goldens.v1" in meta["methodology"]
     assert (
         "The project owner approved these labels on 2026-08-13" in meta["methodology"]
     )
     assert "Approval occurred before predictions" in meta["methodology"]
     assert "Labels must not change after predictions" in meta["methodology"]
+    assert "not automatically freeze evaluation.v1" in meta["methodology"]
+    assert "bounded calibration, not statistical proof" in meta["methodology"]
+    assert "only two human-labeled claims" in meta["methodology"]
     assert "not automatically create evaluation.v1" in meta["note"]
-    assert "Live calibration has not run" in meta["note"]
+    assert "Live calibration has run" in meta["note"]
+    assert "Labels were not modified after predictions" in meta["note"]
 
 
 def test_schema_rejects_golden_fixture_fields_and_loads_twenty_cases() -> None:
@@ -136,15 +148,18 @@ def test_proposed_label_distributions() -> None:
     assert categories.count("conflicting_evidence") == 1
 
 
-def test_substantive_calibration_fingerprint_unchanged_by_approval() -> None:
+def test_substantive_calibration_fingerprint_unchanged_by_metadata() -> None:
     payload = load_held_out_payload()
     after = substantive_calibration_fingerprint(payload)
-    assert after == SUBSTANTIVE_FINGERPRINT_BEFORE_APPROVAL
+    assert after == SUBSTANTIVE_CALIBRATION_FINGERPRINT
     mutated = json.loads(json.dumps(payload))
     mutated["_meta"]["human_reviewed"] = False
     mutated["_meta"]["human_reviewer"] = "pending_project_owner_review"
     mutated["_meta"]["methodology"] = "tampered methodology"
     mutated["_meta"]["note"] = "tampered note"
+    mutated["_meta"]["live_calibration_run"] = False
+    mutated["_meta"]["live_calibration"]["experiment"] = "tampered-experiment"
+    mutated["_meta"]["live_calibration"]["promotion_criteria_met"] = False
     for case in mutated["cases"]:
         case["human"]["reviewer"] = "pending_project_owner_review"
         case["human"]["labeled_at"] = "1999-01-01"
@@ -281,7 +296,9 @@ def test_error_classification_and_metrics_keep_labels_frozen() -> None:
             }
         )
     summary = summarize_predictions(dataset.cases, perfect)
-    assert summary["promotion_criteria_met"] is True
+    assert summary["automated_criteria_met"] is True
+    assert summary["systematic_review_status"] == "pending"
+    assert summary["promotion_criteria_met"] is None
     assert summary["does_not_freeze_evaluation_v1"] is True
     assert summary["safety_boundary_failure"] is False
     assert summary["supported"]["precision"] == 1.0
@@ -313,7 +330,9 @@ def test_error_classification_and_metrics_keep_labels_frozen() -> None:
     ]
     unsafe_summary = summarize_predictions([injection], unsafe)
     assert unsafe_summary["safety_boundary_failure"] is True
-    assert unsafe_summary["promotion_criteria_met"] is False
+    assert unsafe_summary["automated_criteria_met"] is False
+    assert unsafe_summary["systematic_review_status"] == "pending"
+    assert unsafe_summary["promotion_criteria_met"] is None
     assert any(
         item["reason"] == "safety_prompt_injection"
         for item in unsafe_summary["disagreements"]
@@ -323,5 +342,125 @@ def test_error_classification_and_metrics_keep_labels_frozen() -> None:
         [{"case_id": injection.id, "outcome": "timeout"}],
     )
     assert timeout["availability"]["timeout"] == 1
-    assert timeout["promotion_criteria_met"] is False
+    assert timeout["automated_criteria_met"] is False
+    assert timeout["promotion_criteria_met"] is None
     assert injection.human.claims[0].support == "unsupported"
+
+
+def test_pending_human_review_cannot_pass_final_gate() -> None:
+    dataset = load_held_out_dataset()
+    summary = summarize_predictions(
+        dataset.cases, recorded_live_label_predictions(dataset.cases)
+    )
+    assert summary["automated_criteria_met"] is True
+    assert summary["systematic_review_status"] == "pending"
+    assert summary["promotion_criteria_met"] is not True
+    assert summary["promotion_criteria_met"] is None
+
+
+def test_explicit_human_pass_requires_automated_criteria() -> None:
+    dataset = load_held_out_dataset()
+    passing = summarize_predictions(
+        dataset.cases, recorded_live_label_predictions(dataset.cases)
+    )
+    passed = finalize_promotion_gate(passing, systematic_review_status="pass")
+    assert passed["systematic_review_status"] == "pass"
+    assert passed["promotion_criteria_met"] is True
+    injection = next(
+        case for case in dataset.cases if case.category == "prompt_injection"
+    )
+    unsafe = summarize_predictions(
+        [injection],
+        [
+            {
+                "case_id": injection.id,
+                "outcome": "quality",
+                "predicted_labels": ["supported"],
+                "predicted_scores": [1.0],
+                "predicted_passed": True,
+            }
+        ],
+    )
+    still_false = finalize_promotion_gate(unsafe, systematic_review_status="pass")
+    assert still_false["automated_criteria_met"] is False
+    assert still_false["systematic_review_status"] == "pass"
+    assert still_false["promotion_criteria_met"] is False
+
+
+def test_explicit_human_failure_keeps_final_gate_false() -> None:
+    dataset = load_held_out_dataset()
+    summary = summarize_predictions(
+        dataset.cases, recorded_live_label_predictions(dataset.cases)
+    )
+    failed = finalize_promotion_gate(summary, systematic_review_status="fail")
+    assert failed["automated_criteria_met"] is True
+    assert failed["systematic_review_status"] == "fail"
+    assert failed["promotion_criteria_met"] is False
+
+
+def test_recorded_live_evidence_matches_immutable_metrics() -> None:
+    dataset = load_held_out_dataset()
+    cal = dataset.meta.live_calibration
+    assert cal.cases_attempted == 20
+    assert cal.quality_outcomes == 20
+    assert cal.availability_failures == 0
+    assert cal.safety_boundary_failure is False
+    assert cal.per_claim_confusion["supported"].model_dump() == {
+        "supported": 9,
+        "unclear": 0,
+        "unsupported": 0,
+    }
+    assert cal.per_claim_confusion["unclear"].model_dump() == {
+        "supported": 0,
+        "unclear": 1,
+        "unsupported": 1,
+    }
+    assert cal.per_claim_confusion["unsupported"].model_dump() == {
+        "supported": 0,
+        "unclear": 1,
+        "unsupported": 11,
+    }
+    assert cal.supported.model_dump() == {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+    }
+    assert cal.unclear.model_dump() == {
+        "precision": 0.5,
+        "recall": 0.5,
+        "f1": 0.5,
+    }
+    assert cal.unsupported.model_dump() == {
+        "precision": 0.917,
+        "recall": 0.917,
+        "f1": 0.917,
+    }
+    assert cal.macro_f1 == 0.806
+    assert cal.score_mae == 0.0804
+    assert cal.report.model_dump() == {
+        "tp": 7,
+        "tn": 13,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+    }
+    assert cal.automated_criteria_met is True
+    assert cal.systematic_review_status == "pass"
+    assert cal.no_unexplained_systematic_failure is True
+    assert cal.promotion_criteria_met is True
+    reconstructed = summarize_predictions(
+        dataset.cases, recorded_live_label_predictions(dataset.cases)
+    )
+    assert reconstructed["per_claim_confusion"] == {
+        "supported": {"supported": 9, "unclear": 0, "unsupported": 0},
+        "unclear": {"supported": 0, "unclear": 1, "unsupported": 1},
+        "unsupported": {"supported": 0, "unclear": 1, "unsupported": 11},
+    }
+    assert reconstructed["report"]["tp"] == 7
+    assert reconstructed["report"]["tn"] == 13
+    assert reconstructed["report"]["fp"] == 0
+    assert reconstructed["report"]["fn"] == 0
+    finalized = finalize_promotion_gate(reconstructed, systematic_review_status="pass")
+    assert finalized["promotion_criteria_met"] is True
