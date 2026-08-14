@@ -26,6 +26,7 @@ ServiceName = Literal[
     "atlas-worker",
     "atlas-outbox-relay",
     "atlas-consumer",
+    "atlas-advisor",
 ]
 
 #: Fixed, bounded set -- never derived from arbitrary environment content.

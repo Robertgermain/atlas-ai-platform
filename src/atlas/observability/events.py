@@ -259,3 +259,14 @@ class Event(StrEnum):
     #: or raw logger name. This is the *only* event a non-Atlas-structured
     #: record may ever be rendered as.
     UNSTRUCTURED_LOG_SUPPRESSED = "unstructured_log_suppressed"
+
+    #: Advisory CLI rejected argv or a missing research job (Slice 15C2).
+    ADVISORY_INPUT_REJECTED = "advisory_input_rejected"
+
+    #: Advisory snapshot assembly failed closed (schema, catalog, or byte bound).
+    ADVISORY_SNAPSHOT_REJECTED = "advisory_snapshot_rejected"
+
+    #: Advisory analysis finished (success or contained failure). Outcome is
+    #: bounded. Success already wrote the non-authoritative envelope to
+    #: stdout; this event is emitted on stderr with the other process logs.
+    ADVISORY_ANALYSIS_FINISHED = "advisory_analysis_finished"

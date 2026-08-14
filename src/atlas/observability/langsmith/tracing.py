@@ -8,10 +8,10 @@ result or masks the application's original exception.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Literal
 
-from langsmith import get_current_run_tree, tracing_context
+from langsmith import Client, get_current_run_tree, tracing_context
 from langsmith import trace as langsmith_trace
 
 from atlas.observability.events import Event
@@ -68,6 +68,77 @@ def _log_enqueue_failure(exc: BaseException) -> None:
         level=logging.WARNING,
         outcome="enqueue",
     )
+
+
+def run_in_tracing_context[T](
+    *,
+    client: Client | None,
+    project: str,
+    fn: Callable[[], T],
+    metadata: Mapping[str, object] | None = None,
+    tags: Sequence[str] | None = None,
+) -> T:
+    """Execute ``fn`` once under LangSmith ``tracing_context``.
+
+    ``fn`` always runs exactly once. Mapping conversion, allowlist
+    filtering, tags conversion, context construction, and context enter
+    all stay inside the fail-open setup boundary. A failure there or on
+    exit is logged (class name only) and metriced as
+    ``operation="enqueue"`` / ``outcome="error"``; it never prevents
+    ``fn``, replaces a successful result, or masks the original
+    exception. A failed enter attempts best-effort ``__exit__`` so a
+    partially entered fake context does not remain active. Project
+    names, credentials, prompts, metadata, tags, and exception text are
+    not logged.
+    """
+    context_cm = None
+    entered = False
+    try:
+        filtered = filter_metadata(dict(metadata or {}))
+        if tags is None:
+            context_cm = tracing_context(
+                enabled=True,
+                client=client,
+                project_name=project,
+                metadata=filtered,
+            )
+        else:
+            context_cm = tracing_context(
+                enabled=True,
+                client=client,
+                project_name=project,
+                metadata=filtered,
+                tags=list(tags),
+            )
+        context_cm.__enter__()
+        entered = True
+        _observe("enqueue", "success")
+    except Exception as exc:
+        _log_enqueue_failure(exc)
+        _observe("enqueue", "error")
+        if context_cm is not None and not entered:
+            try:
+                context_cm.__exit__(type(exc), exc, exc.__traceback__)
+            except Exception:
+                pass
+        context_cm = None
+
+    raised: BaseException | None = None
+    try:
+        return fn()
+    except BaseException as exc:
+        raised = exc
+        raise
+    finally:
+        if entered and context_cm is not None:
+            try:
+                if raised is None:
+                    context_cm.__exit__(None, None, None)
+                else:
+                    context_cm.__exit__(type(raised), raised, raised.__traceback__)
+            except Exception as exit_exc:
+                _log_enqueue_failure(exit_exc)
+                _observe("enqueue", "error")
 
 
 def trace_ai[T](
@@ -147,40 +218,15 @@ def trace_research_job[T](
         _observe("enqueue", "disabled")
         return fn()
 
-    context_cm = None
-    try:
-        context_cm = tracing_context(
-            enabled=True,
-            client=client,
-            project_name=project,
-            metadata=metadata,
-            tags=["atlas", "research-job"],
-        )
-        context_cm.__enter__()
-        _observe("enqueue", "success")
-    except Exception as exc:
-        _log_enqueue_failure(exc)
-        _observe("enqueue", "error")
-        context_cm = None
-
-    raised: BaseException | None = None
-    try:
-        return trace_ai(
+    return run_in_tracing_context(
+        client=client,
+        project=project,
+        metadata=metadata,
+        tags=("atlas", "research-job"),
+        fn=lambda: trace_ai(
             name="atlas.research_job",
             run_type="chain",
             fn=fn,
             metadata=metadata,
-        )
-    except BaseException as exc:
-        raised = exc
-        raise
-    finally:
-        if context_cm is not None:
-            try:
-                if raised is None:
-                    context_cm.__exit__(None, None, None)
-                else:
-                    context_cm.__exit__(type(raised), raised, raised.__traceback__)
-            except Exception as exit_exc:
-                _log_enqueue_failure(exit_exc)
-                _observe("enqueue", "error")
+        ),
+    )

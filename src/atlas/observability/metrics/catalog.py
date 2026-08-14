@@ -230,7 +230,7 @@ _WORKFLOW_NODE_NAMES: Final[frozenset[str]] = frozenset(
 _NODE_OUTCOMES: Final[frozenset[str]] = frozenset({"completed", "failed", _OTHER})
 _MODEL_PROVIDERS: Final[frozenset[str]] = frozenset({"openai", "anthropic", _OTHER})
 _MODEL_NODE_NAMES: Final[frozenset[str]] = frozenset(
-    {"plan", "draft", "evaluate", _OTHER}
+    {"plan", "draft", "evaluate", "advise", _OTHER}
 )
 _ATTEMPT_OUTCOMES: Final[frozenset[str]] = frozenset({"succeeded", "failed", _OTHER})
 _RETRY_CLASSES: Final[frozenset[str]] = frozenset(
@@ -327,6 +327,22 @@ _LANGSMITH_OPERATIONS: Final[frozenset[str]] = frozenset(
 )
 _LANGSMITH_OUTCOMES: Final[frozenset[str]] = frozenset(
     {"success", "error", "timeout", "disabled", _OTHER}
+)
+_ADVISORY_MODES: Final[frozenset[str]] = frozenset({"fake", "live", _OTHER})
+_ADVISORY_ANALYSIS_OUTCOMES: Final[frozenset[str]] = frozenset(
+    {
+        "succeeded",
+        "rejected",
+        "model_failed",
+        "timeout",
+        "refusal",
+        "malformed",
+        "other",
+    }
+)
+_ADVISORY_SNAPSHOT_SOURCES: Final[frozenset[str]] = frozenset({"research_job", _OTHER})
+_ADVISORY_SNAPSHOT_OUTCOMES: Final[frozenset[str]] = frozenset(
+    {"succeeded", "rejected", _OTHER}
 )
 
 #: Mirrors ``atlas.recovery.policy.PolicyAction`` (the ``Literal`` Atlas
@@ -627,6 +643,28 @@ class AtlasMetrics:
             "atlas_langsmith_operations_total",
             "LangSmith client operations by phase and bounded outcome.",
             ("operation", "outcome"),
+            registry=registry,
+        )
+        # Process-local only on the one-shot advisory CLI. These families are
+        # not scrapeable production telemetry unless a later slice adds a
+        # persistent exporter. Durable surfaces are logs, OTel, and LangSmith.
+        self._advisory_analyses_total = Counter(
+            "atlas_advisory_analyses_total",
+            "Process-local advisory CLI logical analysis outcomes.",
+            ("mode", "outcome"),
+            registry=registry,
+        )
+        self._advisory_analysis_duration_seconds = Histogram(
+            "atlas_advisory_analysis_duration_seconds",
+            "Process-local advisory CLI logical analysis duration in seconds.",
+            ("mode", "outcome"),
+            buckets=MODEL_TOOL_ATTEMPT_DURATION_BUCKETS,
+            registry=registry,
+        )
+        self._advisory_snapshot_assemblies_total = Counter(
+            "atlas_advisory_snapshot_assemblies_total",
+            "Process-local advisory snapshot assembly outcomes.",
+            ("source", "outcome"),
             registry=registry,
         )
 
@@ -1001,6 +1039,38 @@ class AtlasMetrics:
             "langsmith_operation",
             lambda: self._langsmith_operations_total.labels(
                 operation=o, outcome=c
+            ).inc(),
+        )
+
+    def observe_advisory_analysis(
+        self, *, mode: str, outcome: str, duration_seconds: float
+    ) -> None:
+        """Process-local advisory CLI logical outcome.
+
+        Not scrapeable production telemetry.
+        """
+        m = _bounded(mode, _ADVISORY_MODES)
+        o = _bounded(outcome, _ADVISORY_ANALYSIS_OUTCOMES)
+
+        def _do() -> None:
+            self._advisory_analyses_total.labels(mode=m, outcome=o).inc()
+            self._advisory_analysis_duration_seconds.labels(mode=m, outcome=o).observe(
+                duration_seconds
+            )
+
+        self._contain("advisory_analysis", _do)
+
+    def observe_advisory_snapshot_assembly(self, *, source: str, outcome: str) -> None:
+        """Process-local snapshot assembly outcome.
+
+        Not scrapeable production telemetry.
+        """
+        s = _bounded(source, _ADVISORY_SNAPSHOT_SOURCES)
+        o = _bounded(outcome, _ADVISORY_SNAPSHOT_OUTCOMES)
+        self._contain(
+            "advisory_snapshot_assembly",
+            lambda: self._advisory_snapshot_assemblies_total.labels(
+                source=s, outcome=o
             ).inc(),
         )
 

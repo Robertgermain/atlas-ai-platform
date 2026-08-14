@@ -293,7 +293,7 @@ Local verification's Tini-based fix directly addressed a genuine, pre-existing (
 
 ## Milestone 15 — Observability, LangSmith, semantic grading, and advisory operations analysis
 
-**Status:** Current (working branch `milestone-15-semantic-evaluation`). Slice 15A is **Complete** through Pull Request #27 / `8a25935`. Slice 15B (mandatory LangSmith AI observability) is **Complete** through Pull Request #28 / `062fb92`, with green PR CI and resulting `main` CI. Slice 15C is **Current**. Slice 15C1 Phase 1 is checkpointed/frozen for calibration at commit `936a74a`. Slice 15C1 held-out labels were approved on 2026-08-13 before predictions and were not modified after predictions. Live held-out calibration ran on 2026-08-13 and the frozen calibration gate passed. On 2026-08-13 the project owner explicitly froze `evaluation.v1`, accepting the bounded-calibration limitations. Slice 15C1 is recorded locally and is not marked Complete pending review. Local complete-suite pre-PR gate (2026-08-14): isolated Pytest `1196 passed, 7 skipped`; full Pytest `1445 passed, 13 skipped`. Slice 15C2 has not started.
+**Status:** Current (working branch `milestone-15-advisory-analyst`, based on `619c958`). Slice 15A is **Complete** through Pull Request #27 / `8a25935`. Slice 15B (mandatory LangSmith AI observability) is **Complete** through Pull Request #28 / `062fb92`, with green PR CI and resulting `main` CI. Slice 15C is **Current**. Slice 15C1 Phase 1 is checkpointed/frozen for calibration at commit `936a74a`. Slice 15C1 held-out labels were approved on 2026-08-13 before predictions and were not modified after predictions. Live held-out calibration ran on 2026-08-13 and the frozen calibration gate passed. On 2026-08-13 the project owner explicitly froze `evaluation.v1`, accepting the bounded-calibration limitations. Slice 15C1 is recorded locally and is not marked Complete pending review. Local complete-suite pre-PR gate (2026-08-14): isolated Pytest `1196 passed, 7 skipped`; full Pytest `1445 passed, 13 skipped`. Slice 15C1 was later marked **Complete** through Pull Request #29 / `619c958`. Slice 15C2 is **Current** on `milestone-15-advisory-analyst` and is not Complete.
 
 **Goal:** Make the distributed local platform explainable and measurable — for both infrastructure and AI behavior — before defending it, and provide a bounded advisory analyst over that telemetry without granting it any control-plane power.
 
@@ -353,7 +353,7 @@ Not in this slice: live semantic grader, held-out calibration, `evaluation.v1` f
 
 ### Slice 15C — Live semantic grader, held-out calibration, and the bounded advisory analyst
 
-**Current** (working branch `milestone-15-semantic-evaluation`). Slice 15C1 Phase 1 (live semantic-grader foundation) is checkpointed and frozen for calibration at commit `936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8`. Slice 15C1 Phase 2 held-out labels were approved on 2026-08-13 before predictions and were not modified after predictions. Slice 15C1 live held-out calibration ran on 2026-08-13 (`openai`/`gpt-4o-mini`; LangSmith experiment `atlas.15c1.heldout.67ff260be9b8-53559ce0`); automated criteria passed; human systematic-failure review passed; the frozen calibration gate passed. On 2026-08-13 the project owner explicitly froze `evaluation.v1`, accepting the bounded-calibration limitations. Slice 15C1 is recorded locally and is not marked Complete pending review. Local complete-suite pre-PR gate (2026-08-14): isolated Pytest `1196 passed, 7 skipped`; full Pytest `1445 passed, 13 skipped`. Slice 15C2 and the bounded advisory analyst have not started. This 20-case / 23-claim run is a bounded calibration, not statistical proof.
+**Current** (working branch `milestone-15-advisory-analyst`, based on `619c958`). Slice 15C1 Phase 1 (live semantic-grader foundation) is checkpointed and frozen for calibration at commit `936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8`. Slice 15C1 Phase 2 held-out labels were approved on 2026-08-13 before predictions and were not modified after predictions. Slice 15C1 live held-out calibration ran on 2026-08-13 (`openai`/`gpt-4o-mini`; LangSmith experiment `atlas.15c1.heldout.67ff260be9b8-53559ce0`); automated criteria passed; human systematic-failure review passed; the frozen calibration gate passed. On 2026-08-13 the project owner explicitly froze `evaluation.v1`, accepting the bounded-calibration limitations. Slice 15C1 is recorded locally and is not marked Complete pending review. Local complete-suite pre-PR gate (2026-08-14): isolated Pytest `1196 passed, 7 skipped`; full Pytest `1445 passed, 13 skipped`. Slice 15C1 was later marked **Complete** through Pull Request #29 / `619c958`. Slice 15C2 is **Current** and is not Complete. This 20-case / 23-claim run is a bounded calibration, not statistical proof.
 
 Slice 15C1 Phase 1 checkpoint (`936a74a`; see `PROJECT_STATE.md` "Verification (Milestone 15 Slice 15C1)"):
 
@@ -370,9 +370,9 @@ Slice 15C1 Phase 3 live calibration recorded (2026-08-13; not a live rerun):
 
 - Provider/model `openai`/`gpt-4o-mini`. LangSmith project `atlas-local`, experiment `atlas.15c1.heldout.67ff260be9b8-53559ce0`. 20/20 quality outcomes; availability 0; safety-boundary false; supported P/R/F1 1.000; unclear 0.500; unsupported 0.917; macro-F1 0.806; score MAE 0.0804; report F1 1.000. Automated criteria passed. Human systematic-failure review passed. Final calibration gate passed. Fingerprint `0bd236a522847cc9f0996fbe3be71d389ca4af15ed48c8990054cf301e34433b` unchanged. Bounded 20-case / 23-claim set; unclear class has two human labels; one OpenAI configuration.
 
-Remaining Slice 15C work (not started):
+Remaining Slice 15C work:
 
-- Bounded advisory analyst (Slice 15C2). Slice 15C2 remains Pending.
+- Bounded advisory analyst (Slice 15C2). **Current** on `milestone-15-advisory-analyst`; not Complete pending PR CI and resulting `main` CI. CLI `python -m atlas.advisor --research-job-id <id>` only. Short PostgreSQL READ ONLY snapshot, rollback/close before analysis. Successful stdout is exactly one `AdvisoryStdoutEnvelope` JSON line; stderr is Atlas structured JSON logs only. Fake mode is the default. No HTTP, worker, Compose, migration, ledger, or durable advisory table. Local complete-suite pre-PR gate (2026-08-14 stream-contract correction; live advisory not rerun): isolated Pytest `1277 passed, 7 skipped`; full Pytest `1540 passed, 14 skipped`; Alembic head `20260813_0015`; fake CLI smoke exit `0` with stdout envelope / stderr logs split.
 
 Owner freeze of `evaluation.v1` (2026-08-13; same working tree; not a live rerun):
 
@@ -382,6 +382,8 @@ Owner freeze of `evaluation.v1` (2026-08-13; same working tree; not a live rerun
 - Live pins at worker startup: `live` / `openai` / `gpt-4o-mini` / temperature `0` / OpenAI and LangSmith credentials. `gpt-4o-mini` is a provider alias (configuration freeze, not immutable weights).
 - Live fingerprints include provider, resolved model name, and temperature. Historical candidate fingerprints are not rewritten.
 - Domain-to-ORM mapping remains profile-neutral; `claim_next` is the only production binder. Local complete-suite pre-PR gate (2026-08-14): isolated Pytest `1196 passed, 7 skipped`; full Pytest `1445 passed, 13 skipped`; Alembic head `20260813_0015`. Slice 15C1 is not Complete pending PR and resulting `main` CI.
+
+Slice 15C1 was later marked **Complete** through Pull Request #29 / `619c958`.
 
 An advisory AI analyst that consumes sanitized, bounded telemetry summaries (never unrestricted raw production data) to: summarize incidents; cluster recurring failures; suggest likely causes and remediation; and explain job, agent, model, tool, retrieval, Kafka, and evaluation failures.
 

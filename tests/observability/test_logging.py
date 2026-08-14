@@ -9,6 +9,7 @@ import json
 import logging
 import sys
 from datetime import datetime
+from typing import TextIO
 
 import pytest
 
@@ -594,9 +595,57 @@ def test_sqlalchemy_engine_is_held_at_warning() -> None:
     assert logging.getLogger("sqlalchemy.engine").level == logging.WARNING
 
 
+def _root_stream_handler() -> logging.StreamHandler[TextIO]:
+    handlers = logging.getLogger().handlers
+    assert len(handlers) == 1
+    handler = handlers[0]
+    assert isinstance(handler, logging.StreamHandler)
+    return handler
+
+
 def test_configure_logging_rejects_unknown_service_role() -> None:
     with pytest.raises(ValueError):
         configure_logging(service_role="not-a-real-role")
+
+
+def test_configure_logging_accepts_advisor_service_role() -> None:
+    configure_logging(service_role="advisor")
+    handler = _root_stream_handler()
+    assert handler.stream is sys.stdout
+    assert isinstance(handler.formatter, AtlasJSONFormatter)
+
+
+def test_configure_logging_default_stream_is_stdout() -> None:
+    configure_logging(service_role="api")
+    handler = _root_stream_handler()
+    assert handler.stream is sys.stdout
+    assert isinstance(handler.formatter, AtlasJSONFormatter)
+
+
+def test_configure_logging_optional_stream_uses_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging(service_role="advisor", stream=sys.stderr)
+    handler = _root_stream_handler()
+    assert handler.stream is sys.stderr
+    assert isinstance(handler.formatter, AtlasJSONFormatter)
+    logger = _make_logger("atlas.test.advisor_stderr_stream")
+    log_event(logger, Event.PROCESS_STARTED)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    payload = json.loads(captured.err.strip().splitlines()[-1])
+    assert payload["service"] == "advisor"
+    assert payload["event"] == Event.PROCESS_STARTED.value
+
+
+def test_configure_logging_omitted_stream_keeps_existing_service_stdout_default() -> (
+    None
+):
+    configure_logging(service_role="advisor", stream=sys.stderr)
+    configure_logging(service_role="worker")
+    handler = _root_stream_handler()
+    assert handler.stream is sys.stdout
+    assert isinstance(handler.formatter, AtlasJSONFormatter)
 
 
 def test_configure_logging_is_idempotent_no_duplicate_handlers() -> None:

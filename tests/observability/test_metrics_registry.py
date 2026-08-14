@@ -113,6 +113,12 @@ def test_http_request_metric_registered_with_expected_labels() -> None:
         lambda m: m.observe_langsmith_operation(
             operation="initialize", outcome="success"
         ),
+        lambda m: m.observe_advisory_analysis(
+            mode="fake", outcome="succeeded", duration_seconds=0.01
+        ),
+        lambda m: m.observe_advisory_snapshot_assembly(
+            source="research_job", outcome="succeeded"
+        ),
     ],
 )
 def test_every_observer_method_succeeds_without_raising(observe: object) -> None:

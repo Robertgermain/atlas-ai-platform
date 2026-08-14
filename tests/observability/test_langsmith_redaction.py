@@ -96,3 +96,4 @@ def test_semantic_grader_outcome_is_allowlisted_without_claim_text() -> None:
     assert "claim_text" not in filtered
     assert "excerpt_text" not in filtered
     assert "atlas.semantic_grader_outcome" in ALLOWED_METADATA_KEYS
+    assert "atlas.advisory_analysis_id" in ALLOWED_METADATA_KEYS
