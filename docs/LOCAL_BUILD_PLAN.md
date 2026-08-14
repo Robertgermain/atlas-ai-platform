@@ -293,7 +293,7 @@ Local verification's Tini-based fix directly addressed a genuine, pre-existing (
 
 ## Milestone 15 — Observability, LangSmith, semantic grading, and advisory operations analysis
 
-**Status:** Current (working branch `milestone-15-semantic-evaluation`, based on `062fb92`). Slice 15A is **Complete** through Pull Request #27 / `8a25935`. Slice 15B (mandatory LangSmith AI observability) is **Complete** through Pull Request #28 / `062fb92`, with green PR CI and resulting `main` CI. Slice 15C is **Current**. Slice 15C1 (live semantic-grader foundation) is implemented in this working tree and is not Complete. The held-out set has not been created. Slice 15C2 has not started. `evaluation.candidate.v1` remains provisional.
+**Status:** Current (working branch `milestone-15-semantic-evaluation`). Slice 15A is **Complete** through Pull Request #27 / `8a25935`. Slice 15B (mandatory LangSmith AI observability) is **Complete** through Pull Request #28 / `062fb92`, with green PR CI and resulting `main` CI. Slice 15C is **Current**. Slice 15C1 Phase 1 is checkpointed/frozen for calibration at commit `936a74a`. Slice 15C1 Phase 2 held-out labels were approved by the project owner on 2026-08-13 before predictions; labels must not change after predictions; live calibration has not run. Slice 15C2 has not started. `evaluation.candidate.v1` remains provisional.
 
 **Goal:** Make the distributed local platform explainable and measurable — for both infrastructure and AI behavior — before defending it, and provide a bounded advisory analyst over that telemetry without granting it any control-plane power.
 
@@ -353,17 +353,22 @@ Not in this slice: live semantic grader, held-out calibration, `evaluation.v1` f
 
 ### Slice 15C — Live semantic grader, held-out calibration, and the bounded advisory analyst
 
-**Current** (working branch `milestone-15-semantic-evaluation`). A live LangChain semantic groundedness grader foundation (Slice 15C1) is implemented in this working tree and is not Complete. The independent held-out human-labeled calibration set has not been created and must remain unseen until the grader, prompt, threshold, and contracts are reviewed and frozen. Slice 15C2 and the bounded advisory analyst have not started. `evaluation.candidate.v1` remains provisional.
+**Current** (working branch `milestone-15-semantic-evaluation`). Slice 15C1 Phase 1 (live semantic-grader foundation) is checkpointed and frozen for calibration at commit `936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8`. Slice 15C1 Phase 2 adds the independent held-out set and calibration harness in this working tree; the project owner approved the labels on 2026-08-13; approval occurred before predictions; labels must not change after predictions; live calibration has not run. Slice 15C2 and the bounded advisory analyst have not started. `evaluation.candidate.v1` remains provisional. Passing calibration will not automatically create `evaluation.v1`.
 
-Slice 15C1 demonstrated in this working tree (see `PROJECT_STATE.md` "Verification (Milestone 15 Slice 15C1)"):
+Slice 15C1 Phase 1 checkpoint (`936a74a`; see `PROJECT_STATE.md` "Verification (Milestone 15 Slice 15C1)"):
 
 - Explicit `ATLAS_SEMANTIC_GRADER_MODE=skipped|fake|live`, default `skipped`. Live is never inferred from provider selection. Worker startup rejects `live` plus a fake model provider. Not a global API availability requirement.
 - Bounded typed semantic input (claims + job-linked excerpts only), deterministic assembly, fingerprint extension, `LangChainSemanticGroundednessGrader` via existing model composition, malformed-only two-attempt ledger cap, and quality-versus-availability evaluation outcomes.
-- Pass threshold remains exactly `0.70`. Prompt version remains `semantic_groundedness.v1`. No `evaluation.v1` freeze. No Alembic migration. No per-claim semantic SQL tables. No held-out dataset file.
+- Pass threshold remains exactly `0.70`. Prompt version remains `semantic_groundedness.v1`. No `evaluation.v1` freeze. No Alembic migration. No per-claim semantic SQL tables.
+
+Slice 15C1 Phase 2 demonstrated in this working tree (not Complete):
+
+- Independent held-out dataset `tests/evaluation/held_out_semantic.v1.json`, distinct from `candidate_goldens.v1`. Proposed labels were authored before predictions against the frozen Phase 1 contract. The project owner approved those labels on 2026-08-13 (`human_reviewed: true`). Approval occurred before predictions. Labels must not change after predictions. The grader remains frozen at checkpoint `936a74a08e3e5d20fc0e93e55cee4fbc0102f4b8`. Live calibration has not run. Passing calibration will not automatically create `evaluation.v1`.
+- Test-only calibration harness and skipped opt-in live module. Frozen promotion criteria (supported precision/recall ≥ 0.80, macro-F1 ≥ 0.75, report F1 ≥ 0.80, no safety or availability failure) do not automatically create `evaluation.v1`.
 
 Remaining Slice 15C work (not started):
 
-- An independent held-out human-labeled validation set, distinct from `candidate_goldens.v1`, used for calibration (created only after the 15C1 review freeze).
+- Live held-out calibration run (opt-in). Approved labels must not change after predictions. Passing calibration will not automatically create `evaluation.v1`.
 - `evaluation.candidate.v1` must remain provisional until this documented held-out/live-semantic calibration gate passes; only then may `evaluation.v1` be frozen, and only as an explicit, separately reviewed decision — landing the live grader foundation itself does not automatically freeze `evaluation.v1`.
 
 An advisory AI analyst that consumes sanitized, bounded telemetry summaries (never unrestricted raw production data) to: summarize incidents; cluster recurring failures; suggest likely causes and remediation; and explain job, agent, model, tool, retrieval, Kafka, and evaluation failures.
