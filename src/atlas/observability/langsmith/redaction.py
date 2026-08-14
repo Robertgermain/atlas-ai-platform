@@ -43,6 +43,7 @@ ALLOWED_METADATA_KEYS: Final[frozenset[str]] = frozenset(
         "atlas.otel_trace_id",
         "atlas.otel_span_id",
         "atlas.live_test_id",
+        "atlas.advisory_analysis_id",
         "error.class",
     }
 )

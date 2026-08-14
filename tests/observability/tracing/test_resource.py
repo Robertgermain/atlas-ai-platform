@@ -34,6 +34,7 @@ _ALL_SERVICE_NAMES: tuple[ServiceName, ...] = (
     "atlas-worker",
     "atlas-outbox-relay",
     "atlas-consumer",
+    "atlas-advisor",
 )
 
 
@@ -88,7 +89,7 @@ def test_build_resource_never_sets_an_atlas_attribute_outside_the_fixed_three() 
     assert unexpected_keys == set()
 
 
-def test_build_resource_service_names_are_distinct_across_all_four_roles() -> None:
+def test_build_resource_service_names_are_distinct_across_roles() -> None:
     resources = {
         service_name: dict(
             build_resource(

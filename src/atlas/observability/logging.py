@@ -6,6 +6,9 @@ like*. It provides:
 - :func:`configure_logging` -- installs one JSON-emitting handler on the
   root logger and applies the third-party logger policy (see below). Call
   exactly once, at process entry, before any other Atlas code runs.
+  ``stream=None`` keeps the existing ``sys.stdout`` destination; a caller
+  may pass another text stream (the advisory CLI uses ``sys.stderr``)
+  without changing the formatter or the one-handler policy.
 - :class:`AtlasJSONFormatter` -- the JSON formatter itself.
 - :func:`log_event` / :func:`log_exception_boundary` -- the only
   sanctioned way for Atlas's own code to emit a structured log line.
@@ -181,7 +184,7 @@ import logging
 import math
 import sys
 from datetime import UTC, datetime
-from typing import Final
+from typing import Final, TextIO
 
 from atlas.observability.context import current_context
 from atlas.observability.events import Event
@@ -224,6 +227,7 @@ _KNOWN_SERVICE_ROLES: Final[frozenset[str]] = frozenset(
         "kafka-topic-init",
         "consumer-replay",
         "alert-receiver",
+        "advisor",
     }
 )
 
@@ -349,11 +353,19 @@ def _normalize_logger_category(name: str) -> str:
     return _DEFAULT_LOGGER_CATEGORY
 
 
-def configure_logging(*, service_role: str) -> None:
+def configure_logging(*, service_role: str, stream: TextIO | None = None) -> None:
     """Install Atlas's JSON logging and apply the third-party logger policy.
 
     Call exactly once, as early as possible in each process entrypoint
     (before constructing any dependency that might itself log).
+
+    ``stream`` selects the handler destination. ``None`` (the default)
+    keeps ``sys.stdout``, which is the destination every existing
+    service entrypoint relies on. Passing another text stream (the
+    advisory CLI uses ``sys.stderr``) does not install a second handler,
+    a second formatter, or a weaker replacement policy -- the same
+    single :class:`AtlasJSONFormatter`-backed handler is installed on
+    the chosen stream.
 
     Atomically replaces *every* existing root-logger handler -- whatever
     installed it, including a foreign/pre-existing handler this function
@@ -391,7 +403,7 @@ def configure_logging(*, service_role: str) -> None:
     global _service_role, _installed_handler
     _service_role = service_role
 
-    handler = logging.StreamHandler(stream=sys.stdout)
+    handler = logging.StreamHandler(stream=sys.stdout if stream is None else stream)
     handler.setFormatter(AtlasJSONFormatter())
 
     root = logging.getLogger()

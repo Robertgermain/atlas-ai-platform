@@ -52,6 +52,10 @@ class Settings(BaseSettings):
         ]
         | None
     ) = Field(default=None)
+    # CLI-only advisory analyst (Slice 15C2). Default fake keeps CI offline.
+    # Live pins are enforced in atlas.advisor.composition, not here, so the
+    # API and worker can construct Settings without advisory credentials.
+    advisory_mode: Literal["fake", "live"] = Field(default="fake")
     openai_api_key: SecretStr | None = Field(default=None)
     anthropic_api_key: SecretStr | None = Field(default=None)
 

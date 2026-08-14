@@ -17,9 +17,9 @@ capturing handler here never touches the root logger at all. Every
 captured record is rendered through the exact same
 :class:`~atlas.observability.logging.AtlasJSONFormatter` production uses,
 so assertions against ``captured.rendered``/``captured.text``/
-``captured.json(i)`` verify precisely what would reach stdout in
-production -- this is a genuine testing seam, not a relaxation of the
-production contract.
+``captured.json(i)`` verify precisely what would reach the installed
+handler stream in production -- this is a genuine testing seam, not a
+relaxation of the production contract.
 """
 
 from __future__ import annotations

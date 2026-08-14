@@ -30,6 +30,7 @@ from atlas.observability.langsmith.redaction import (
 )
 from atlas.observability.langsmith.tracing import (
     attach_run_metadata,
+    run_in_tracing_context,
     trace_ai,
     trace_research_job,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "live_ai_provider_configured",
     "require_langsmith_for_live_ai",
     "reset_langsmith_for_tests",
+    "run_in_tracing_context",
     "trace_ai",
     "trace_research_job",
 ]
